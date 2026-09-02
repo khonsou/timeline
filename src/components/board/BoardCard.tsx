@@ -1,4 +1,3 @@
-import { useEffect, useState } from 'react'
 import type { DraggableAttributes } from '@dnd-kit/core'
 import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities'
 import { useSortable } from '@dnd-kit/sortable'
@@ -9,16 +8,11 @@ import { publishDateOf, publishTimeOf } from '@/lib/board-view'
 import { formatCompact, formatRoi } from '@/lib/format'
 
 // ---------------------------------------------------------------------------
-// CardView：纯展示 + 标题 inline 编辑，被 SortableCard 与 DragOverlay 复用
+// CardView：卡片面（单击开详情，不再 inline 编辑），被 SortableCard 与 DragOverlay 复用
 // ---------------------------------------------------------------------------
 interface CardViewProps {
   card: ContentItem
-  editingTitle: boolean
-  draftTitle: string
-  setDraftTitle: (v: string) => void
-  startTitleEdit: () => void
-  commitTitle: () => void
-  cancelTitle: () => void
+  onOpenDetail: () => void
   onDelete: () => void
   // 渲染模式
   placeholder?: boolean // 拖拽中在原位置渲染虚线占位
@@ -34,6 +28,9 @@ function CardView(p: CardViewProps) {
   const tag = TAGS[p.card.type]
   const product = PRODUCT_BY_ID[p.card.product_id]
   const published = p.card.roi !== null // 未发布 ⇒ 三个指标一律 null
+  const rate = p.card.propagation_4h
+    ? Math.min(1, (p.card.engagement_4h ?? 0) / p.card.propagation_4h)
+    : 0
   const interactive = !p.overlay && !p.placeholder
 
   return (
@@ -42,6 +39,7 @@ function CardView(p: CardViewProps) {
       style={p.style}
       {...(p.attributes ?? {})}
       {...(p.listeners ?? {})}
+      onClick={interactive ? p.onOpenDetail : undefined}
       className={[
         'group relative rounded-xl border px-3 py-2.5 outline-none select-none',
         'transition-[transform,box-shadow,background-color,border-color] duration-150 ease-out',
@@ -49,7 +47,7 @@ function CardView(p: CardViewProps) {
           ? 'border-dashed border-indigo-300/80 bg-indigo-50/40 shadow-none'
           : p.overlay
             ? 'rotate-[1.5deg] scale-[1.03] cursor-grabbing border-slate-200 bg-white shadow-[0_18px_36px_-12px_rgba(15,23,42,0.35)]'
-            : 'cursor-grab border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:-translate-y-px hover:shadow-[0_8px_18px_-8px_rgba(15,23,42,0.22)]',
+            : 'cursor-pointer border-slate-200/80 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)] hover:-translate-y-px hover:shadow-[0_8px_18px_-8px_rgba(15,23,42,0.22)]',
       ].join(' ')}
     >
       <div className={p.placeholder ? 'invisible' : undefined}>
@@ -69,64 +67,81 @@ function CardView(p: CardViewProps) {
           </button>
         )}
 
-        {/* 标题：单击进入 inline 编辑 */}
-        {p.editingTitle ? (
-          <input
-            autoFocus
-            value={p.draftTitle}
-            onChange={(e) => p.setDraftTitle(e.target.value)}
-            onFocus={(e) => e.currentTarget.select()}
-            onBlur={p.commitTitle}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') p.commitTitle()
-              if (e.key === 'Escape') p.cancelTitle()
-            }}
-            onPointerDown={(e) => e.stopPropagation()}
-            placeholder="输入卡片标题…"
-            className="w-full rounded-md border border-indigo-300 bg-white px-1.5 py-1 text-sm font-medium leading-snug text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-200"
-          />
-        ) : (
-          <p
-            onClick={interactive ? p.startTitleEdit : undefined}
-            title={interactive ? '点击编辑标题' : undefined}
-            className={`pr-5 text-sm font-medium leading-snug ${
-              p.card.title ? 'text-slate-800' : 'text-slate-300'
-            } ${interactive ? 'cursor-text' : ''}`}
-          >
-            {p.card.title || '未命名卡片'}
-          </p>
-        )}
-
-        {/* comment 复盘小字预览，为空不渲染 */}
-        {p.card.comment && (
-          <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-slate-400">
-            {p.card.comment}
-          </p>
-        )}
-
-        {/* 指标行：已发布展示 产品 · ROI · 曝光 · 互动；未发布展示待发布态 */}
-        {published ? (
-          <p className="mt-1.5 truncate text-[11px] tabular-nums text-slate-400">
-            {product?.name ?? p.card.product_id} · ROI {formatRoi(p.card.roi!)} · 曝光{' '}
-            {formatCompact(p.card.propagation_4h ?? 0)} · 互动{' '}
-            {formatCompact(p.card.engagement_4h ?? 0)}
-          </p>
-        ) : (
-          <p className="mt-1.5 truncate text-[11px] text-slate-300">
-            待发布 · {product?.name ?? p.card.product_id}
-          </p>
-        )}
-
-        {/* 底行：publish_at 时分胶囊（仅展示） + 类型彩色胶囊 */}
-        <div className="mt-2 flex items-center justify-between gap-2">
-          <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-500">
-            {publishTimeOf(p.card)}
-          </span>
+        {/* 顶部行：类型胶囊 + 状态点（hover 时让位给删除按钮） */}
+        <div className="flex items-center justify-between">
           <span
             className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${tag.pill}`}
           >
             <span className={`h-1.5 w-1.5 rounded-full ${tag.dot}`} />
             {tag.label}
+          </span>
+          <span
+            title={published ? '已发布' : '待发布'}
+            className={`h-1.5 w-1.5 rounded-full transition-opacity duration-150 group-hover:opacity-0 ${
+              published ? 'bg-emerald-500' : 'bg-slate-300'
+            }`}
+          />
+        </div>
+
+        {/* 标题（第一张 p，e2e 钩子 data-card-title） */}
+        <p
+          data-card-title
+          className={`mt-1.5 line-clamp-2 pr-5 text-sm font-semibold leading-snug ${
+            p.card.title ? 'text-slate-800' : 'text-slate-300'
+          }`}
+        >
+          {p.card.title || '未命名卡片'}
+        </p>
+
+        {/* comment 单行预览，为空不渲染 */}
+        {p.card.comment && (
+          <p className="mt-0.5 line-clamp-1 text-xs text-slate-400">{p.card.comment}</p>
+        )}
+
+        {/* 指标区：已发布 = 3 列迷你统计格 + 互动率细条；待发布 = 虚线占位 */}
+        {published ? (
+          <>
+            <div className="mt-2 grid grid-cols-3 divide-x divide-slate-100 rounded-lg bg-slate-50/80 py-1.5">
+              <div className="px-1 text-center">
+                <p className="text-[10px] leading-tight text-slate-400">ROI</p>
+                <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
+                  {formatRoi(p.card.roi!)}
+                </p>
+              </div>
+              <div className="px-1 text-center">
+                <p className="text-[10px] leading-tight text-slate-400">曝光·4h</p>
+                <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
+                  {formatCompact(p.card.propagation_4h ?? 0)}
+                </p>
+              </div>
+              <div className="px-1 text-center">
+                <p className="text-[10px] leading-tight text-slate-400">互动·4h</p>
+                <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
+                  {formatCompact(p.card.engagement_4h ?? 0)}
+                </p>
+              </div>
+            </div>
+            {/* 互动率细进度条：一眼看出内容质量 */}
+            <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-slate-100">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-500"
+                style={{ width: `${Math.round(rate * 100)}%` }}
+              />
+            </div>
+          </>
+        ) : (
+          <div className="mt-2 rounded-lg border border-dashed border-slate-200 py-2 text-center text-[11px] text-slate-300">
+            待发布
+          </div>
+        )}
+
+        {/* 底行：publish_at 时分胶囊 + 产品名 */}
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-500">
+            {publishTimeOf(p.card)}
+          </span>
+          <span className="truncate text-[11px] text-slate-400">
+            {product?.name ?? p.card.product_id}
           </span>
         </div>
       </div>
@@ -135,66 +150,24 @@ function CardView(p: CardViewProps) {
 }
 
 // ---------------------------------------------------------------------------
-// SortableCard：挂载 useSortable；编辑态禁用拖拽
+// SortableCard：挂载 useSortable
 // ---------------------------------------------------------------------------
 interface SortableCardProps {
   card: ContentItem
-  autoEditTitle: boolean
-  onEditEnd: () => void
-  onUpdate: (id: string, patch: Partial<ContentItem>) => void
+  onOpenDetail: (id: string) => void
   onDelete: (id: string) => void
 }
 
-export default function SortableCard({
-  card,
-  autoEditTitle,
-  onEditEnd,
-  onUpdate,
-  onDelete,
-}: SortableCardProps) {
-  const [editingTitle, setEditingTitle] = useState(false)
-  const [draftTitle, setDraftTitle] = useState(card.title)
-
+export default function SortableCard({ card, onOpenDetail, onDelete }: SortableCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
     data: { type: 'card', date: publishDateOf(card) },
-    disabled: editingTitle,
   })
-
-  // 新增空卡片后立即进入标题编辑态
-  useEffect(() => {
-    if (autoEditTitle) {
-      setDraftTitle(card.title)
-      setEditingTitle(true)
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoEditTitle])
-
-  const startTitleEdit = () => {
-    setDraftTitle(card.title)
-    setEditingTitle(true)
-  }
-  const commitTitle = () => {
-    const t = draftTitle.trim()
-    if (t && t !== card.title) onUpdate(card.id, { title: t })
-    setEditingTitle(false)
-    onEditEnd()
-  }
-  const cancelTitle = () => {
-    setDraftTitle(card.title)
-    setEditingTitle(false)
-    onEditEnd()
-  }
 
   return (
     <CardView
       card={card}
-      editingTitle={editingTitle}
-      draftTitle={draftTitle}
-      setDraftTitle={setDraftTitle}
-      startTitleEdit={startTitleEdit}
-      commitTitle={commitTitle}
-      cancelTitle={cancelTitle}
+      onOpenDetail={() => onOpenDetail(card.id)}
       onDelete={() => onDelete(card.id)}
       placeholder={isDragging}
       setNodeRef={setNodeRef}
@@ -208,17 +181,5 @@ export default function SortableCard({
 // DragOverlay 用的静态副本
 export function OverlayCard({ card }: { card: ContentItem }) {
   const noop = () => undefined
-  return (
-    <CardView
-      card={card}
-      editingTitle={false}
-      draftTitle={card.title}
-      setDraftTitle={noop}
-      startTitleEdit={noop}
-      commitTitle={noop}
-      cancelTitle={noop}
-      onDelete={noop}
-      overlay
-    />
-  )
+  return <CardView card={card} onOpenDetail={noop} onDelete={noop} overlay />
 }

@@ -7,9 +7,7 @@ import SortableCard from './BoardCard'
 interface DayColumnProps {
   day: DayInfo
   cards: ContentItem[] // 已按 orders 排序
-  editingCardId: string | null
-  onEditEnd: () => void
-  onUpdate: (id: string, patch: Partial<ContentItem>) => void
+  onOpenDetail: (id: string) => void
   onDelete: (id: string) => void
   onAddCard: (date: string) => void
 }
@@ -17,9 +15,7 @@ interface DayColumnProps {
 export default function DayColumn({
   day,
   cards,
-  editingCardId,
-  onEditEnd,
-  onUpdate,
+  onOpenDetail,
   onDelete,
   onAddCard,
 }: DayColumnProps) {
@@ -79,9 +75,7 @@ export default function DayColumn({
               <SortableCard
                 key={card.id}
                 card={card}
-                autoEditTitle={card.id === editingCardId}
-                onEditEnd={onEditEnd}
-                onUpdate={onUpdate}
+                onOpenDetail={onOpenDetail}
                 onDelete={onDelete}
               />
             ))}

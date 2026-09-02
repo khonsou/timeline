@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import TopBar from '@/components/TopBar'
 import Board, { type BoardApi } from '@/components/board/Board'
+import DetailDialog from '@/components/board/DetailDialog'
 import type { ContentItem, ContentType } from '@/types/content'
 import {
   PRODUCTS,
@@ -71,7 +72,9 @@ const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 export default function App() {
   const [state, setState] = useState<PersistedState>(loadState)
   const { items, orders } = state
-  const [editingCardId, setEditingCardId] = useState<string | null>(null)
+  // 详情弹窗：detailCardId = 打开的卡片；detailAutoEdit = 新增后标题直接进入编辑
+  const [detailCardId, setDetailCardId] = useState<string | null>(null)
+  const [detailAutoEdit, setDetailAutoEdit] = useState(false)
   const boardApiRef = useRef<BoardApi | null>(null)
 
   // 每次变更写入 localStorage
@@ -107,6 +110,11 @@ export default function App() {
     setItems((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
 
   const deleteCard = (id: string) => {
+    // 删除详情中正在展示的卡片时关闭弹窗
+    if (id === detailCardId) {
+      setDetailCardId(null)
+      setDetailAutoEdit(false)
+    }
     setItems((prev) => prev.filter((c) => c.id !== id))
     setOrders((prev) => {
       const next = { ...prev }
@@ -115,10 +123,19 @@ export default function App() {
     })
   }
 
+  const openDetail = (id: string) => {
+    setDetailAutoEdit(false)
+    setDetailCardId(id)
+  }
+  const closeDetail = () => {
+    setDetailCardId(null)
+    setDetailAutoEdit(false)
+  }
+
   // 新增空卡片：publish_at = 该列日期 + （今天列用当前 HH:mm，其他列 09:00），
-  // 指标 null，order = 列内末尾，立即进入标题编辑态。
+  // 指标 null，order = 列内末尾；创建后直接打开详情弹窗且标题处于编辑态。
   // id / 随机字段在 updater 外生成：updater 必须保持纯函数（StrictMode 会双调用），
-  // 且 setEditingCardId 不能在 setState 的 updater 里调用（副作用会导致编辑态丢失）
+  // 且 setDetailCardId 不能在 setState 的 updater 里调用（副作用会导致状态丢失）
   const addCard = (date: string) => {
     const id = uid()
     const type = TYPE_KEYS[Math.floor(Math.random() * TYPE_KEYS.length)]
@@ -140,15 +157,18 @@ export default function App() {
     }
     setItems((prev) => [...prev, item])
     setOrders((prev) => ({ ...prev, [id]: order }))
-    setEditingCardId(id)
+    setDetailAutoEdit(true)
+    setDetailCardId(id)
   }
 
   const addToToday = () => addCard(todayStr())
 
   const resetData = () => {
-    setEditingCardId(null)
+    closeDetail()
     setState(generateContent())
   }
+
+  const detailCard = detailCardId ? (items.find((c) => c.id === detailCardId) ?? null) : null
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-[#f4f5f7] text-slate-800">
@@ -165,12 +185,17 @@ export default function App() {
         orders={orders}
         setItems={setItems}
         setOrders={setOrders}
-        editingCardId={editingCardId}
-        onEditEnd={() => setEditingCardId(null)}
-        onUpdate={updateCard}
+        onOpenDetail={openDetail}
         onDelete={deleteCard}
         onAddCard={addCard}
         apiRef={boardApiRef}
+      />
+      <DetailDialog
+        card={detailCard}
+        autoEditTitle={detailAutoEdit}
+        onClose={closeDetail}
+        onUpdate={updateCard}
+        onDelete={deleteCard}
       />
     </div>
   )

@@ -14,3 +14,13 @@ export function formatCompact(n: number): string {
 export function formatRoi(r: number): string {
   return `×${r.toFixed(1)}`
 }
+
+const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六']
+
+/** publish_at 展示："YYYY-MM-DDTHH:mm" → "9月2日 周三 14:30" */
+export function formatPublishAt(publishAt: string): string {
+  const [datePart, timePart] = publishAt.split('T')
+  const [y, m, d] = datePart.split('-').map(Number)
+  const wd = WEEK_LABELS[new Date(y, m - 1, d).getDay()]
+  return `${m}月${d}日 周${wd} ${timePart}`
+}

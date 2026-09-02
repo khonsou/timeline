@@ -25,9 +25,7 @@ interface BoardProps {
   orders: Orders
   setItems: React.Dispatch<React.SetStateAction<ContentItem[]>>
   setOrders: React.Dispatch<React.SetStateAction<Orders>>
-  editingCardId: string | null
-  onEditEnd: () => void
-  onUpdate: (id: string, patch: Partial<ContentItem>) => void
+  onOpenDetail: (id: string) => void
   onDelete: (id: string) => void
   onAddCard: (date: string) => void
   apiRef: React.MutableRefObject<BoardApi | null>
@@ -40,9 +38,7 @@ export default function Board({
   orders,
   setItems,
   setOrders,
-  editingCardId,
-  onEditEnd,
-  onUpdate,
+  onOpenDetail,
   onDelete,
   onAddCard,
   apiRef,
@@ -51,6 +47,8 @@ export default function Board({
   const [fab, setFab] = useState<{ dir: 'left' | 'right' } | null>(null)
   const snapshotRef = useRef<{ items: ContentItem[]; orders: Orders } | null>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
+  // 拖拽结束后抑制紧随其后的 click，避免误开详情弹窗
+  const suppressClickRef = useRef(false)
   const days = buildDays()
   const TODAY = todayStr()
 
@@ -125,8 +123,18 @@ export default function Board({
   // 跨日拖拽：更新 publish_at 的日期部分、保留时分（数据层语义变更）
   // 同列排序：只动 orders（不碰实体）
   // ------------------------------------------------------------------
+  // 拖拽落定/取消后：click 事件紧跟 pointerup 同步触发，之后解除抑制
+  const suppressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scheduleSuppressReset = () => {
+    if (suppressTimer.current) clearTimeout(suppressTimer.current)
+    suppressTimer.current = setTimeout(() => {
+      suppressClickRef.current = false
+    }, 150)
+  }
+
   const handleDragStart = (e: DragStartEvent) => {
     snapshotRef.current = { items, orders }
+    suppressClickRef.current = true // 拖拽期间发生的 click 一律抑制
     setActiveId(String(e.active.id))
   }
 
@@ -173,6 +181,7 @@ export default function Board({
     const { active, over } = e
     setActiveId(null)
     snapshotRef.current = null
+    scheduleSuppressReset()
     if (!over || over.id === active.id) return
     const overDate = over.data.current?.date as string | undefined
     if (overDate === undefined) return
@@ -207,6 +216,7 @@ export default function Board({
     }
     snapshotRef.current = null
     setActiveId(null)
+    scheduleSuppressReset()
   }
 
   return (
@@ -219,17 +229,25 @@ export default function Board({
         onDragEnd={handleDragEnd}
         onDragCancel={handleDragCancel}
       >
-        {/* 看板区域：横向 + 纵向滚动 */}
-        <div ref={scrollerRef} className="h-full overflow-auto">
+        {/* 看板区域：横向 + 纵向滚动；capture 阶段吞掉拖拽后的误触 click */}
+        <div
+          ref={scrollerRef}
+          className="h-full overflow-auto"
+          onClickCapture={(e) => {
+            if (suppressClickRef.current) {
+              suppressClickRef.current = false
+              e.stopPropagation()
+              e.preventDefault()
+            }
+          }}
+        >
           <div className="flex w-max items-stretch gap-3 px-4 pb-5">
             {days.map((day) => (
               <DayColumn
                 key={day.date}
                 day={day}
                 cards={cardsInDay(items, orders, day.date)}
-                editingCardId={editingCardId}
-                onEditEnd={onEditEnd}
-                onUpdate={onUpdate}
+                onOpenDetail={onOpenDetail}
                 onDelete={onDelete}
                 onAddCard={onAddCard}
               />
