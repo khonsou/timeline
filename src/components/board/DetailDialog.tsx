@@ -3,7 +3,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
 import type { ContentItem } from '@/types/content'
-import { PRODUCT_BY_ID, TAGS } from '@/lib/content-data'
+import { TAGS, resolveProduct } from '@/lib/content-data'
 import { formatCompact, formatPublishAt, formatRoi } from '@/lib/format'
 
 interface DetailDialogProps {
@@ -47,7 +47,7 @@ export default function DetailDialog({
   }, [editingTitle])
 
   const published = card ? card.roi !== null : false
-  const product = card ? PRODUCT_BY_ID[card.product_id] : undefined
+  const product = card ? resolveProduct(card.product_id) : undefined
   const rate =
     card && card.propagation_4h ? Math.min(1, (card.engagement_4h ?? 0) / card.propagation_4h) : 0
 

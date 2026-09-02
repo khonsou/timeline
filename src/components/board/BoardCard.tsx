@@ -3,7 +3,7 @@ import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ContentItem } from '@/types/content'
-import { PRODUCT_BY_ID, TAGS } from '@/lib/content-data'
+import { TAGS, resolveProduct } from '@/lib/content-data'
 import { publishDateOf, publishTimeOf } from '@/lib/board-view'
 import { formatCompact, formatRoi } from '@/lib/format'
 
@@ -26,7 +26,7 @@ interface CardViewProps {
 
 function CardView(p: CardViewProps) {
   const tag = TAGS[p.card.type]
-  const product = PRODUCT_BY_ID[p.card.product_id]
+  const product = resolveProduct(p.card.product_id)
   const published = p.card.roi !== null // 未发布 ⇒ 三个指标一律 null
   const rate = p.card.propagation_4h
     ? Math.min(1, (p.card.engagement_4h ?? 0) / p.card.propagation_4h)

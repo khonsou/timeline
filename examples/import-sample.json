@@ -1,0 +1,100 @@
+{
+  "products": [
+    { "id": "P-1001", "name": "星轨机械键盘 SE" },
+    { "id": "P-1002", "name": "流光蓝牙耳机 Air" },
+    { "id": "P-1003", "name": "云屿香薰机" },
+    { "id": "P-1004", "name": "极昼护眼台灯" },
+    { "id": "P-1005", "name": "脉冲快充数据线" },
+    { "id": "P-1006", "name": "拾光手账本 · 联名款" }
+  ],
+  "items": [
+    {
+      "id": "imp-0001",
+      "title": "星轨键盘 SE 开箱视频",
+      "type": "视频",
+      "publish_at": "2026-08-05T10:30",
+      "roi": 3.8,
+      "comment": "早期投放素材，曝光稳定",
+      "product_id": "P-1001",
+      "propagation_4h": 86400,
+      "engagement_4h": 6900
+    },
+    {
+      "id": "imp-0002",
+      "title": "耳机降噪地铁实测",
+      "type": "视频",
+      "publish_at": "2026-08-28T19:00",
+      "roi": 2.4,
+      "comment": "评论区争议较多，需跟进",
+      "product_id": "P-1002",
+      "propagation_4h": 45200,
+      "engagement_4h": 3100
+    },
+    {
+      "id": "imp-0003",
+      "title": "播客第 13 期预告",
+      "type": "音频",
+      "publish_at": "2026-08-30T08:15",
+      "roi": 1.2,
+      "comment": "",
+      "product_id": "P-1002",
+      "propagation_4h": 12300,
+      "engagement_4h": 980
+    },
+    {
+      "id": "imp-0004",
+      "title": "香薰机直播高光切片",
+      "type": "直播",
+      "publish_at": "2026-09-01T21:30",
+      "roi": 4.5,
+      "comment": "ROI 达标，可追加预算",
+      "product_id": "P-1003",
+      "propagation_4h": 158000,
+      "engagement_4h": 12600
+    },
+    {
+      "id": "imp-0005",
+      "title": "数据日报 · 8 月合集",
+      "type": "数据",
+      "publish_at": "2026-09-01T09:00",
+      "roi": 0.8,
+      "comment": "封面点击率偏低，下期换主图",
+      "product_id": "P-1006",
+      "propagation_4h": 5400,
+      "engagement_4h": 260
+    },
+    {
+      "id": "imp-0006",
+      "title": "台灯新品图文首发",
+      "type": "图文",
+      "publish_at": "2026-09-04T11:00",
+      "roi": null,
+      "comment": "等设计终稿",
+      "product_id": "P-1004",
+      "propagation_4h": null,
+      "engagement_4h": null
+    },
+    {
+      "id": "imp-0007",
+      "title": "数据线快充横评",
+      "type": "视频",
+      "publish_at": "2026-09-10T20:00",
+      "roi": null,
+      "comment": "",
+      "product_id": "P-1005",
+      "propagation_4h": null,
+      "engagement_4h": null
+    },
+    {
+      "id": "imp-0008",
+      "title": "手账本联名专场直播",
+      "type": "直播",
+      "publish_at": "2026-09-20T19:30",
+      "roi": null,
+      "comment": "跨窗口排期，看板自动扩列",
+      "product_id": "P-1006",
+      "propagation_4h": null,
+      "engagement_4h": null
+    }
+  ]
+}

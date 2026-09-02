@@ -49,7 +49,7 @@ export default function Board({
   const scrollerRef = useRef<HTMLDivElement>(null)
   // 拖拽结束后抑制紧随其后的 click，避免误开详情弹窗
   const suppressClickRef = useRef(false)
-  const days = buildDays()
+  const days = buildDays(items) // 窗口数据驱动：max(今天±14, 数据最早/最晚日期)
   const TODAY = todayStr()
 
   // 与 inline 编辑共存：移动 8px 才触发拖拽，点击不触发
@@ -81,13 +81,12 @@ export default function Board({
     [TODAY],
   )
 
-  // 首屏挂载后立即定位（instant，避免开场动画）
-  const didInitScroll = useRef(false)
+  // 首屏挂载后立即定位（instant，避免开场动画）；
+  // 日列窗口变化时（如 CLI seed 异步接管后窗口扩展）重新 instant 定位
+  const windowKey = `${days[0]?.date}/${days.length}`
   useLayoutEffect(() => {
-    if (didInitScroll.current) return
-    didInitScroll.current = true
     scrollToToday('auto', 'edge')
-  }, [scrollToToday])
+  }, [windowKey, scrollToToday])
 
   // 暴露给顶栏「回到今天」按钮
   useEffect(() => {

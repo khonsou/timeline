@@ -47,6 +47,18 @@ export const PRODUCT_BY_ID: Record<string, Product> = Object.fromEntries(
   PRODUCTS.map((p) => [p.id, p]),
 )
 
+// 运行时产品目录：board.json 携带 products 时优先于内置目录；未知 id 降级显示 id 本身
+let runtimeProducts: Record<string, Product> | null = null
+export function setRuntimeProducts(products?: Product[]) {
+  runtimeProducts =
+    products && products.length > 0
+      ? Object.fromEntries(products.map((p) => [p.id, p]))
+      : null
+}
+export function resolveProduct(id: string): Product {
+  return runtimeProducts?.[id] ?? PRODUCT_BY_ID[id] ?? { id, name: id }
+}
+
 // ---------------------------------------------------------------------------
 // 日期工具
 // ---------------------------------------------------------------------------
@@ -59,17 +71,39 @@ export const todayStr = () => fmtDate(new Date())
 
 const WEEK_LABELS = ['日', '一', '二', '三', '四', '五', '六']
 
-export function buildDays(): DayInfo[] {
-  const today = new Date()
-  return Array.from({ length: DAY_COUNT }, (_, i) => {
-    const d = new Date(today)
-    d.setDate(today.getDate() + i - RANGE_DAYS)
+const DAY_MS = 24 * 60 * 60 * 1000
+const dayStart = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate())
+const parseDay = (date: string) => {
+  const [y, m, d] = date.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+
+/**
+ * 生成日列窗口：默认今天 ±14 天；
+ * 传入 items 时窗口由数据驱动——扩到 max(今天±14, 数据最早/最晚日期)，
+ * 保证窗口外（历史/未来）数据也有列可归。
+ */
+export function buildDays(items?: ContentItem[]): DayInfo[] {
+  const today = dayStart(new Date())
+  let start = new Date(today.getTime() - RANGE_DAYS * DAY_MS)
+  let end = new Date(today.getTime() + RANGE_DAYS * DAY_MS)
+  if (items) {
+    for (const it of items) {
+      const d = parseDay(publishDateOf(it))
+      if (d.getTime() < start.getTime()) start = d
+      if (d.getTime() > end.getTime()) end = d
+    }
+  }
+  const count = Math.round((end.getTime() - start.getTime()) / DAY_MS) + 1
+  const todayKey = fmtDate(today)
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(start.getTime() + i * DAY_MS)
     const wd = d.getDay()
     return {
       date: fmtDate(d),
       monthDay: `${d.getMonth() + 1}/${d.getDate()}`,
       week: `周${WEEK_LABELS[wd]}`,
-      isToday: i === RANGE_DAYS,
+      isToday: fmtDate(d) === todayKey,
       isWeekend: wd === 0 || wd === 6,
     }
   })

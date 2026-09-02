@@ -8,12 +8,16 @@ import {
   TYPE_KEYS,
   generateContent,
   pad2,
+  setRuntimeProducts,
   todayStr,
   uid,
+  type Product,
 } from '@/lib/content-data'
 import { nextOrder, publishDateOf, type Orders } from '@/lib/board-view'
 
 const STORAGE_KEY = 'timeline-board-v3'
+const SEED_MARKER_KEY = 'timeline-board-v3:seedImportedAt'
+const SEED_PRODUCTS_KEY = 'timeline-board-v3:seedProducts'
 const PUBLISH_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
 
 interface PersistedState {
@@ -21,45 +25,51 @@ interface PersistedState {
   orders: Orders
 }
 
+// 校验 { items, orders } 结构；合法返回修补后的数据，非法返回 null
+function validateState(parsed: unknown): PersistedState | null {
+  const items = (parsed as PersistedState | null)?.items
+  const orders = (parsed as PersistedState | null)?.orders
+  if (
+    Array.isArray(items) &&
+    items.length > 0 &&
+    items.every(
+      (c) =>
+        c &&
+        typeof c.id === 'string' &&
+        typeof c.title === 'string' &&
+        typeof c.publish_at === 'string' &&
+        PUBLISH_AT_RE.test(c.publish_at) &&
+        TYPE_KEYS.includes(c.type as ContentType) &&
+        typeof c.product_id === 'string' &&
+        typeof c.comment === 'string' &&
+        (typeof c.roi === 'number' || c.roi === null) &&
+        (typeof c.propagation_4h === 'number' || c.propagation_4h === null) &&
+        (typeof c.engagement_4h === 'number' || c.engagement_4h === null),
+    ) &&
+    orders &&
+    typeof orders === 'object' &&
+    !Array.isArray(orders) &&
+    Object.values(orders).every((v) => typeof v === 'number')
+  ) {
+    // 兜底：为缺失 order 的条目补齐到当日列末尾
+    const patched: Orders = { ...(orders as Orders) }
+    for (const item of items as ContentItem[]) {
+      if (typeof patched[item.id] !== 'number') {
+        patched[item.id] = nextOrder(items as ContentItem[], patched, publishDateOf(item))
+      }
+    }
+    return { items: items as ContentItem[], orders: patched }
+  }
+  return null
+}
+
 // localStorage 持久化：启动时读取并校验，非法则重新生成假数据
 function loadState(): PersistedState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) {
-      const parsed: unknown = JSON.parse(raw)
-      const items = (parsed as PersistedState | null)?.items
-      const orders = (parsed as PersistedState | null)?.orders
-      if (
-        Array.isArray(items) &&
-        items.length > 0 &&
-        items.every(
-          (c) =>
-            c &&
-            typeof c.id === 'string' &&
-            typeof c.title === 'string' &&
-            typeof c.publish_at === 'string' &&
-            PUBLISH_AT_RE.test(c.publish_at) &&
-            TYPE_KEYS.includes(c.type as ContentType) &&
-            typeof c.product_id === 'string' &&
-            typeof c.comment === 'string' &&
-            (typeof c.roi === 'number' || c.roi === null) &&
-            (typeof c.propagation_4h === 'number' || c.propagation_4h === null) &&
-            (typeof c.engagement_4h === 'number' || c.engagement_4h === null),
-        ) &&
-        orders &&
-        typeof orders === 'object' &&
-        !Array.isArray(orders) &&
-        Object.values(orders).every((v) => typeof v === 'number')
-      ) {
-        // 兜底：为缺失 order 的条目补齐到当日列末尾
-        const patched: Orders = { ...(orders as Orders) }
-        for (const item of items as ContentItem[]) {
-          if (typeof patched[item.id] !== 'number') {
-            patched[item.id] = nextOrder(items as ContentItem[], patched, publishDateOf(item))
-          }
-        }
-        return { items: items as ContentItem[], orders: patched }
-      }
+      const valid = validateState(JSON.parse(raw))
+      if (valid) return valid
     }
   } catch {
     // 数据损坏时回落到假数据
@@ -76,6 +86,8 @@ export default function App() {
   const [detailCardId, setDetailCardId] = useState<string | null>(null)
   const [detailAutoEdit, setDetailAutoEdit] = useState(false)
   const boardApiRef = useRef<BoardApi | null>(null)
+  // 最近一次从 board.json 看到的 importedAt（重置时吸收标记用）
+  const lastSeedImportedAt = useRef<string | null>(null)
 
   // 每次变更写入 localStorage
   useEffect(() => {
@@ -85,6 +97,67 @@ export default function App() {
       // 存储不可用时静默降级为纯内存状态
     }
   }, [state])
+
+  // ------------------------------------------------------------------
+  // 启动加载顺序：board.json（importedAt 变化才接管）> localStorage > dummy
+  // 同步部分已用 localStorage/dummy 渲染，这里异步检查 CLI 导入的 seed
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    // 上次 seed 携带的产品目录（导入接管时持久化下来的）
+    try {
+      const raw = localStorage.getItem(SEED_PRODUCTS_KEY)
+      if (raw) {
+        const arr: unknown = JSON.parse(raw)
+        if (
+          Array.isArray(arr) &&
+          arr.length > 0 &&
+          arr.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
+        ) {
+          setRuntimeProducts(arr as Product[])
+        }
+      }
+    } catch {
+      // 忽略，回落内置目录
+    }
+
+    let cancelled = false
+    fetch('data/board.json')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((seed: unknown) => {
+        if (cancelled || !seed) return
+        const importedAt = (seed as { importedAt?: unknown }).importedAt
+        const valid = validateState(seed)
+        if (!valid || typeof importedAt !== 'string') return
+        lastSeedImportedAt.current = importedAt
+        // importedAt 与 localStorage 标记相同 ⇒ 用户编辑已在 localStorage，不再接管
+        if (localStorage.getItem(SEED_MARKER_KEY) === importedAt) return
+
+        const products = (seed as { products?: unknown }).products
+        try {
+          if (
+            Array.isArray(products) &&
+            products.length > 0 &&
+            products.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
+          ) {
+            setRuntimeProducts(products as Product[])
+            localStorage.setItem(SEED_PRODUCTS_KEY, JSON.stringify(products))
+          } else {
+            setRuntimeProducts(undefined)
+            localStorage.removeItem(SEED_PRODUCTS_KEY)
+          }
+          localStorage.setItem(SEED_MARKER_KEY, importedAt)
+        } catch {
+          // 存储不可用时仅内存生效
+        }
+        setState(valid)
+      })
+      .catch(() => {
+        // 404 / 解析失败：静默跳过
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // 当天日期动态显示
   const dateStr = useMemo(() => {
@@ -165,6 +238,14 @@ export default function App() {
 
   const resetData = () => {
     closeDetail()
+    // 重置 = 清 localStorage 并重新生成 dummy。
+    // 吸收当前 seed 标记：重置后旧 board.json 不再接管；
+    // 再次 CLI 导入（新 importedAt）才会重新接管
+    try {
+      localStorage.setItem(SEED_MARKER_KEY, lastSeedImportedAt.current ?? '')
+    } catch {
+      // ignore
+    }
     setState(generateContent())
   }
 
