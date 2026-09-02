@@ -4,7 +4,7 @@ import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ContentItem } from '@/types/content'
 import { TAGS, resolveProduct } from '@/lib/content-data'
-import { publishDateOf, publishTimeOf } from '@/lib/board-view'
+import { publishDateOf, publishTimeOf, isPublished } from '@/lib/board-view'
 import { formatCompact, formatRoi } from '@/lib/format'
 
 // ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ interface CardViewProps {
 function CardView(p: CardViewProps) {
   const tag = TAGS[p.card.type]
   const product = resolveProduct(p.card.product_id)
-  const published = p.card.roi !== null // 未发布 ⇒ 三个指标一律 null
+  const published = isPublished(p.card) // publish_at ≤ now；已发布但指标为 null 的边界显示 —
   const rate = p.card.propagation_4h
     ? Math.min(1, (p.card.engagement_4h ?? 0) / p.card.propagation_4h)
     : 0
@@ -105,19 +105,19 @@ function CardView(p: CardViewProps) {
               <div className="px-1 text-center">
                 <p className="text-[10px] leading-tight text-slate-400">ROI</p>
                 <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
-                  {formatRoi(p.card.roi!)}
+                  {p.card.roi === null ? '—' : formatRoi(p.card.roi)}
                 </p>
               </div>
               <div className="px-1 text-center">
                 <p className="text-[10px] leading-tight text-slate-400">曝光·4h</p>
                 <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
-                  {formatCompact(p.card.propagation_4h ?? 0)}
+                  {p.card.propagation_4h === null ? '—' : formatCompact(p.card.propagation_4h)}
                 </p>
               </div>
               <div className="px-1 text-center">
                 <p className="text-[10px] leading-tight text-slate-400">互动·4h</p>
                 <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
-                  {formatCompact(p.card.engagement_4h ?? 0)}
+                  {p.card.engagement_4h === null ? '—' : formatCompact(p.card.engagement_4h)}
                 </p>
               </div>
             </div>

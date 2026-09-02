@@ -179,8 +179,27 @@ export default function App() {
       orders: typeof updater === 'function' ? updater(prev.orders) : updater,
     }))
 
-  const updateCard = (id: string, patch: Partial<ContentItem>) =>
+  const updateCard = (id: string, patch: Partial<ContentItem>) => {
+    // publish_at 语义：日期部分变化 → 卡片移到目标日列末尾（orders 更新）；
+    // 改到未来 → 三指标强制置 null（与 CLI 导入同口径的未发布语义）
+    const newPublishAt = patch.publish_at
+    if (typeof newPublishAt === 'string') {
+      const item = items.find((c) => c.id === id)
+      if (item) {
+        const now = new Date()
+        const nowKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+        if (newPublishAt > nowKey) {
+          patch = { ...patch, roi: null, propagation_4h: null, engagement_4h: null }
+        }
+        const newDate = newPublishAt.slice(0, 10)
+        if (newDate !== publishDateOf(item)) {
+          const order = nextOrder(items, orders, newDate)
+          setOrders((prev) => ({ ...prev, [id]: order }))
+        }
+      }
+    }
     setItems((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
+  }
 
   const deleteCard = (id: string) => {
     // 删除详情中正在展示的卡片时关闭弹窗

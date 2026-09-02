@@ -73,3 +73,12 @@
     @apply bg-background text-foreground;
   }
 }
+/* v6: 非法输入轻微抖动提示 */
+@keyframes shake-x {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  75% { transform: translateX(3px); }
+}
+.animate-shake {
+  animation: shake-x 0.16s ease-in-out 2;
+}

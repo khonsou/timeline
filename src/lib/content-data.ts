@@ -59,6 +59,15 @@ export function resolveProduct(id: string): Product {
   return runtimeProducts?.[id] ?? PRODUCT_BY_ID[id] ?? { id, name: id }
 }
 
+/** 当前生效的产品目录：内置 PRODUCTS + 运行时（seed products 优先覆盖）去重合并 */
+export function listProducts(): Product[] {
+  const map = new Map(PRODUCTS.map((p) => [p.id, p]))
+  if (runtimeProducts) {
+    for (const p of Object.values(runtimeProducts)) map.set(p.id, p)
+  }
+  return [...map.values()]
+}
+
 // ---------------------------------------------------------------------------
 // 日期工具
 // ---------------------------------------------------------------------------

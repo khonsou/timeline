@@ -3,8 +3,11 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
 import type { ContentItem } from '@/types/content'
-import { TAGS, resolveProduct } from '@/lib/content-data'
+import { TAGS, listProducts, resolveProduct } from '@/lib/content-data'
+import { isPublished } from '@/lib/board-view'
 import { formatCompact, formatPublishAt, formatRoi } from '@/lib/format'
+
+type EditField = 'publish_at' | 'product_id' | 'roi' | 'propagation_4h' | 'engagement_4h' | 'rate'
 
 interface DetailDialogProps {
   card: ContentItem | null // null = 关闭
@@ -13,6 +16,11 @@ interface DetailDialogProps {
   onUpdate: (id: string, patch: Partial<ContentItem>) => void
   onDelete: (id: string) => void
 }
+
+const INPUT_BASE =
+  'w-full rounded-md border bg-white px-1.5 py-1 text-sm tabular-nums text-slate-700 focus:outline-none focus:ring-2'
+const INPUT_OK = 'border-indigo-300 focus:ring-indigo-200'
+const INPUT_BAD = 'border-rose-400 focus:ring-rose-200 animate-shake'
 
 export default function DetailDialog({
   card,
@@ -25,12 +33,18 @@ export default function DetailDialog({
   const [draftTitle, setDraftTitle] = useState('')
   const [editingComment, setEditingComment] = useState(false)
   const [draftComment, setDraftComment] = useState('')
+  // 6 项字段的统一 inline 编辑状态
+  const [editingField, setEditingField] = useState<EditField | null>(null)
+  const [draft, setDraft] = useState('')
+  const [invalid, setInvalid] = useState(false)
   const titleInputRef = useRef<HTMLInputElement>(null)
 
   // 打开另一张卡时重置编辑态；新增空卡片直接标题编辑
   const cardId = card?.id
   useEffect(() => {
     setEditingComment(false)
+    setEditingField(null)
+    setInvalid(false)
     if (cardId && autoEditTitle) {
       setDraftTitle('')
       setEditingTitle(true)
@@ -46,11 +60,13 @@ export default function DetailDialog({
     }
   }, [editingTitle])
 
-  const published = card ? card.roi !== null : false
+  const published = card ? isPublished(card) : false
   const product = card ? resolveProduct(card.product_id) : undefined
   const rate =
     card && card.propagation_4h ? Math.min(1, (card.engagement_4h ?? 0) / card.propagation_4h) : 0
+  const rateEditable = !!card && published && !!card.propagation_4h
 
+  // ---------------- 标题 / 备注（原有模式） ----------------
   const commitTitle = () => {
     if (!card) return
     const t = draftTitle.trim()
@@ -72,12 +88,93 @@ export default function DetailDialog({
   }
   const cancelComment = () => setEditingComment(false)
 
+  // ---------------- 6 项字段编辑 ----------------
+  const startField = (field: EditField, initial: string) => {
+    setEditingField(field)
+    setDraft(initial)
+    setInvalid(false)
+  }
+  const cancelField = () => {
+    setEditingField(null)
+    setInvalid(false)
+  }
+
+  /** 校验并提交；非法输入：不保存，红边抖动提示；失焦时非法则直接回退 */
+  const commitField = (fromBlur = false) => {
+    if (!card || !editingField) return
+    const bad = () => {
+      if (fromBlur) cancelField()
+      else setInvalid(true)
+    }
+    const v = draft.trim()
+
+    switch (editingField) {
+      case 'publish_at': {
+        if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v)) return bad()
+        const [dp, tp] = v.split('T')
+        const [y, m, d] = dp.split('-').map(Number)
+        const [h, mi] = tp.split(':').map(Number)
+        const dt = new Date(y, m - 1, d, h, mi)
+        if (dt.getFullYear() !== y || dt.getMonth() !== m - 1 || dt.getDate() !== d || h > 23 || mi > 59)
+          return bad()
+        if (v !== card.publish_at) onUpdate(card.id, { publish_at: v })
+        break
+      }
+      case 'roi': {
+        if (!/^\d+(\.\d+)?$/.test(v)) return bad()
+        const n = Math.round(Number(v) * 10) / 10
+        if (n !== card.roi) onUpdate(card.id, { roi: n })
+        break
+      }
+      case 'propagation_4h': {
+        if (!/^\d+$/.test(v)) return bad()
+        const n = Math.round(Number(v))
+        if (n !== card.propagation_4h) onUpdate(card.id, { propagation_4h: n })
+        break
+      }
+      case 'engagement_4h': {
+        if (!/^\d+$/.test(v)) return bad()
+        const n = Math.round(Number(v))
+        if (n !== card.engagement_4h) onUpdate(card.id, { engagement_4h: n })
+        break
+      }
+      case 'rate': {
+        // 百分数输入（6.4 = 6.4%），反推 engagement_4h = round(propagation × rate)
+        if (!/^\d+(\.\d+)?$/.test(v)) return bad()
+        if (!card.propagation_4h) return bad()
+        const n = Math.round(card.propagation_4h * (Number(v) / 100))
+        if (n !== card.engagement_4h) onUpdate(card.id, { engagement_4h: n })
+        break
+      }
+    }
+    cancelField()
+  }
+
+  const fieldKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') commitField()
+    if (e.key === 'Escape') {
+      e.stopPropagation()
+      cancelField()
+    }
+  }
+
+  // 可编辑统计小格的容器样式（hover 编辑提示）
+  const cellCls =
+    'group/cell cursor-pointer rounded-lg px-3 py-1 text-center transition-colors hover:bg-white'
+  const inputCls = `${INPUT_BASE} ${invalid ? INPUT_BAD : INPUT_OK} text-center`
+
   return (
     <Dialog open={!!card} onOpenChange={(open) => !open && onClose()}>
       <DialogPortal>
         <DialogOverlay className="bg-slate-900/40 backdrop-blur-sm" />
         <DialogPrimitive.Content
           data-slot="dialog-content"
+          onEscapeKeyDown={(e) => {
+            // 任意 inline 编辑态时 Esc 只取消编辑、不关弹窗：
+            // Radix 在 document 监听 Escape，输入框内的 stopPropagation 挡不住，
+            // 必须在弹窗层 preventDefault（读到的是当前渲染的编辑态，先于取消生效）
+            if (editingTitle || editingComment || editingField) e.preventDefault()
+          }}
           className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none sm:max-w-md"
         >
           {card && (
@@ -144,63 +241,192 @@ export default function DetailDialog({
                 </h2>
               )}
 
-              {/* 3. 信息网格 */}
+              {/* 3. 信息网格：计划发布时间 / 归属产品（均可点击编辑） */}
               <div className="mt-4 grid grid-cols-2 gap-3">
                 <div className="rounded-xl bg-slate-50 px-3 py-2.5">
                   <p className="text-[10px] text-slate-400">计划发布时间</p>
-                  <p className="mt-0.5 text-[13px] font-medium tabular-nums text-slate-700">
-                    {formatPublishAt(card.publish_at)}
-                  </p>
+                  {editingField === 'publish_at' ? (
+                    <input
+                      data-edit-input="publish_at"
+                      autoFocus
+                      type="datetime-local"
+                      value={draft}
+                      onChange={(e) => {
+                        setDraft(e.target.value)
+                        setInvalid(false)
+                      }}
+                      onBlur={() => commitField(true)}
+                      onKeyDown={fieldKeyDown}
+                      className={`mt-0.5 ${INPUT_BASE} ${invalid ? INPUT_BAD : INPUT_OK}`}
+                    />
+                  ) : (
+                    <p
+                      data-edit-field="publish_at"
+                      onClick={() => startField('publish_at', card.publish_at)}
+                      title="点击编辑"
+                      className="mt-0.5 cursor-pointer rounded px-1 -mx-1 text-[13px] font-medium tabular-nums text-slate-700 transition-colors hover:bg-white"
+                    >
+                      {formatPublishAt(card.publish_at)}
+                    </p>
+                  )}
                 </div>
                 <div className="rounded-xl bg-slate-50 px-3 py-2.5">
                   <p className="text-[10px] text-slate-400">归属产品</p>
-                  <p className="mt-0.5 truncate text-[13px] font-medium text-slate-700">
-                    {product?.name ?? card.product_id}{' '}
-                    <span className="text-[11px] font-normal text-slate-400">{card.product_id}</span>
-                  </p>
+                  {editingField === 'product_id' ? (
+                    <select
+                      data-edit-input="product_id"
+                      autoFocus
+                      value={draft}
+                      onChange={(e) => {
+                        onUpdate(card.id, { product_id: e.target.value })
+                        cancelField()
+                      }}
+                      onBlur={cancelField}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.stopPropagation()
+                          cancelField()
+                        }
+                      }}
+                      className={`mt-0.5 ${INPUT_BASE} ${INPUT_OK}`}
+                    >
+                      {listProducts().map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}（{p.id}）
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <p
+                      data-edit-field="product_id"
+                      onClick={() => startField('product_id', card.product_id)}
+                      title="点击编辑"
+                      className="mt-0.5 cursor-pointer truncate rounded px-1 -mx-1 text-[13px] font-medium text-slate-700 transition-colors hover:bg-white"
+                    >
+                      {product?.name ?? card.product_id}{' '}
+                      <span className="text-[11px] font-normal text-slate-400">{card.product_id}</span>
+                    </p>
+                  )}
                 </div>
               </div>
 
-              {/* 4. 指标区 */}
+              {/* 4. 指标区：已发布 = 可编辑统计格 + 可编辑互动率；待发布 = 占位 + 引导 */}
               {published ? (
                 <div className="mt-4">
-                  <div className="grid grid-cols-3 divide-x divide-slate-100 rounded-xl border border-slate-100 bg-slate-50/60 py-3">
-                    <div className="px-3 text-center">
+                  <div className="grid grid-cols-3 divide-x divide-slate-100 rounded-xl border border-slate-100 bg-slate-50/60 py-2">
+                    {/* ROI */}
+                    <div className={cellCls} data-edit-field="roi" onClick={() => editingField !== 'roi' && startField('roi', card.roi === null ? '' : String(card.roi))} title="点击编辑">
                       <p className="text-[10px] text-slate-400">ROI</p>
-                      <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
-                        {formatRoi(card.roi!)}
-                      </p>
+                      {editingField === 'roi' ? (
+                        <input
+                          data-edit-input="roi"
+                          autoFocus
+                          type="number"
+                          step={0.1}
+                          min={0}
+                          value={draft}
+                          onChange={(e) => { setDraft(e.target.value); setInvalid(false) }}
+                          onBlur={() => commitField(true)}
+                          onKeyDown={fieldKeyDown}
+                          className={`mt-0.5 ${inputCls}`}
+                        />
+                      ) : (
+                        <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
+                          {card.roi === null ? '—' : formatRoi(card.roi)}
+                        </p>
+                      )}
                     </div>
-                    <div className="px-3 text-center">
+                    {/* 曝光·4h */}
+                    <div className={cellCls} data-edit-field="propagation_4h" onClick={() => editingField !== 'propagation_4h' && startField('propagation_4h', card.propagation_4h === null ? '' : String(card.propagation_4h))} title="点击编辑">
                       <p className="text-[10px] text-slate-400">曝光 · 4h</p>
-                      <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
-                        {formatCompact(card.propagation_4h ?? 0)}
-                      </p>
+                      {editingField === 'propagation_4h' ? (
+                        <input
+                          data-edit-input="propagation_4h"
+                          autoFocus
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={draft}
+                          onChange={(e) => { setDraft(e.target.value); setInvalid(false) }}
+                          onBlur={() => commitField(true)}
+                          onKeyDown={fieldKeyDown}
+                          className={`mt-0.5 ${inputCls}`}
+                        />
+                      ) : (
+                        <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
+                          {card.propagation_4h === null ? '—' : formatCompact(card.propagation_4h)}
+                        </p>
+                      )}
                     </div>
-                    <div className="px-3 text-center">
+                    {/* 互动·4h */}
+                    <div className={cellCls} data-edit-field="engagement_4h" onClick={() => editingField !== 'engagement_4h' && startField('engagement_4h', card.engagement_4h === null ? '' : String(card.engagement_4h))} title="点击编辑">
                       <p className="text-[10px] text-slate-400">互动 · 4h</p>
-                      <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
-                        {formatCompact(card.engagement_4h ?? 0)}
-                      </p>
+                      {editingField === 'engagement_4h' ? (
+                        <input
+                          data-edit-input="engagement_4h"
+                          autoFocus
+                          type="number"
+                          min={0}
+                          step={1}
+                          value={draft}
+                          onChange={(e) => { setDraft(e.target.value); setInvalid(false) }}
+                          onBlur={() => commitField(true)}
+                          onKeyDown={fieldKeyDown}
+                          className={`mt-0.5 ${inputCls}`}
+                        />
+                      ) : (
+                        <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
+                          {card.engagement_4h === null ? '—' : formatCompact(card.engagement_4h)}
+                        </p>
+                      )}
                     </div>
                   </div>
-                  {/* 互动率 = engagement_4h / propagation_4h */}
+                  {/* 互动率（派生，可编辑反推 engagement_4h） */}
                   <div className="mt-2.5 flex items-center gap-2">
                     <span className="text-[10px] text-slate-400">互动率</span>
                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-500"
+                        className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-500 transition-all duration-150"
                         style={{ width: `${Math.round(rate * 100)}%` }}
                       />
                     </div>
-                    <span className="text-[11px] font-medium tabular-nums text-indigo-600">
-                      {(rate * 100).toFixed(1)}%
-                    </span>
+                    {editingField === 'rate' ? (
+                      <input
+                        data-edit-input="rate"
+                        autoFocus
+                        type="number"
+                        min={0}
+                        step={0.1}
+                        value={draft}
+                        onChange={(e) => { setDraft(e.target.value); setInvalid(false) }}
+                        onBlur={() => commitField(true)}
+                        onKeyDown={fieldKeyDown}
+                        className={`w-16 ${INPUT_BASE} ${invalid ? INPUT_BAD : INPUT_OK} text-center`}
+                      />
+                    ) : rateEditable ? (
+                      <button
+                        type="button"
+                        data-edit-field="rate"
+                        title="点击编辑（反推互动量）"
+                        onClick={() => startField('rate', (rate * 100).toFixed(1))}
+                        className="cursor-pointer rounded px-1 text-[11px] font-medium tabular-nums text-indigo-600 transition-colors hover:bg-indigo-50"
+                      >
+                        {(rate * 100).toFixed(1)}%
+                      </button>
+                    ) : (
+                      <span className="text-[11px] tabular-nums text-slate-300" title="需先有曝光量">
+                        {card.propagation_4h ? `${(rate * 100).toFixed(1)}%` : '—'}
+                        <span className="ml-1 text-[10px]">需先有曝光量</span>
+                      </span>
+                    )}
                   </div>
                 </div>
               ) : (
-                <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-6 text-center text-xs text-slate-300">
-                  内容待发布，发布后 4 小时数据将在此展示
+                <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-5 text-center">
+                  <p className="text-xs text-slate-300">内容待发布，发布后 4 小时数据将在此展示</p>
+                  <p className="mt-1 text-[10px] text-slate-300">
+                    将计划发布时间改到过去即可录入数据
+                  </p>
                 </div>
               )}
 
