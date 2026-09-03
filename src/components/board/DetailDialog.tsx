@@ -38,6 +38,28 @@ const INPUT_BASE =
 const INPUT_OK = 'border-indigo-300 focus:ring-indigo-200'
 const INPUT_BAD = 'border-rose-400 focus:ring-rose-200 animate-shake'
 
+/** 备注展示态：纯文本中的 http(s) URL 渲染为可点链接（新标签页打开，点击不冒泡触发弹窗交互） */
+const URL_SPLIT_RE = /(https?:\/\/[^\s，。；）)】"'<>]+)/g
+const URL_TEST_RE = /^https?:\/\//
+function linkify(text: string): React.ReactNode[] {
+  return text.split(URL_SPLIT_RE).map((seg, i) =>
+    URL_TEST_RE.test(seg) ? (
+      <a
+        key={i}
+        href={seg}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="text-indigo-500 underline decoration-indigo-300 underline-offset-2 transition-colors hover:text-indigo-600"
+      >
+        {seg}
+      </a>
+    ) : (
+      seg
+    ),
+  )
+}
+
 export default function DetailDialog({
   card,
   autoEditTitle,
@@ -586,9 +608,21 @@ export default function DetailDialog({
                 </div>
               )}
 
-              {/* 5. 备注区：完整展示 + inline 编辑（textarea） */}
+              {/* 5. 备注区：链接可点的展示态 + 显式「编辑」按钮进入 textarea */}
               <div className="mt-4">
-                <p className="text-[10px] text-slate-400">备注 / 复盘</p>
+                <div className="flex items-center justify-between">
+                  <p className="text-[10px] text-slate-400">备注 / 复盘</p>
+                  {!editingComment && (
+                    <button
+                      type="button"
+                      data-comment-edit
+                      onClick={startCommentEdit}
+                      className="rounded-md px-2 py-0.5 text-[11px] text-slate-400 transition-colors hover:bg-slate-100 hover:text-indigo-600"
+                    >
+                      编辑
+                    </button>
+                  )}
+                </div>
                 {editingComment ? (
                   <textarea
                     data-edit-input="comment"
@@ -613,13 +647,11 @@ export default function DetailDialog({
                 ) : (
                   <p
                     data-edit-field="comment"
-                    onClick={startCommentEdit}
-                    title="点击编辑备注"
-                    className={`mt-1.5 cursor-text whitespace-pre-line rounded-lg px-2.5 py-2 -mx-1 text-sm leading-relaxed transition-colors hover:bg-slate-50 ${
+                    className={`mt-1.5 whitespace-pre-line rounded-lg px-2.5 py-2 -mx-1 text-sm leading-relaxed ${
                       card.comment ? 'text-slate-600' : 'text-slate-300'
                     }`}
                   >
-                    {card.comment || '添加备注…'}
+                    {card.comment ? linkify(card.comment) : '添加备注…'}
                   </p>
                 )}
               </div>

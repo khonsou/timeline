@@ -1551,11 +1551,11 @@ async function main() {
   await t('t37 长备注 1500+ 字：保存/滚动/重开完整（旧 v10LongCommentScroll）', async () => {
     ok(v6Title && v6ToDate, '前置 t35 就绪')
     const para =
-      '复盘记录：本次内容投放节奏符合预期，首小时曝光爬坡较快，评论区高频问题集中在售价与配色两个点；后续跟进需要在详情页补充尺寸对照表，并安排一场直播集中答疑，同时把用户晒单整理成二次传播素材。'
+      '复盘记录：本次内容投放节奏符合预期，首小时曝光爬坡较快，评论区高频问题集中在售价与配色两个点；后续跟进需要在详情页补充尺寸对照表，并安排一场直播集中答疑，同时把用户晒单整理成二次传播素材。详见 https://example.com/review'
     let LONG = ''
     for (let i = 1; LONG.length < 1600; i++) LONG += (LONG ? '\n\n' : '') + `第${i}段　${para}`
     await openCard(v6Title)
-    await ev(() => document.querySelector('[data-edit-field="comment"]')?.click())
+    await ev(() => document.querySelector('[data-comment-edit]')?.click())
     await waitFor(() => ev(() => !!document.querySelector('[data-edit-input="comment"]')), 4000, '备注输入框')
     await ev((val) => {
       const el = document.querySelector('[data-edit-input="comment"]')
@@ -1592,8 +1592,13 @@ async function main() {
     const rendered = await ev(
       () => document.querySelector('[data-slot="dialog-content"] [data-edit-field="comment"]')?.textContent ?? null,
     )
+    // URL 链接化：备注中的 URL 渲染为可点 <a>（新标签页），且文本不再 click-to-edit
+    const link = await ev(
+      () => document.querySelector('[data-edit-field="comment"] a[href="https://example.com/review"]')?.tagName ?? null,
+    )
     await closeDialog()
     ok(rendered === LONG, `重开渲染完整（${rendered?.length} 字）`)
+    ok(link === 'A', '备注内 URL 渲染为可点链接')
   })
 
   await t('t38 持久化：reload 后全部改动保持（旧 persistence；t15 之外的 DOM 层核验）', async () => {
