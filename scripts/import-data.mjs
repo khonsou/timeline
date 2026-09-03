@@ -229,6 +229,13 @@ if (MERGE && existsSync(OUT_FILE) && !DRY_RUN) {
   } catch {}
 }
 
+// v16：单板容量硬上限——合并后总数超过 2000 整体拒绝（不搞半截导入）
+if (finalItems.length > 2000) {
+  console.error(`✗ 合并后共 ${finalItems.length} 条，超过单板上限 2000 张——已整体拒绝导入`)
+  console.error('  请按时间切片拆分文件分批导入（每块看板一个时间段），或减少数据量后重试')
+  process.exit(1)
+}
+
 const orders = computeOrders(finalItems)
 
 // 产品目录（v13 差分累积写出）：productHints（未知 id 自动登记，product_name 缺省 id 占位）

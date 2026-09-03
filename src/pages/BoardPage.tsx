@@ -25,6 +25,7 @@ import ImportResultDialog, { type ImportReport } from '@/components/board/Import
 import { Button } from '@/components/ui/button'
 import type { ContentItem, Member } from '@/types/content'
 import {
+  MAX_CARDS,
   MEMBERS,
   PRODUCTS,
   TYPE_KEYS,
@@ -382,6 +383,8 @@ function SyncedBoard({
         if (newDate !== publishDateOf(item)) {
           const order = nextOrder(items, orders, newDate)
           setOrders((prev) => ({ ...prev, [id]: order }))
+          // v16 B2：日期改出当前窗口时视野跟随到新日期（窗口内则平滑滚动过去）
+          boardApiRef.current?.revealDate(newDate)
         }
       }
     }
@@ -415,6 +418,7 @@ function SyncedBoard({
   }
 
   const addCard = (date: string) => {
+    if (items.length >= MAX_CARDS) return // v16 容量上限（UI 已禁用，这里兜底）
     const id = uid()
     const type = TYPE_KEYS[Math.floor(Math.random() * TYPE_KEYS.length)]
     const product_id = PRODUCTS[Math.floor(Math.random() * PRODUCTS.length)].id
@@ -478,6 +482,16 @@ function SyncedBoard({
     const map = new Map(items.map((it) => [it.id, it]))
     for (const it of r.valid) map.set(it.id, it)
     const merged = [...map.values()]
+    // v16 容量上限：合并后超限 → 整体拒绝导入（不落任何数据）
+    if (merged.length > MAX_CARDS) {
+      setImportReport({
+        filename,
+        error: `合并后共 ${merged.length} 张，超过单板上限 ${MAX_CARDS} 张，已整体拒绝导入（请按时间切片拆分或新建看板）`,
+        total: input.records.length,
+        skipped: r.skipped,
+      })
+      return
+    }
     setItems(merged)
     setOrders(computeOrders(merged))
     const incoming = mergeProducts(r.productHints, input.products ?? [])
@@ -540,6 +554,7 @@ function SyncedBoard({
         onDelete={deleteCard}
         onAddCard={addCard}
         apiRef={boardApiRef}
+        canAdd={items.length < MAX_CARDS}
       />
       <DetailDialog
         card={detailCard}

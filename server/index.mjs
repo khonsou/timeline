@@ -170,6 +170,10 @@ function readBody(req) {
 
 const newBoardId = () => crypto.randomBytes(8).toString('hex') // 16 位 hex
 
+// v16：单板卡片容量硬上限（软提示 1500 在前端 TopBar）
+const MAX_CARDS = 2000
+const MAX_CARDS_MSG = `已达单板上限 ${MAX_CARDS} 张，请按时间切片新建看板`
+
 /** doc 结构最低校验（整板覆盖写入前的兜底，前端四份状态原样打包） */
 function validDoc(doc) {
   return (
@@ -226,6 +230,7 @@ const server = http.createServer(async (req, res) => {
       if (!password) return send(res, 400, { error: 'password 必填且非空' })
       const doc = body.doc === undefined ? emptyDoc(name) : body.doc
       if (!validDoc(doc)) return send(res, 400, { error: 'doc 结构非法：需要 { items[], orders{}, products[], members[] }' })
+      if (doc.items.length > MAX_CARDS) return send(res, 400, { error: MAX_CARDS_MSG }) // v16 硬上限
       if (!doc.meta || typeof doc.meta !== 'object') doc.meta = { name, created_at: new Date().toISOString() }
       const id = newBoardId()
       const now = new Date().toISOString()
@@ -275,6 +280,7 @@ const server = http.createServer(async (req, res) => {
         if (!verifyToken(req.headers.authorization, id)) return send(res, 401, { error: 'token 缺失或已过期' })
         const body = await readBody(req)
         if (!validDoc(body.doc)) return send(res, 400, { error: 'doc 结构非法：需要 { items[], orders{}, products[], members[] }' })
+        if (body.doc.items.length > MAX_CARDS) return send(res, 400, { error: MAX_CARDS_MSG }) // v16 硬上限
         qUpdate.run(JSON.stringify(body.doc), new Date().toISOString(), id)
         return send(res, 200, { version: qGet.get(id).version })
       }

@@ -1,6 +1,6 @@
 # 拾光轴 · Timeline Board
 
-简化版 Trello，但把「列」换成时间轴：横轴为日期（默认今天 ±14 天，数据驱动可扩展），纵列为当天内容卡片。React + TypeScript + Vite + Tailwind + shadcn/ui + dnd-kit。
+简化版 Trello，但把「列」换成时间轴：横轴为日期（v16 起为今天 ±30 天的滑动窗口，恒定 61 列虚拟化渲染），纵列为当天内容卡片。React + TypeScript + Vite + Tailwind + shadcn/ui + dnd-kit。
 
 **v15 起是多用户看板服务**：看板数据存服务端 SQLite，浏览器打开的是「看板列表 → 输密码进板」的多板空间，多人可同时编辑同一块板（轮询同步、整板覆盖 LWW）。前端仍可纯静态托管，API server 零 native 依赖。
 
@@ -18,6 +18,15 @@ npm run build      # 构建前端产物 dist/（部署见 docs/deployment.md）
 - **服务端**（`server/index.mjs`，Node ≥ 22.5 直跑）：单表 `boards`（board_id 16 位 hex / name / doc JSON / version / password_hash / 时间戳）；doc = `{ items, orders, products, members, meta }`，前端四份状态原样打包。密码 scrypt 加盐哈希（`scrypt:<salt>:<hash>` + timingSafeEqual 校验），token = `base64url(payload).base64url(HMAC-SHA256)`（密钥 `BOARD_SECRET`，**生产必须设固定值**，缺省随机则重启后 token 全失效）。
 - **本机缓存**：localStorage `timeline-board-v4:b:<boardId>` 存整份 doc——离线/慢网也能先看到内容，全量 GET 随后接管。
 - **部署**：nginx 静态托管 `dist/` + 反代 `/api` → `server/index.mjs`（pm2 托管），见 [docs/deployment.md](docs/deployment.md) 与 `deploy/`（nginx.conf / ecosystem.config.cjs）；备份 = 拷贝 SQLite 文件。
+
+## 时间轴窗口与容量（v16）
+
+- **滑动窗口虚拟化**：看板恒定渲染 centerDate ±30 天共 **61 列**（不再随数据扩列，窗口外卡片不占 DOM）。滚动时实时计算视口中线日期，偏离窗口中心 >10 天 → 窗口整体滑动重建，`useLayoutEffect` 按滑动天数 × 列步长（248px）补偿 `scrollLeft`，视觉零跳动。列内容 O(N) 全列预分组 + `React.memo`，2000 张卡也不卡。
+- **minimap（底部横条）**：跨度 = min(最早卡, 今天) − 7 天 → max(最晚卡, 今天) + 7 天；按天密度热力条 + 月刻度 + 今天线（玫瑰色）；高亮框 = 当前 61 天窗口，滚动实时跟随（DOM 直写不触发 React 渲染）；**拖框 / 点轨道双向同步跳转**。
+- **日期跳转语义**：偏离 ≤10 天平滑滚动；>10 天重建窗口后瞬时定位（跨窗口不做平滑滚动——动画会被滑动补偿截断）。拖拽落点限当前窗口（拖拽期间窗口滑动禁用，A2 稳方案）；更远日期走详情页改 publish_at，**视野自动跟随**新日期（B2）。
+- **键盘快捷键**（输入框聚焦时不触发）：`T` 回今天 · `←`/`→` ±7 天 · `Shift+←`/`→` ±30 天。
+- **容量上限**：单板 **2000 张**硬上限——服务端 POST/PUT 超限返回 400，CLI 与页面导入合并后超限整体拒绝；**≥1500 张**顶栏 amber 警示「还可添加 N 张 + 按时间切片新建看板」，满 2000 张禁用全部加卡/导入入口。
+- **e2e**：`npm run test:e2e`（驱动本机 Chrome，自起 5198/5199 端口，53 项用例 = v16 窗口/minimap/拖拽边界/容量上限 19 项 + v15 旧套件全量移植 34 项——建板直进/引导卡/CLI 导入接管/详情字段链路/产品成员管理/双端同步/LWW/离线补推/密码门锁定/删板全链路，截图存 `verification/`）。
 
 **首次启动**：新建看板且不勾选「从本机现有数据初始化」时，新板今天列会出现两张引导卡（「欢迎使用拾光轴 · 5 分钟上手」与「CLI 批量导入真实数据」），点开即可查看完整操作说明；删掉它们或开始录入自己的内容后，引导卡不会再次出现。
 
@@ -73,7 +82,7 @@ npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-ru
 
 **未发布语义（v14 起按状态）**：`status ≠ 已发布` 的记录，三个指标一律强制为 `null`，并在报告中提示条数。`status` 缺省按 `publish_at` 推导（未来 → 待发布，否则 → 已发布），与旧版按时间口径一致；显式填 `已发布` 可为未来日期的卡片解锁指标录入。
 
-**数据驱动的看板窗口**：日列范围 = `max(今天 ±14 天, 数据最早/最晚日期)`，窗口外的历史/未来数据导入后自动扩列。
+**时间轴窗口（v16 起）**：看板恒定渲染今天 ±30 天滑动窗口（61 列）；窗口外（历史/未来）卡片仍在数据里，经 minimap 拖拽/点击跳转或详情页改期即可抵达，`buildDays` 的数据驱动扩列仅保留给 minimap 跨度参考。
 
 ### 初始数据与「从本机现有数据初始化」
 

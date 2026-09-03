@@ -152,6 +152,9 @@ const parseDay = (date: string) => {
  * 生成日列窗口：默认今天 ±14 天；
  * 传入 items 时窗口由数据驱动——扩到 max(今天±14, 数据最早/最晚日期)，
  * 保证窗口外（历史/未来）数据也有列可归。
+ *
+ * v16 起看板改用滑动窗口（buildWindowDays，恒定 61 列）；本函数保留给
+ * 需要「全量数据跨度」的场景（如 minimap 跨度计算的参考实现）。
  */
 export function buildDays(items?: ContentItem[]): DayInfo[] {
   const today = dayStart(new Date())
@@ -174,6 +177,47 @@ export function buildDays(items?: ContentItem[]): DayInfo[] {
       monthDay: `${d.getMonth() + 1}/${d.getDate()}`,
       week: `周${WEEK_LABELS[wd]}`,
       isToday: fmtDate(d) === todayKey,
+      isWeekend: wd === 0 || wd === 6,
+    }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// v16 滑动窗口：以 centerDate 为中心 ±30 天，恒定 61 列。
+// 看板只渲染窗口内的列；滚动视口中线偏离中心超过阈值后窗口整体滑动重建，
+// 并以 scrollLeft 补偿保证视觉连续（见 Board.tsx）。
+// ---------------------------------------------------------------------------
+export const WINDOW_RADIUS = 30
+export const WINDOW_DAYS = WINDOW_RADIUS * 2 + 1
+
+/** v16 单板容量上限（与服务端 MAX_CARDS 一致；≥1500 起 UI 警示） */
+export const MAX_CARDS = 2000
+export const CAPACITY_WARN_AT = 1500
+
+/** date("YYYY-MM-DD") ± n 天，返回 "YYYY-MM-DD"（本地时区，DST 安全） */
+export function addDays(date: string, n: number): string {
+  const d = parseDay(date)
+  return fmtDate(new Date(d.getTime() + n * DAY_MS))
+}
+
+/** a - b 的天数差（a 在 b 之后为正） */
+export function dayDiff(a: string, b: string): number {
+  return Math.round((parseDay(a).getTime() - parseDay(b).getTime()) / DAY_MS)
+}
+
+/** 生成以 center 为中心 ±30 天的恒定 61 列窗口 */
+export function buildWindowDays(center: string): DayInfo[] {
+  const c = parseDay(center)
+  const todayKey = todayStr()
+  return Array.from({ length: WINDOW_DAYS }, (_, i) => {
+    const d = new Date(c.getTime() + (i - WINDOW_RADIUS) * DAY_MS)
+    const wd = d.getDay()
+    const key = fmtDate(d)
+    return {
+      date: key,
+      monthDay: `${d.getMonth() + 1}/${d.getDate()}`,
+      week: `周${WEEK_LABELS[wd]}`,
+      isToday: key === todayKey,
       isWeekend: wd === 0 || wd === 6,
     }
   })

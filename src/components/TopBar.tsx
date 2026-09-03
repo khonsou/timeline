@@ -1,6 +1,7 @@
 import { useRef } from 'react'
 import { Boxes, Upload, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { CAPACITY_WARN_AT, MAX_CARDS } from '@/lib/content-data'
 
 export type SyncDot = 'loading' | 'synced' | 'syncing' | 'offline'
 
@@ -43,6 +44,9 @@ export default function TopBar({
 }: TopBarProps) {
   const fileRef = useRef<HTMLInputElement>(null)
   const sync = syncStatus ? SYNC_META[syncStatus] : null
+  // v16 容量警示：≥1500 提示剩余额度 + 按时间切片新建看板；≥2000 禁用加卡/导入
+  const capacityFull = total >= MAX_CARDS
+  const capacityWarn = total >= CAPACITY_WARN_AT
 
   return (
     <header className="z-20 shrink-0 border-b border-slate-200/80 bg-white/85 backdrop-blur">
@@ -90,6 +94,26 @@ export default function TopBar({
               <span className="font-semibold tabular-nums text-slate-700">{coveredDays}</span> 天
             </span>
           </div>
+          {capacityWarn && (
+            <span
+              data-capacity-hint
+              className={`flex items-center gap-2 rounded-full px-2.5 py-1 text-[11px] font-medium ${
+                capacityFull ? 'bg-rose-50 text-rose-600' : 'bg-amber-50 text-amber-600'
+              }`}
+            >
+              {capacityFull ? `已达上限 ${MAX_CARDS} 张` : `还可添加 ${MAX_CARDS - total} 张`}
+              {onBackHome && (
+                <button
+                  type="button"
+                  data-capacity-split
+                  onClick={onBackHome}
+                  className="underline underline-offset-2 transition-colors hover:text-indigo-600"
+                >
+                  按时间切片新建看板
+                </button>
+              )}
+            </span>
+          )}
           {/* 卡片增量导入：隐藏 file input，读取后走共享 import-core 解析校验（merge 语义） */}
           <input
             ref={fileRef}
@@ -97,6 +121,7 @@ export default function TopBar({
             accept=".json,.csv"
             data-import-input
             className="hidden"
+            disabled={capacityFull}
             onChange={(e) => {
               const f = e.target.files?.[0]
               if (f) onImportFile(f)
@@ -111,14 +136,20 @@ export default function TopBar({
             <Users className="size-3.5" />
             成员管理
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => fileRef.current?.click()} data-import-btn>
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={capacityFull}
+            onClick={() => fileRef.current?.click()}
+            data-import-btn
+          >
             <Upload className="size-3.5" />
             导入
           </Button>
           <Button size="sm" variant="ghost" onClick={onBackToToday}>
             ⌖ 回到今天
           </Button>
-          <Button size="sm" onClick={onAddToToday}>
+          <Button size="sm" disabled={capacityFull} onClick={onAddToToday}>
             + 空卡片
           </Button>
         </div>

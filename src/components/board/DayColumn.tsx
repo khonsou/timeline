@@ -1,3 +1,4 @@
+import { memo } from 'react'
 import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import type { ContentItem } from '@/types/content'
@@ -10,14 +11,18 @@ interface DayColumnProps {
   onOpenDetail: (id: string) => void
   onDelete: (id: string) => void
   onAddCard: (date: string) => void
+  /** v16 容量上限：false 时「+ 空卡片」禁用 */
+  canAdd: boolean
 }
 
-export default function DayColumn({
+// v16：61 列常驻渲染，memo 避免拖拽/FAB 等无关状态变化引起全列重渲染
+function DayColumn({
   day,
   cards,
   onOpenDetail,
   onDelete,
   onAddCard,
+  canAdd,
 }: DayColumnProps) {
   // 列容器本身 droppable，空列也可落
   const { setNodeRef, isOver } = useDroppable({
@@ -87,12 +92,18 @@ export default function DayColumn({
           </div>
         </SortableContext>
 
-        {/* 新增空卡片 */}
+        {/* 新增空卡片（达容量上限时禁用） */}
         <div className="p-2.5 pt-0">
           <button
             type="button"
+            disabled={!canAdd}
+            title={canAdd ? undefined : '已达单板上限 2000 张，请按时间切片新建看板'}
             onClick={() => onAddCard(day.date)}
-            className="w-full rounded-xl border border-dashed border-slate-300 py-2 text-xs text-slate-400 transition-colors duration-150 hover:border-indigo-300 hover:bg-white/70 hover:text-indigo-500"
+            className={
+              canAdd
+                ? 'w-full rounded-xl border border-dashed border-slate-300 py-2 text-xs text-slate-400 transition-colors duration-150 hover:border-indigo-300 hover:bg-white/70 hover:text-indigo-500'
+                : 'w-full cursor-not-allowed rounded-xl border border-dashed border-slate-200 py-2 text-xs text-slate-300'
+            }
           >
             + 空卡片
           </button>
@@ -101,3 +112,5 @@ export default function DayColumn({
     </div>
   )
 }
+
+export default memo(DayColumn)
