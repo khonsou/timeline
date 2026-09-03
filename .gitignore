@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# v15 看板服务运行时数据（含密码哈希，不入库）
+server/boards.sqlite*
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
