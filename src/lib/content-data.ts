@@ -37,7 +37,7 @@ export interface Product {
   name: string
 }
 export const PRODUCTS: Product[] = [
-  { id: 'P-1000', name: '拾光轴 Timeline Board' },
+  { id: 'P-1000', name: '光轴' },
   { id: 'P-1001', name: '星轨机械键盘' },
   { id: 'P-1002', name: '流光蓝牙耳机' },
   { id: 'P-1003', name: '云屿香薰机' },
