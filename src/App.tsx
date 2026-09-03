@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import TopBar from '@/components/TopBar'
 import Board, { type BoardApi } from '@/components/board/Board'
 import DetailDialog from '@/components/board/DetailDialog'
+import ProductManagerDialog from '@/components/board/ProductManagerDialog'
+import ImportResultDialog, { type ImportReport } from '@/components/board/ImportResultDialog'
 import type { ContentItem, ContentType } from '@/types/content'
 import {
   PRODUCTS,
@@ -14,10 +16,12 @@ import {
   type Product,
 } from '@/lib/content-data'
 import { nextOrder, publishDateOf, type Orders } from '@/lib/board-view'
+import { computeOrders, readItemsInput, validateItems } from '@/lib/import-core'
 
 const STORAGE_KEY = 'timeline-board-v4'
 const SEED_MARKER_KEY = 'timeline-board-v4:seedImportedAt'
-const SEED_PRODUCTS_KEY = 'timeline-board-v4:seedProducts'
+const PRODUCTS_KEY = 'timeline-board-v4:products'
+const LEGACY_SEED_PRODUCTS_KEY = 'timeline-board-v4:seedProducts' // v11 遗留 key，仅作迁移读取
 const PUBLISH_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
 
 interface PersistedState {
@@ -80,15 +84,53 @@ function loadState(): PersistedState {
   return guideCards()
 }
 
+// ---------------------------------------------------------------------------
+// 产品目录：一等本地状态。初始 = 内置目录（仅 P-1000 光轴）；
+// 兼容读取 v11 遗留的 seedProducts key；空数组是合法状态（用户删光产品）
+// ---------------------------------------------------------------------------
+function loadProducts(): Product[] {
+  const parse = (raw: string | null): Product[] | null => {
+    if (!raw) return null
+    try {
+      const arr: unknown = JSON.parse(raw)
+      if (Array.isArray(arr) && arr.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')) {
+        return arr as Product[]
+      }
+    } catch {
+      // 落到下一条候选
+    }
+    return null
+  }
+  return parse(localStorage.getItem(PRODUCTS_KEY)) ?? parse(localStorage.getItem(LEGACY_SEED_PRODUCTS_KEY)) ?? PRODUCTS
+}
+
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
 export default function App() {
   const [state, setState] = useState<PersistedState>(loadState)
   const { items, orders } = state
+  // 产品目录一等状态：变更唯一入口 applyProducts（同步运行时解析 + 持久化 + React 态）
+  const [products, setProducts] = useState<Product[]>(() => {
+    const p = loadProducts()
+    setRuntimeProducts(p) // 首帧渲染前同步，resolveProduct/listProducts 即刻可用
+    return p
+  })
   // 详情弹窗：detailCardId = 打开的卡片；detailAutoEdit = 新增后标题直接进入编辑
   const [detailCardId, setDetailCardId] = useState<string | null>(null)
   const [detailAutoEdit, setDetailAutoEdit] = useState(false)
+  const [productsOpen, setProductsOpen] = useState(false) // 产品管理弹窗
+  const [importReport, setImportReport] = useState<ImportReport | null>(null) // 导入结果弹窗
   const boardApiRef = useRef<BoardApi | null>(null)
+
+  const applyProducts = (next: Product[]) => {
+    setRuntimeProducts(next) // 先同步模块级解析，保证接下来的渲染读到新目录
+    try {
+      localStorage.setItem(PRODUCTS_KEY, JSON.stringify(next))
+    } catch {
+      // 存储不可用时仅内存生效
+    }
+    setProducts(next)
+  }
 
   // 每次变更写入 localStorage
   useEffect(() => {
@@ -104,23 +146,6 @@ export default function App() {
   // 同步部分已用 localStorage/引导卡渲染，这里异步检查 CLI 导入的 seed
   // ------------------------------------------------------------------
   useEffect(() => {
-    // 上次 seed 携带的产品目录（导入接管时持久化下来的）
-    try {
-      const raw = localStorage.getItem(SEED_PRODUCTS_KEY)
-      if (raw) {
-        const arr: unknown = JSON.parse(raw)
-        if (
-          Array.isArray(arr) &&
-          arr.length > 0 &&
-          arr.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
-        ) {
-          setRuntimeProducts(arr as Product[])
-        }
-      }
-    } catch {
-      // 忽略，回落内置目录
-    }
-
     let cancelled = false
     fetch('data/board.json')
       .then((r) => (r.ok ? r.json() : null))
@@ -139,34 +164,27 @@ export default function App() {
             ? (products as Product[])
             : null
         const valid = validateState(seed)
-
-        if (valid) {
-          // 全量接管：items + orders（products 有则接管目录、无则回落内置目录）
+        const mark = () => {
           try {
-            if (validProducts) {
-              setRuntimeProducts(validProducts)
-              localStorage.setItem(SEED_PRODUCTS_KEY, JSON.stringify(validProducts))
-            } else {
-              setRuntimeProducts(undefined)
-              localStorage.removeItem(SEED_PRODUCTS_KEY)
-            }
             localStorage.setItem(SEED_MARKER_KEY, importedAt)
           } catch {
             // 存储不可用时仅内存生效
           }
+        }
+
+        if (valid) {
+          // 全量接管：items + orders；携带 products 时一并接管产品目录
+          // （v12 起：不带 products 的全量导入保持现有目录，不再回落重置）
+          if (validProducts) applyProducts(validProducts)
+          mark()
           setState(valid)
           return
         }
 
         // 仅产品目录接管（board.json 无 items 键）：不动用户现有 items/orders
         if (validProducts) {
-          try {
-            setRuntimeProducts(validProducts)
-            localStorage.setItem(SEED_PRODUCTS_KEY, JSON.stringify(validProducts))
-            localStorage.setItem(SEED_MARKER_KEY, importedAt)
-          } catch {
-            // 存储不可用时仅内存生效
-          }
+          applyProducts(validProducts)
+          mark()
         }
       })
       .catch(() => {
@@ -273,6 +291,59 @@ export default function App() {
 
   const addToToday = () => addCard(todayStr())
 
+  // ------------------------------------------------------------------
+  // 顶栏「导入」：UI 版卡片增量导入（共享 import-core，merge 语义与 CLI --merge 一致）
+  // 同 id 覆盖、新 id 追加、orders 全量重算；JSON 内嵌 products 同时接管产品目录；
+  // 解析失败 / 全无效时不落任何数据，只弹错误报告
+  // ------------------------------------------------------------------
+  const handleImportFile = async (file: File) => {
+    const filename = file.name
+    const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
+    const text = await file.text()
+    let input
+    try {
+      input = readItemsInput(text, ext)
+    } catch (e) {
+      setImportReport({
+        filename,
+        error: `文件解析失败：${e instanceof Error ? e.message : String(e)}`,
+      })
+      return
+    }
+    const now = new Date()
+    const nowKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+    const r = validateItems(input.records, {
+      isCsv: ext === '.csv',
+      knownProducts: new Set(products.map((p) => p.id)),
+      now: nowKey,
+    })
+    if (r.valid.length === 0) {
+      setImportReport({
+        filename,
+        error: '没有可导入的有效行，未导入任何数据',
+        total: input.records.length,
+        skipped: r.skipped,
+      })
+      return
+    }
+    // merge 语义：同 id 覆盖、新 id 追加，orders 全量重算
+    const map = new Map(items.map((it) => [it.id, it]))
+    for (const it of r.valid) map.set(it.id, it)
+    const merged = [...map.values()]
+    setItems(merged)
+    setOrders(computeOrders(merged))
+    if (input.products) applyProducts(input.products)
+    setImportReport({
+      filename,
+      imported: r.valid.length,
+      skipped: r.skipped,
+      unpublished: r.valid.filter((it) => it.publish_at > nowKey).length,
+      noProduct: r.emptyProductCount,
+      warnings: r.warnings,
+      productsTaken: input.products?.length,
+    })
+  }
+
   const detailCard = detailCardId ? (items.find((c) => c.id === detailCardId) ?? null) : null
 
   return (
@@ -283,6 +354,8 @@ export default function App() {
         dateStr={dateStr}
         onBackToToday={() => boardApiRef.current?.scrollToToday('smooth')}
         onAddToToday={addToToday}
+        onOpenProducts={() => setProductsOpen(true)}
+        onImportFile={handleImportFile}
       />
       <Board
         items={items}
@@ -301,6 +374,14 @@ export default function App() {
         onUpdate={updateCard}
         onDelete={deleteCard}
       />
+      <ProductManagerDialog
+        open={productsOpen}
+        products={products}
+        items={items}
+        onClose={() => setProductsOpen(false)}
+        onApply={applyProducts}
+      />
+      <ImportResultDialog report={importReport} onClose={() => setImportReport(null)} />
     </div>
   )
 }

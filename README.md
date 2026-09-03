@@ -15,13 +15,18 @@ npm run build      # 构建
 > 📖 完整使用指南（自包含，可直接粘贴到飞书文档）：[docs/cli-import-guide.md](docs/cli-import-guide.md)
 
 ```bash
+# 推荐两步走：先产品目录，再内容卡片（示例文件的 product_id 为 P-200x 系列）
+npm run import:data -- --products examples/products-sample.csv
+npm run import:data -- examples/import-sample.csv
+
 npm run import:data -- <文件.json|文件.csv> [--dry-run] [--merge] [--strict]
 npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-run] [--merge] [--strict]
 ```
 
 - 读取 JSON / CSV → 逐行校验、归一化为 `ContentItem` → 按日期分组计算 orders → 写出 `public/data/board.json`（结构 `{ items, orders, products?, importedAt }`）。
 - **下次打开或刷新页面自动生效**：应用启动时 `fetch('data/board.json')`，若其 `importedAt` 与 localStorage 中记录的标记不同，则采用文件数据并覆写 localStorage；相同则保留页面上的后续编辑。再次执行 CLI 导入（产生新 `importedAt`）才会重新接管。
-- `--products`（独立产品目录导入，不与 items 文件混用）：只导入产品目录，写出 `{ products, importedAt }`（无 `items` 键）——页面接管时**仅更新产品目录，不动现有内容卡片**；默认替换 seed 产品目录，`--merge` 按 id 合并（新覆盖旧）。产品文件格式：JSON 为 `[{ "id", "name" }, ...]` 或 `{ "products": [...] }`；CSV 表头 `产品ID,产品名称`（别名：id/产品ID/产品编号、name/产品名/产品名称/名称）。校验：id 必填非空且文件内唯一、name 必填非空，逐行带行号报错，退出码语义同 items 版。
+- `--products`（独立产品目录导入，不与 items 文件混用）：只导入产品目录，写出 `{ products, importedAt }`（无 `items` 键）——页面接管时**仅更新产品目录，不动现有内容卡片**；默认替换产品目录，`--merge` 按 id 合并（新覆盖旧）。产品文件格式：JSON 为 `[{ "id", "name" }, ...]` 或 `{ "products": [...] }`；CSV 表头 `产品ID,产品名称`（别名：id/产品ID/产品编号、name/产品名/产品名称/名称）。校验：id 必填非空且文件内唯一、name 必填非空，逐行带行号报错，退出码语义同 items 版。
+- **产品目录结转**：items 导入不带内嵌 `products` 时，CLI 把已有 `board.json` 的 products 原样结转到新文件（目录不回落重置），且校验的已知目录包含已有 products——所以「先 `--products` 再导卡片」不会触发未知 id 警告。
 - `--dry-run`：只校验 + 打印报告，不写文件。
 - `--merge`：合并进已有 `board.json`（同 id 覆盖、新 id 追加，orders 全量重算）；默认全量替换。
 - `--strict`：遇第一个无效行即非零退出；默认跳过无效行并在报告汇总（有跳过 exit 1，全有效 exit 0）。
@@ -46,6 +51,8 @@ npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-ru
 
 字段口径（ROI = 发布后 7 天归因销售额 ÷ 广告花费；曝光/互动为发布后 4 小时窗口等）以 `src/types/content.ts` 的 JSDoc 为准。
 
+**页面内入口**：顶栏「产品管理」弹窗对产品目录增删改（使用计数实时显示，删除被引用产品后引用卡片自动降级「不明」，新增行 id 自动取 `P-<最大编号+1>`）；顶栏「导入」按钮在页面内做增量导入（与 CLI `--merge` 同一套校验与合并语义，共享 `src/lib/import-core.ts`），完成弹出结果报告。产品目录是一等本地状态，存 `timeline-board-v4:products`，初始仅内置 `P-1000` 光轴。
+
 **CSV**：首行表头（中英文均可），解析器遵循 RFC4180（引号包裹、`""` 转义、字段内逗号与换行）。无第三方依赖。
 
 **未发布语义**：`publish_at` 晚于当前时间的记录，三个指标一律强制为 `null`，并在报告中提示条数。
@@ -67,10 +74,10 @@ npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-ru
 # 构造含无效行的文件
 cat > /tmp/bad.json << 'EOF'
 [
-  { "title": "正常条目", "type": "图文", "publish_at": "2026-09-03T10:00", "product_id": "P-1001" },
-  { "title": "", "type": "图文", "publish_at": "2026-09-03T10:00", "product_id": "P-1001" },
-  { "title": "类型错误", "type": "短视频", "publish_at": "2026-09-03T10:00", "product_id": "P-1001" },
-  { "title": "日期错误", "type": "图文", "publish_at": "下周三", "product_id": "P-1001" }
+  { "title": "正常条目", "type": "图文", "publish_at": "2026-09-03T10:00", "product_id": "P-2001" },
+  { "title": "", "type": "图文", "publish_at": "2026-09-03T10:00", "product_id": "P-2001" },
+  { "title": "类型错误", "type": "短视频", "publish_at": "2026-09-03T10:00", "product_id": "P-2001" },
+  { "title": "日期错误", "type": "图文", "publish_at": "下周三", "product_id": "P-2001" }
 ]
 EOF
 npm run import:data -- /tmp/bad.json --dry-run   # 逐行报错，exit code 1

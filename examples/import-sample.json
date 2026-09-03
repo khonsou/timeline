@@ -1,11 +1,10 @@
 {
   "products": [
-    { "id": "P-1001", "name": "星轨机械键盘 SE" },
-    { "id": "P-1002", "name": "流光蓝牙耳机 Air" },
-    { "id": "P-1003", "name": "云屿香薰机" },
-    { "id": "P-1004", "name": "极昼护眼台灯" },
-    { "id": "P-1005", "name": "脉冲快充数据线" },
-    { "id": "P-1006", "name": "拾光手账本 · 联名款" }
+    { "id": "P-2001", "name": "极光机械键盘 Pro" },
+    { "id": "P-2002", "name": "深海降噪耳机" },
+    { "id": "P-2003", "name": "星云智能台灯" },
+    { "id": "P-2004", "name": "磐石移动电源 20000mAh" },
+    { "id": "P-2005", "name": "清风桌面循环扇" }
   ],
   "items": [
     {
@@ -15,7 +14,7 @@
       "publish_at": "2026-08-05T10:30",
       "roi": 3.8,
       "comment": "早期投放素材，曝光稳定",
-      "product_id": "P-1001",
+      "product_id": "P-2001",
       "propagation_4h": 86400,
       "engagement_4h": 6900
     },
@@ -26,7 +25,7 @@
       "publish_at": "2026-08-28T19:00",
       "roi": 2.4,
       "comment": "评论区争议较多，需跟进",
-      "product_id": "P-1002",
+      "product_id": "P-2002",
       "propagation_4h": 45200,
       "engagement_4h": 3100
     },
@@ -37,7 +36,7 @@
       "publish_at": "2026-08-30T08:15",
       "roi": 1.2,
       "comment": "",
-      "product_id": "P-1002",
+      "product_id": "P-2002",
       "propagation_4h": 12300,
       "engagement_4h": 980
     },
@@ -48,7 +47,7 @@
       "publish_at": "2026-09-01T21:30",
       "roi": 4.5,
       "comment": "ROI 达标，可追加预算",
-      "product_id": "P-1003",
+      "product_id": "P-2003",
       "propagation_4h": 158000,
       "engagement_4h": 12600
     },
@@ -59,7 +58,7 @@
       "publish_at": "2026-09-01T09:00",
       "roi": 0.8,
       "comment": "封面点击率偏低，下期换主图",
-      "product_id": "P-1006",
+      "product_id": "P-2005",
       "propagation_4h": 5400,
       "engagement_4h": 260
     },
@@ -70,7 +69,7 @@
       "publish_at": "2026-09-04T11:00",
       "roi": null,
       "comment": "等设计终稿",
-      "product_id": "P-1004",
+      "product_id": "P-2003",
       "propagation_4h": null,
       "engagement_4h": null
     },
@@ -81,7 +80,7 @@
       "publish_at": "2026-09-10T20:00",
       "roi": null,
       "comment": "",
-      "product_id": "P-1005",
+      "product_id": "P-2004",
       "propagation_4h": null,
       "engagement_4h": null
     },
@@ -92,7 +91,7 @@
       "publish_at": "2026-09-20T19:30",
       "roi": null,
       "comment": "跨窗口排期，看板自动扩列",
-      "product_id": "P-1006",
+      "product_id": "P-2005",
       "propagation_4h": null,
       "engagement_4h": null
     }

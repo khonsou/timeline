@@ -30,33 +30,28 @@ export const TYPE_KEYS = Object.keys(TAGS) as ContentType[]
 
 // ---------------------------------------------------------------------------
 // 产品目录（数据层常量），ContentItem.product_id 引用之
-// P-1000 是看板自身（首次启动引导卡归属）
+// 内置目录仅 P-1000 光轴（看板自身，首次启动引导卡归属）；
+// 真实产品通过 CLI --products / 应用内「产品管理」/ items 内嵌 products 进入运行时目录
 // ---------------------------------------------------------------------------
 export interface Product {
   id: string
   name: string
 }
-export const PRODUCTS: Product[] = [
-  { id: 'P-1000', name: '光轴' },
-  { id: 'P-1001', name: '星轨机械键盘' },
-  { id: 'P-1002', name: '流光蓝牙耳机' },
-  { id: 'P-1003', name: '云屿香薰机' },
-  { id: 'P-1004', name: '极昼护眼台灯' },
-  { id: 'P-1005', name: '脉冲快充数据线' },
-  { id: 'P-1006', name: '拾光手账本' },
-]
+export const PRODUCTS: Product[] = [{ id: 'P-1000', name: '光轴' }]
 export const PRODUCT_BY_ID: Record<string, Product> = Object.fromEntries(
   PRODUCTS.map((p) => [p.id, p]),
 )
 
-// 运行时产品目录：board.json 携带 products 时优先于内置目录；
-// 空 id / 目录未命中 → 「不明」（name 固定为「不明」，rawId 保留原始值供 tooltip 排查）
-let runtimeProducts: Record<string, Product> | null = null
+// 运行时产品目录 = App 的一等产品状态（localStorage 持久化；初始 = 内置目录）。
+// App 的任何产品变更（产品管理增删改 / CLI 导入接管 / UI 导入内嵌 products）都经
+// setRuntimeProducts 同步到这里；空 id / 目录未命中 → 「不明」（rawId 供 tooltip 排查）
+let runtimeProducts: Record<string, Product> = { ...PRODUCT_BY_ID }
 export function setRuntimeProducts(products?: Product[]) {
+  // undefined → 回落内置目录；[]（空目录）是合法状态（用户删光产品），原样生效
   runtimeProducts =
-    products && products.length > 0
-      ? Object.fromEntries(products.map((p) => [p.id, p]))
-      : null
+    products === undefined
+      ? { ...PRODUCT_BY_ID }
+      : Object.fromEntries(products.map((p) => [p.id, p]))
 }
 
 export const UNKNOWN_PRODUCT_LABEL = '不明'
@@ -72,23 +67,20 @@ export interface ResolvedProduct extends Product {
 }
 
 /**
- * 归属产品解析（卡片面与详情页共用）：seed 目录优先 → 内置目录（含 P-1000）fallback →
- * 空 id / 未命中 → 「不明」。保证任何 product_id 取值下显示都不出 bug。
+ * 归属产品解析（卡片面与详情页共用）：只读运行时产品目录（= App 产品状态，
+ * 初始为内置目录 P-1000 光轴）→ 空 id / 未命中 → 「不明」。
+ * 保证任何 product_id 取值下显示都不出 bug。
  */
 export function resolveProduct(id: string): ResolvedProduct {
   const raw = String(id ?? '').trim()
-  const hit = runtimeProducts?.[raw] ?? PRODUCT_BY_ID[raw]
+  const hit = runtimeProducts[raw]
   if (hit) return { ...hit, unknown: false, rawId: raw }
   return { id: raw, name: UNKNOWN_PRODUCT_LABEL, unknown: true, rawId: raw }
 }
 
-/** 当前生效的产品目录：内置 PRODUCTS + 运行时（seed products 优先覆盖）去重合并 */
+/** 当前生效的产品目录（= 运行时状态，选择器选项顺序即状态数组顺序） */
 export function listProducts(): Product[] {
-  const map = new Map(PRODUCTS.map((p) => [p.id, p]))
-  if (runtimeProducts) {
-    for (const p of Object.values(runtimeProducts)) map.set(p.id, p)
-  }
-  return [...map.values()]
+  return Object.values(runtimeProducts)
 }
 
 // ---------------------------------------------------------------------------
