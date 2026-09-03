@@ -70,6 +70,7 @@ function CardView(p: CardViewProps) {
         {/* 顶部行：类型胶囊 + 状态点（hover 时让位给删除按钮） */}
         <div className="flex items-center justify-between">
           <span
+            data-card-type
             className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${tag.pill}`}
           >
             <span className={`h-1.5 w-1.5 rounded-full ${tag.dot}`} />

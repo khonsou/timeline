@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import TypePicker from '@/components/board/TypePicker'
 import type { ContentItem } from '@/types/content'
-import { TAGS, listProducts, resolveProduct } from '@/lib/content-data'
+import { listProducts, resolveProduct } from '@/lib/content-data'
 import { isPublished } from '@/lib/board-view'
 import { formatCompact, formatPublishAt, formatRoi } from '@/lib/format'
 
@@ -37,6 +38,8 @@ export default function DetailDialog({
   const [editingField, setEditingField] = useState<EditField | null>(null)
   const [draft, setDraft] = useState('')
   const [invalid, setInvalid] = useState(false)
+  // 类型选择器展开态：纳入弹窗 Esc 拦截（展开时 Esc 只关选择器）
+  const [typePickerOpen, setTypePickerOpen] = useState(false)
   const titleInputRef = useRef<HTMLInputElement>(null)
 
   // 打开另一张卡时重置编辑态；新增空卡片直接标题编辑
@@ -45,6 +48,7 @@ export default function DetailDialog({
     setEditingComment(false)
     setEditingField(null)
     setInvalid(false)
+    setTypePickerOpen(false)
     if (cardId && autoEditTitle) {
       setDraftTitle('')
       setEditingTitle(true)
@@ -170,10 +174,10 @@ export default function DetailDialog({
         <DialogPrimitive.Content
           data-slot="dialog-content"
           onEscapeKeyDown={(e) => {
-            // 任意 inline 编辑态时 Esc 只取消编辑、不关弹窗：
+            // 任意 inline 编辑态 / 类型选择器展开时，Esc 只取消编辑（或只关选择器）、不关弹窗：
             // Radix 在 document 监听 Escape，输入框内的 stopPropagation 挡不住，
             // 必须在弹窗层 preventDefault（读到的是当前渲染的编辑态，先于取消生效）
-            if (editingTitle || editingComment || editingField) e.preventDefault()
+            if (editingTitle || editingComment || editingField || typePickerOpen) e.preventDefault()
           }}
           className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none sm:max-w-md"
         >
@@ -181,14 +185,14 @@ export default function DetailDialog({
             <>
               <DialogTitle className="sr-only">卡片详情</DialogTitle>
 
-              {/* 1. 头部：类型胶囊 + 状态徽章 + 关闭 */}
+              {/* 1. 头部：类型胶囊（可点击换类型）+ 状态徽章 + 关闭 */}
               <div className="flex items-center gap-2">
-                <span
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${TAGS[card.type].pill}`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${TAGS[card.type].dot}`} />
-                  {card.type}
-                </span>
+                <TypePicker
+                  key={card.id}
+                  value={card.type}
+                  onChange={(t) => onUpdate(card.id, { type: t })}
+                  onOpenChange={setTypePickerOpen}
+                />
                 {published ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
