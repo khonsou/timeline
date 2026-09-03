@@ -25,8 +25,8 @@ npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-ru
 
 - 读取 JSON / CSV → 逐行校验、归一化为 `ContentItem` → 按日期分组计算 orders → 写出 `public/data/board.json`（结构 `{ items, orders, products?, importedAt }`）。
 - **下次打开或刷新页面自动生效**：应用启动时 `fetch('data/board.json')`，若其 `importedAt` 与 localStorage 中记录的标记不同，则采用文件数据并覆写 localStorage；相同则保留页面上的后续编辑。再次执行 CLI 导入（产生新 `importedAt`）才会重新接管。
-- `--products`（独立产品目录导入，不与 items 文件混用）：只导入产品目录，写出 `{ products, importedAt }`（无 `items` 键）——页面接管时**仅更新产品目录，不动现有内容卡片**；默认替换产品目录，`--merge` 按 id 合并（新覆盖旧）。产品文件格式：JSON 为 `[{ "id", "name" }, ...]` 或 `{ "products": [...] }`；CSV 表头 `产品ID,产品名称`（别名：id/产品ID/产品编号、name/产品名/产品名称/名称）。校验：id 必填非空且文件内唯一、name 必填非空，逐行带行号报错，退出码语义同 items 版。
-- **产品目录结转**：items 导入不带内嵌 `products` 时，CLI 把已有 `board.json` 的 products 原样结转到新文件（目录不回落重置），且校验的已知目录包含已有 products——所以「先 `--products` 再导卡片」不会触发未知 id 警告。
+- `--products`（独立产品目录导入，不与 items 文件混用）：只导入产品目录，写出 `{ products, importedAt }`（无 `items` 键）——页面接管时**仅更新产品目录，不动现有内容卡片**。v13 起恒为**差分合并**（`mergeProducts`：同 id 改名更新、新 id 追加、未提及保留，**永不删除**——删产品走页面「产品管理」；`--merge` 为兼容保留）；CLI 写出的 products 是与已有 `board.json` 差分后的累积全量（全新浏览器的唯一状态来源），报告打印「新增/更新/保留」差分统计。产品文件格式：JSON 为 `[{ "id", "name" }, ...]` 或 `{ "products": [...] }`；CSV 表头 `产品ID,产品名称`（别名：id/产品ID/产品编号、name/产品名/产品名称/名称）。校验：id 必填非空且文件内唯一、name 必填非空，逐行带行号报错，退出码语义同 items 版。
+- **卡片行自动登记新产品**：items 中 `product_id` 不在目录时不再警告，而是按随行 `product_name`（中文别名 `产品名`/`产品名称`，缺省用 id 占位）自动登记进目录并合并进写出的 products——卡片导入后直接显示产品名；占位名永远不覆盖已有真实名称。
 - `--dry-run`：只校验 + 打印报告，不写文件。
 - `--merge`：合并进已有 `board.json`（同 id 覆盖、新 id 追加，orders 全量重算）；默认全量替换。
 - `--strict`：遇第一个无效行即非零退出；默认跳过无效行并在报告汇总（有跳过 exit 1，全有效 exit 0）。
@@ -45,13 +45,14 @@ npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-ru
 | 计划发布时间 | `publish_at` | 必填；接受 `YYYY-MM-DDTHH:mm`、`YYYY-MM-DD HH:mm`、`YYYY/M/D H:mm`（可带秒），统一归一化为 `YYYY-MM-DDTHH:mm`；日期不限于看板默认窗口 |
 | ROI | `roi` | 可空或非负数字；未发布强制置 null |
 | 备注 | `comment` | 可空，默认 `''` |
-| 产品ID | `product_id` | 可空：缺失/空置 `''`（未归属，UI 显示「不明」，报告汇总条数，不跳行）；不在目录中 → 警告但保留（UI 同样显示「不明」，tooltip 保留原始 id 便于排查） |
+| 产品ID | `product_id` | 可空：缺失/空置 `''`（未归属，UI 显示「不明」，报告汇总条数，不跳行）；不在目录中 → 自动登记为新产品（随行 `product_name` 作名，缺省 id 占位，报告汇总「自动登记新产品」） |
+| 产品名 / 产品名称 | `product_name` | 可空：仅当 `product_id` 不在目录时生效，作为自动登记的名称；同 id 多行取第一个非空值 |
 | 曝光4h | `propagation_4h` | 可空或非负数字；未发布强制置 null |
 | 互动4h | `engagement_4h` | 可空或非负数字；未发布强制置 null |
 
 字段口径（ROI = 发布后 7 天归因销售额 ÷ 广告花费；曝光/互动为发布后 4 小时窗口等）以 `src/types/content.ts` 的 JSDoc 为准。
 
-**页面内入口**：顶栏「产品管理」弹窗对产品目录增删改（使用计数实时显示，删除被引用产品后引用卡片自动降级「不明」，新增行 id 自动取 `P-<最大编号+1>`）；顶栏「导入」按钮在页面内做增量导入（与 CLI `--merge` 同一套校验与合并语义，共享 `src/lib/import-core.ts`），完成弹出结果报告。产品目录是一等本地状态，存 `timeline-board-v4:products`，初始仅内置 `P-1000` 光轴。
+**页面内入口**：顶栏「产品管理」弹窗对产品目录增删改（使用计数实时显示，删除被引用产品后引用卡片自动降级「不明」，新增行 id 自动取 `P-<最大编号+1>`）；顶栏「导入」按钮在页面内做增量导入（与 CLI `--merge` 同一套校验与合并语义，共享 `src/lib/import-core.ts`），结果报告弹窗含四宫格统计、产品目录差分行（新增/更新/保留）与自动登记新产品数。产品目录是一等本地状态，存 `timeline-board-v4:products`，初始仅内置 `P-1000` 光轴。
 
 **CSV**：首行表头（中英文均可），解析器遵循 RFC4180（引号包裹、`""` 转义、字段内逗号与换行）。无第三方依赖。
 

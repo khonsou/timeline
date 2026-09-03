@@ -1,6 +1,6 @@
 /**
  * 共享导入核心：JSON/CSV 解析（RFC4180）、中文别名映射、逐行校验归一化、
- * 内容哈希 id（纯 TS 实现 SHA-1）、orders 计算。
+ * 内容哈希 id（纯 TS 实现 SHA-1）、orders 计算、产品目录差分合并（mergeProducts）。
  *
  * 纯 TypeScript、无 Node API 依赖（TextEncoder/DataView 为跨端 Web API）：
  * - CLI：scripts/import-data.mjs 以 `import ... from '../src/lib/import-core.ts'`
@@ -38,9 +38,51 @@ export interface ValidateItemsOptions {
 export interface ValidateItemsResult {
   valid: ContentItem[]
   skipped: SkippedRow[]
-  warnings: string[] // 未知 product_id
+  /** 未知 product_id 的自动登记清单（name 缺省用 id 占位；内嵌 products 中已有的 id 不重复收集） */
+  productHints: ProductInput[]
   emptyProductCount: number // 未填写归属产品（置 ''，UI 显示「不明」）
   forcedNullCount: number // 未发布但原本带了指标值的条数
+}
+
+export interface MergeProductsResult {
+  merged: ProductInput[]
+  added: number // incoming 中的新 id 追加数
+  updated: number // 同 id 但 name 不同的更新数
+  unchanged: number // 同 id 同 name 的保留数
+}
+
+/**
+ * 产品目录差分合并（v13：导入只能加/改产品，永不删除；删除走页面「产品管理」）：
+ * 同 id → name 不同则更新（updated），相同则保留（unchanged）；
+ * 新 id → 追加（added）；existing 中 incoming 未提及的条目原样保留。
+ * 合并满足结合序：mergeProducts(mergeProducts(E, H), P) ≡ mergeProducts(E, mergeProducts(H, P).merged)
+ * （H 与 P 有同 id 时 P 的 name 优先——调用方借此让内嵌 products 覆盖 hint 占位名）
+ *
+ * 占位名保护：incoming 的 name === id 时视为「未知 id 的缺省占位名」（validateItems 的
+ * productHints 缺省生成），即使与既有名称不同也不覆盖（计 unchanged）——CLI 的已知目录
+ * 只是浏览器本地目录的近似，占位名永远不能clobber任何真实名称；产品真要以 id 为名，
+ * 用产品文件 / 产品管理显式改成 id 之外的写法再改回即可（极端场景，有意不支持）。
+ */
+export function mergeProducts(existing: ProductInput[], incoming: ProductInput[]): MergeProductsResult {
+  const merged = existing.map((p) => ({ id: p.id, name: p.name }))
+  const index = new Map(merged.map((p, i) => [p.id, i]))
+  let added = 0
+  let updated = 0
+  let unchanged = 0
+  for (const p of incoming) {
+    const i = index.get(p.id)
+    if (i === undefined) {
+      index.set(p.id, merged.length)
+      merged.push({ id: p.id, name: p.name })
+      added++
+    } else if (merged[i].name === p.name || p.name === p.id) {
+      unchanged++ // 同名保留；占位名（name===id）不覆盖既有名称
+    } else {
+      merged[i] = { id: p.id, name: p.name }
+      updated++
+    }
+  }
+  return { merged, added, updated, unchanged }
 }
 
 export interface ValidateProductsOptions {
@@ -72,13 +114,15 @@ const ALIAS: Record<string, string> = {
   计划发布时间: 'publish_at',
   备注: 'comment',
   产品ID: 'product_id',
+  产品名: 'product_name', // 卡片行可选携带产品名：未知 product_id 自动登记进目录时用作名称
+  产品名称: 'product_name',
   ROI: 'roi',
   曝光4h: 'propagation_4h',
   互动4h: 'engagement_4h',
 }
 const FIELD_KEYS = [
   'id', 'title', 'type', 'publish_at', 'roi', 'comment',
-  'product_id', 'propagation_4h', 'engagement_4h',
+  'product_id', 'product_name', 'propagation_4h', 'engagement_4h',
 ]
 
 // 产品文件表头别名 → id / name
@@ -333,7 +377,7 @@ export function validateItems(
   const { isCsv, knownProducts, now, strict } = opts
   const valid: ContentItem[] = []
   const skipped: SkippedRow[] = []
-  const warnings: string[] = []
+  const hintNames = new Map<string, string>() // 未知 product_id → 登记名（占位名可被后续行的 product_name 升级）
   let forcedNullCount = 0
   let emptyProductCount = 0
   const seenIds = new Set<string>()
@@ -383,12 +427,12 @@ export function validateItems(
     }
 
     // product_id：可空——缺失/空置 ''（未归属，UI 显示「不明」，报告汇总，不跳行）；
-    // 有值但不在目录 → 警告但保留（显示侧同样降级为「不明」，tooltip 保留原始 id）
+    // 有值但不在已知目录 → 记入 productHints 自动登记（product_name 非空用作名称，否则 id 占位；
+    // 同 id 多行取第一个非空 product_name；调用方须把内嵌 products 的 id 放进 knownProducts，
+    // 内嵌优先不重复收集）。登记后卡片直接显示产品名，不再降级「不明」
     const product_id = productRaw
     if (!product_id) {
       emptyProductCount++
-    } else if (!knownProducts.has(product_id)) {
-      warnings.push(`${rowLabel}: 未知 product_id "${product_id}"（已保留，UI 显示「不明」）`)
     }
 
     // 指标：可空 / 非负数字；未发布强制 null
@@ -414,6 +458,13 @@ export function validateItems(
     }
 
     seenIds.add(id)
+    // 行校验全部通过后才收集产品 hint（跳过行不贡献）
+    if (product_id && !knownProducts.has(product_id)) {
+      const pn = String(rec.product_name ?? '').trim()
+      const prevName = hintNames.get(product_id)
+      if (prevName === undefined) hintNames.set(product_id, pn || product_id)
+      else if (prevName === product_id && pn) hintNames.set(product_id, pn) // 占位名 → 第一个非空 product_name
+    }
     valid.push({
       id,
       title,
@@ -427,7 +478,13 @@ export function validateItems(
     })
   }
 
-  return { valid, skipped, warnings, emptyProductCount, forcedNullCount }
+  return {
+    valid,
+    skipped,
+    productHints: [...hintNames].map(([id, name]) => ({ id, name })),
+    emptyProductCount,
+    forcedNullCount,
+  }
 }
 
 // ---------------------------------------------------------------------------

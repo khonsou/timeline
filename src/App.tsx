@@ -16,7 +16,7 @@ import {
   type Product,
 } from '@/lib/content-data'
 import { nextOrder, publishDateOf, type Orders } from '@/lib/board-view'
-import { computeOrders, readItemsInput, validateItems } from '@/lib/import-core'
+import { computeOrders, mergeProducts, readItemsInput, validateItems } from '@/lib/import-core'
 
 const STORAGE_KEY = 'timeline-board-v4'
 const SEED_MARKER_KEY = 'timeline-board-v4:seedImportedAt'
@@ -156,12 +156,12 @@ export default function App() {
         // importedAt 与 localStorage 标记相同 ⇒ 已接管过（用户编辑在 localStorage），不再接管
         if (localStorage.getItem(SEED_MARKER_KEY) === importedAt) return
 
-        const products = (seed as { products?: unknown }).products
+        const seedProducts = (seed as { products?: unknown }).products
         const validProducts =
-          Array.isArray(products) &&
-          products.length > 0 &&
-          products.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
-            ? (products as Product[])
+          Array.isArray(seedProducts) &&
+          seedProducts.length > 0 &&
+          seedProducts.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
+            ? (seedProducts as Product[])
             : null
         const valid = validateState(seed)
         const mark = () => {
@@ -173,17 +173,17 @@ export default function App() {
         }
 
         if (valid) {
-          // 全量接管：items + orders；携带 products 时一并接管产品目录
-          // （v12 起：不带 products 的全量导入保持现有目录，不再回落重置）
-          if (validProducts) applyProducts(validProducts)
+          // 全量接管：items + orders；携带 products 时**差分合并**进现有产品目录
+          // （v13：导入只能加/改产品、永不删除，删产品走「产品管理」弹窗）
+          if (validProducts) applyProducts(mergeProducts(products, validProducts).merged)
           mark()
           setState(valid)
           return
         }
 
-        // 仅产品目录接管（board.json 无 items 键）：不动用户现有 items/orders
+        // 仅产品目录接管（board.json 无 items 键）：不动用户现有 items/orders，目录同样差分合并
         if (validProducts) {
-          applyProducts(validProducts)
+          applyProducts(mergeProducts(products, validProducts).merged)
           mark()
         }
       })
@@ -293,7 +293,9 @@ export default function App() {
 
   // ------------------------------------------------------------------
   // 顶栏「导入」：UI 版卡片增量导入（共享 import-core，merge 语义与 CLI --merge 一致）
-  // 同 id 覆盖、新 id 追加、orders 全量重算；JSON 内嵌 products 同时接管产品目录；
+  // 同 id 覆盖、新 id 追加、orders 全量重算；产品目录走差分合并：
+  //   未知 product_id 按 productHints 自动登记（product_name 作名，缺省 id 占位），
+  //   JSON 内嵌 products 的 name 优先于 hint 占位名；合并结果统一经 applyProducts 落盘；
   // 解析失败 / 全无效时不落任何数据，只弹错误报告
   // ------------------------------------------------------------------
   const handleImportFile = async (file: File) => {
@@ -314,7 +316,8 @@ export default function App() {
     const nowKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`
     const r = validateItems(input.records, {
       isCsv: ext === '.csv',
-      knownProducts: new Set(products.map((p) => p.id)),
+      // 内嵌 products 的 id 视为已知：不重复收集 hint，内嵌 name 优先
+      knownProducts: new Set([...products.map((p) => p.id), ...(input.products ?? []).map((p) => p.id)]),
       now: nowKey,
     })
     if (r.valid.length === 0) {
@@ -332,15 +335,21 @@ export default function App() {
     const merged = [...map.values()]
     setItems(merged)
     setOrders(computeOrders(merged))
-    if (input.products) applyProducts(input.products)
+    // 产品目录差分合并：hints 先行登记（占位名），内嵌 products 覆盖占位名（结合序保证等价于规格的分步合并）
+    const incoming = mergeProducts(r.productHints, input.products ?? [])
+    const diff = mergeProducts(products, incoming.merged)
+    if (incoming.merged.length > 0) applyProducts(diff.merged)
     setImportReport({
       filename,
       imported: r.valid.length,
       skipped: r.skipped,
       unpublished: r.valid.filter((it) => it.publish_at > nowKey).length,
       noProduct: r.emptyProductCount,
-      warnings: r.warnings,
-      productsTaken: input.products?.length,
+      productsRegistered: r.productHints.length,
+      productsDiff:
+        incoming.merged.length > 0
+          ? { added: diff.added, updated: diff.updated, kept: diff.unchanged }
+          : undefined,
     })
   }
 

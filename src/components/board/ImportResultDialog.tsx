@@ -13,8 +13,10 @@ export interface ImportReport {
   skipped?: SkippedRow[]
   unpublished?: number // 未发布条数（指标已强制置 null）
   noProduct?: number // 未填归属产品条数
-  warnings?: string[] // 未知 product_id 警告
-  productsTaken?: number // JSON 内嵌 products 接管了产品目录时的个数
+  /** 自动登记的新产品数（未知 product_id + 可选 product_name；与 noProduct 区分展示） */
+  productsRegistered?: number
+  /** 产品目录差分结果（仅本次导入涉及产品时存在；全为 0 即纯幂等重合则不展示该行） */
+  productsDiff?: { added: number; updated: number; kept: number }
 }
 
 interface ImportResultDialogProps {
@@ -104,9 +106,27 @@ export default function ImportResultDialog({ report, onClose }: ImportResultDial
                     </div>
                     <p className="mt-3 text-[11px] leading-relaxed text-slate-400">
                       已按增量合并（同 id 覆盖、新 id 追加，列内顺序全量重算）；未发布内容的指标已强制置
-                      null。
-                      {report.productsTaken ? ` 产品目录已随文件内嵌 products 更新（${report.productsTaken} 个）。` : ''}
+                      null。产品目录为差分合并（只增/改，不删除；删产品请用「产品管理」）。
                     </p>
+                    {report.productsDiff && (
+                      <p
+                        data-report-pdiff
+                        className="mt-3 rounded-lg bg-indigo-50/60 px-3 py-2 text-xs text-indigo-600"
+                      >
+                        产品目录差分：新增 <b data-report-pdiff-added>{report.productsDiff.added}</b>
+                        {' / '}更新 <b data-report-pdiff-updated>{report.productsDiff.updated}</b>
+                        {' / '}保留 <b data-report-pdiff-kept>{report.productsDiff.kept}</b> 个产品
+                        {report.productsDiff.added === 0 && report.productsDiff.updated === 0
+                          ? '（目录无变化）'
+                          : ''}
+                      </p>
+                    )}
+                    {typeof report.productsRegistered === 'number' && report.productsRegistered > 0 && (
+                      <p data-report-registered className="mt-2 text-xs text-emerald-600">
+                        ✚ 自动登记新产品 {report.productsRegistered} 个（未知 product_id；缺名时以 id
+                        占位，可在「产品管理」改名）
+                      </p>
+                    )}
                     {report.skipped && report.skipped.length > 0 && (
                       <div className="mt-3">
                         <p className="text-[10px] text-slate-400">跳过明细</p>
@@ -114,18 +134,6 @@ export default function ImportResultDialog({ report, onClose }: ImportResultDial
                           {report.skipped.map((s, i) => (
                             <li key={i} data-report-skip-row className="text-xs text-rose-500">
                               ✗ {s.row}: {s.reason}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
-                    {report.warnings && report.warnings.length > 0 && (
-                      <div className="mt-3">
-                        <p className="text-[10px] text-slate-400">产品警告</p>
-                        <ul className="mt-1 space-y-1 rounded-lg bg-amber-50/60 px-3 py-2">
-                          {report.warnings.map((w, i) => (
-                            <li key={i} data-report-warning-row className="text-xs text-amber-600">
-                              ⚠ {w}
                             </li>
                           ))}
                         </ul>

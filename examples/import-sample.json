@@ -94,6 +94,18 @@
       "product_id": "P-2005",
       "propagation_4h": null,
       "engagement_4h": null
+    },
+    {
+      "id": "imp-0009",
+      "title": "曜岩键盘新品预热视频",
+      "type": "视频",
+      "publish_at": "2026-09-18T10:00",
+      "roi": null,
+      "comment": "product_id 不在目录，随 product_name 自动登记为新产品",
+      "product_id": "P-2100",
+      "product_name": "曜岩客制化键盘",
+      "propagation_4h": null,
+      "engagement_4h": null
     }
   ]
 }

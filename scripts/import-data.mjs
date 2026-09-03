@@ -10,7 +10,13 @@
  * products 独立模式：仅导入产品目录 → 写出 { products, importedAt }（无 items 键，
  * 应用端只接管产品目录，不动现有内容卡片）。无第三方依赖。
  *
- * 解析/校验/哈希/orders 全部来自共享核心 src/lib/import-core.ts
+ * v13 产品目录差分语义：写出的 products = 与已有 board.json 差分合并后的累积全量
+ * （board.json 是全新浏览器的唯一状态来源）；应用端接管一律 mergeProducts 差分合并进
+ * 本地目录（同 id 改名更新、新 id 追加、未提及保留，永不删除——删产品走页面「产品管理」；
+ * name===id 的占位名不覆盖既有名称）。items 中未知 product_id 按 productHints 自动登记
+ * （可选 product_name 作名，缺省 id 占位）并合并进写出的 products，应用加载逻辑保持简单。
+ *
+ * 解析/校验/哈希/orders/差分全部来自共享核心 src/lib/import-core.ts
  * （Node 24 原生 strip-types 直接引用；与应用内「卡片增量导入」同一套规则）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -19,6 +25,7 @@ import { fileURLToPath } from 'node:url'
 import {
   computeOrders,
   isStrictRowSignal,
+  mergeProducts,
   readItemsInput,
   readProductsInput,
   validateItems,
@@ -100,29 +107,21 @@ if (PRODUCTS_MODE) {
     throw e
   }
 
-  // --merge：按 id 合并进已有 board.json 的 products（新覆盖旧）；
-  // 已有文件无 products（或不存在）时退化为替换。dry-run 同样预演合并结果（不写文件）
-  let finalProducts = validProducts
-  if (MERGE && existsSync(OUT_FILE)) {
-    try {
-      const prev = JSON.parse(readFileSync(OUT_FILE, 'utf8'))
-      if (Array.isArray(prev?.products)) {
-        const map = new Map(prev.products.map((p) => [String(p.id), p]))
-        for (const p of validProducts) map.set(p.id, p) // 同 id 覆盖、新 id 追加
-        finalProducts = [...map.values()]
-      }
-    } catch {
-      console.warn('⚠ 已有 board.json 解析失败，--merge 退化为全量替换')
-    }
-  }
+  // v13 差分合并：目录只增/改、永不删除（删除走页面「产品管理」）。
+  // 与已有 board.json 的 products 按 id 差分合并后写出——board.json 是全新浏览器的唯一
+  // 状态来源，必须累积全量目录；应用端接管同样差分合并，未提及的一律保留。
+  // --merge 为兼容保留（v13 起语义已恒为差分）
+  const pdiff = mergeProducts(prevBoardProducts(), validProducts)
+  const finalProducts = pdiff.merged
 
   console.log('\n📥 产品目录导入报告')
   console.log(`源文件: ${path.resolve(file)}`)
   console.log(
-    `模式: ${DRY_RUN ? 'dry-run（不写文件）' : MERGE ? 'merge（按 id 合并进已有 products，新覆盖旧）' : '全量替换产品目录'}`,
+    `模式: ${DRY_RUN ? 'dry-run（不写文件）' : '差分合并产品目录（只增/改，不删除；删除请用页面「产品管理」）'}`,
   )
   console.log(`总条数: ${rawProducts.length} | 有效: ${validProducts.length} | 跳过: ${skippedProducts.length}`)
   for (const s of skippedProducts) console.log(`  ✗ ${s.row}: ${s.reason}`)
+  console.log(`产品目录差分：新增 ${pdiff.added} / 更新 ${pdiff.updated} / 保留 ${pdiff.unchanged}（共 ${finalProducts.length} 个）`)
   console.log(`产品目录（${finalProducts.length} 个）:`)
   for (const p of finalProducts) console.log(`  ${p.id}  ${p.name}`)
 
@@ -161,9 +160,9 @@ const knownProducts = new Set([
 ])
 const NOW = nowKey()
 
-let valid, skipped, warnings, emptyProductCount, forcedNullCount
+let valid, skipped, productHints, emptyProductCount, forcedNullCount
 try {
-  ;({ valid, skipped, warnings, emptyProductCount, forcedNullCount } = validateItems(input.records, {
+  ;({ valid, skipped, productHints, emptyProductCount, forcedNullCount } = validateItems(input.records, {
     isCsv,
     knownProducts,
     now: NOW,
@@ -178,10 +177,9 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// 合并 / 全量
+// 合并 / 全量（items）；产品目录统一走 v13 差分合并（见下方 pdiff）
 // ---------------------------------------------------------------------------
 let finalItems = valid
-let finalProducts = input.products
 if (MERGE && existsSync(OUT_FILE) && !DRY_RUN) {
   try {
     const prev = JSON.parse(readFileSync(OUT_FILE, 'utf8'))
@@ -189,7 +187,6 @@ if (MERGE && existsSync(OUT_FILE) && !DRY_RUN) {
       const map = new Map(prev.items.map((it) => [it.id, it]))
       for (const it of valid) map.set(it.id, it) // 同 id 覆盖、新 id 追加
       finalItems = [...map.values()]
-      if (!finalProducts && Array.isArray(prev.products)) finalProducts = prev.products
     }
   } catch {
     console.warn('⚠ 已有 board.json 解析失败，--merge 退化为全量替换')
@@ -201,19 +198,19 @@ if (MERGE && existsSync(OUT_FILE) && !DRY_RUN) {
       const map = new Map(prev.items.map((it) => [it.id, it]))
       for (const it of valid) map.set(it.id, it)
       finalItems = [...map.values()]
-      if (!finalProducts && Array.isArray(prev.products)) finalProducts = prev.products
     }
   } catch {}
 }
 
 const orders = computeOrders(finalItems)
 
-// 产品目录结转：本次未携带 products 时沿用已有 board.json 的 products
-// （全量替换 items 不应顺带抹掉产品目录；与 v12 应用端「不回落重置」语义一致）
-if (!finalProducts) {
-  const prev = prevBoardProducts()
-  if (prev.length > 0) finalProducts = prev
-}
+// 产品目录（v13 差分累积写出）：productHints（未知 id 自动登记，product_name 缺省 id 占位）
+// 先行、内嵌 products 的 name 优先（结合序与分步合并等价），再与已有 board.json 目录差分——
+// board.json 是全新浏览器的唯一状态来源，必须累积全量目录（v12「结转」语义的自然延伸）；
+// 应用端接管同样差分合并，未提及的一律保留。导入只能加/改产品，删除走页面「产品管理」。
+const incomingProducts = mergeProducts(productHints, input.products ?? [])
+const pdiff = mergeProducts(prevBoardProducts(), incomingProducts.merged)
+const finalProducts = pdiff.merged.length > 0 ? pdiff.merged : undefined
 
 // ---------------------------------------------------------------------------
 // 报告
@@ -228,9 +225,10 @@ console.log(`未发布（publish_at 晚于当前时间，指标已强制置 null
 if (forcedNullCount > 0) console.log(`  其中 ${forcedNullCount} 条原本带了指标值，已按未发布语义置 null`)
 if (emptyProductCount > 0)
   console.log(`未填写归属产品: ${emptyProductCount} 条（已置空，UI 显示「不明」）`)
-if (warnings.length > 0) {
-  console.log(`未知 product_id 警告 (${warnings.length}):`)
-  for (const w of warnings) console.log(`  ⚠ ${w}`)
+if (productHints.length > 0) {
+  console.log(`自动登记新产品 (${productHints.length}):`)
+  for (const h of productHints)
+    console.log(`  ✚ ${h.id}  ${h.name}${h.name === h.id ? '（缺省名占位，可在「产品管理」改名）' : ''}`)
 }
 const dist = new Map()
 for (const it of finalItems) {
@@ -240,6 +238,8 @@ for (const it of finalItems) {
 console.log(`日期分布（${dist.size} 天）:`)
 for (const [d, n] of [...dist.entries()].sort()) console.log(`  ${d}  ${'█'.repeat(n)} ${n}`)
 console.log(`orders: 已按日期分组、组内按时分排序重算（共 ${Object.keys(orders).length} 条）`)
+if (finalProducts)
+  console.log(`产品目录差分：新增 ${pdiff.added} / 更新 ${pdiff.updated} / 保留 ${pdiff.unchanged}（共 ${finalProducts.length} 个）`)
 
 if (DRY_RUN) {
   console.log(`\n[dry-run] 未写出文件（目标: ${path.relative(ROOT, OUT_FILE)}）`)
