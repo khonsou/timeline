@@ -12,6 +12,8 @@ npm run build      # 构建
 
 ## 批量导入真实数据（CLI）
 
+> 📖 完整使用指南（自包含，可直接粘贴到飞书文档）：[docs/cli-import-guide.md](docs/cli-import-guide.md)
+
 ```bash
 npm run import:data -- <文件.json|文件.csv> [--dry-run] [--merge] [--strict]
 ```

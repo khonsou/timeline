@@ -157,10 +157,12 @@ export function guideCards(): { items: ContentItem[]; orders: Orders } {
       'CLI 批量导入真实数据',
       '数据',
       '23:59',
-      '· npm run import:data -- 你的数据.csv（或 .json）\n' +
-        '· 支持中文字段名表头；--dry-run 先校验不写文件；--merge 合并已有数据\n' +
+      '· 命令：npm run import:data -- 你的数据.csv（或 .json）\n' +
+        '· --dry-run 先校验不写文件 · --merge 合并已有数据 · --strict 遇错即停\n' +
+        '· 支持中文字段名表头；id 可留空（按内容哈希自动生成）\n' +
         '· 导入后刷新页面自动生效；字段口径见 src/types/content.ts\n' +
-        '· 示例文件：examples/import-sample.json / import-sample.csv',
+        '· 示例文件：examples/import-sample.json / import-sample.csv\n' +
+        '· 完整指南：docs/cli-import-guide.md（可直接粘贴到飞书文档）',
     ),
   ]
   return { items, orders: { [items[0].id]: 0, [items[1].id]: 1 } }
