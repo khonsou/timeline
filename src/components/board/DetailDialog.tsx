@@ -179,14 +179,14 @@ export default function DetailDialog({
             // 必须在弹窗层 preventDefault（读到的是当前渲染的编辑态，先于取消生效）
             if (editingTitle || editingComment || editingField || typePickerOpen) e.preventDefault()
           }}
-          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none sm:max-w-md"
+          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none"
         >
           {card && (
             <>
               <DialogTitle className="sr-only">卡片详情</DialogTitle>
 
-              {/* 1. 头部：类型胶囊（可点击换类型）+ 状态徽章 + 关闭 */}
-              <div className="flex items-center gap-2">
+              {/* 1. 头部（固定不滚）：类型胶囊（可点击换类型）+ 状态徽章 + 关闭 */}
+              <div className="flex shrink-0 items-center gap-2 border-b border-slate-100 px-6 pb-3 pt-4 shadow-[0_1px_3px_rgba(15,23,42,0.04)]">
                 <TypePicker
                   key={card.id}
                   value={card.type}
@@ -212,6 +212,11 @@ export default function DetailDialog({
                 </DialogPrimitive.Close>
               </div>
 
+              {/* 2~5. 内容区：独立纵向滚动（标题 / 信息网格 / 指标区 / 备注区），滚动条细且半透明 */}
+              <div
+                data-detail-scroll
+                className="min-h-0 flex-1 overflow-y-auto px-6 pb-4 [scrollbar-color:rgba(148,163,184,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300/50 [&::-webkit-scrollbar-track]:bg-transparent"
+              >
               {/* 2. 大标题：点击 inline 编辑 */}
               {editingTitle ? (
                 <input
@@ -439,8 +444,9 @@ export default function DetailDialog({
                 <p className="text-[10px] text-slate-400">备注 / 复盘</p>
                 {editingComment ? (
                   <textarea
+                    data-edit-input="comment"
                     autoFocus
-                    rows={3}
+                    rows={8}
                     value={draftComment}
                     onChange={(e) => setDraftComment(e.target.value)}
                     onKeyDown={(e) => {
@@ -455,10 +461,11 @@ export default function DetailDialog({
                     }}
                     onBlur={commitComment}
                     placeholder="添加备注…"
-                    className="mt-1.5 w-full resize-none rounded-lg border border-indigo-300 bg-white px-2.5 py-2 text-sm leading-relaxed text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-200"
+                    className="mt-1.5 min-h-40 w-full resize-y rounded-lg border border-indigo-300 bg-white px-2.5 py-2 text-sm leading-relaxed text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-200"
                   />
                 ) : (
                   <p
+                    data-edit-field="comment"
                     onClick={startCommentEdit}
                     title="点击编辑备注"
                     className={`mt-1.5 cursor-text whitespace-pre-line rounded-lg px-2.5 py-2 -mx-1 text-sm leading-relaxed transition-colors hover:bg-slate-50 ${
@@ -469,11 +476,13 @@ export default function DetailDialog({
                   </p>
                 )}
               </div>
+              </div>{/* /2~5 内容区滚动容器 */}
 
-              {/* 6. 底部：删除 */}
-              <div className="mt-5 flex justify-end">
+              {/* 6. 底部（固定不滚）：删除 */}
+              <div className="flex shrink-0 justify-end border-t border-slate-100 px-6 py-3">
                 <button
                   type="button"
+                  data-detail-delete
                   onClick={() => onDelete(card.id)}
                   className="rounded-lg px-3 py-1.5 text-sm text-rose-500 transition-colors hover:bg-rose-50 hover:text-rose-600"
                 >
