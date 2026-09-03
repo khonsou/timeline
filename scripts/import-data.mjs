@@ -3,10 +3,13 @@
  * 拾光轴 · Timeline Board —— 真实数据批量导入 CLI
  *
  * 用法：npm run import:data -- <文件.json|文件.csv> [--dry-run] [--merge] [--strict]
+ *       npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-run] [--merge] [--strict]
  *
- * 读取 JSON/CSV → 逐行校验并归一化为 ContentItem → 计算 orders →
+ * items 模式：读取 JSON/CSV → 逐行校验并归一化为 ContentItem → 计算 orders →
  * 写出 public/data/board.json（{ items, orders, products?, importedAt }）。
- * 无第三方依赖。详细字段口径见 src/types/content.ts 与 README.md。
+ * products 独立模式：仅导入产品目录 → 写出 { products, importedAt }（无 items 键，
+ * 应用端只接管产品目录，不动现有内容卡片）。无第三方依赖。
+ * 详细字段口径见 src/types/content.ts 与 README.md。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -45,9 +48,11 @@ const file = args.find((a) => !a.startsWith('--'))
 const DRY_RUN = flags.has('--dry-run')
 const MERGE = flags.has('--merge')
 const STRICT = flags.has('--strict')
+const PRODUCTS_MODE = flags.has('--products') // 独立产品目录导入（不与 items 文件混用）
 
 if (!file) {
   console.error('用法: npm run import:data -- <文件.json|文件.csv> [--dry-run] [--merge] [--strict]')
+  console.error('      npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-run] [--merge] [--strict]')
   process.exit(2)
 }
 if (!existsSync(file)) {
@@ -193,7 +198,139 @@ function computeOrders(items) {
 }
 
 // ---------------------------------------------------------------------------
-// 主流程
+// products 独立模式：仅产品目录导入
+// 写出 { products, importedAt }（无 items 键）——应用端仅接管产品目录，不动 items/orders
+// ---------------------------------------------------------------------------
+const PRODUCT_ALIAS = {
+  id: 'id',
+  产品ID: 'id',
+  产品编号: 'id',
+  name: 'name',
+  产品名: 'name',
+  产品名称: 'name',
+  名称: 'name',
+}
+
+function readProductsInput(filePath) {
+  const ext = path.extname(filePath).toLowerCase()
+  const text = readFileSync(filePath, 'utf8')
+  const norm = (rec) => {
+    const out = {}
+    for (const [k, v] of Object.entries(rec ?? {})) {
+      const key = PRODUCT_ALIAS[String(k).trim()] ?? String(k).trim()
+      if (key === 'id' || key === 'name') out[key] = v
+    }
+    return out
+  }
+  if (ext === '.json') {
+    const data = JSON.parse(text)
+    const arr = Array.isArray(data) ? data : Array.isArray(data?.products) ? data.products : null
+    if (!arr) throw new Error('JSON 须为产品数组，或 { products: [...] } 包裹形式')
+    return arr.map((p) => norm(p && typeof p === 'object' ? p : {}))
+  }
+  if (ext === '.csv') {
+    const rows = parseCsv(text)
+    if (rows.length < 1) throw new Error('CSV 为空')
+    const header = rows[0].map((h) => h.trim())
+    return rows.slice(1).map((r) => {
+      const rec = {}
+      header.forEach((h, i) => {
+        if (h) rec[h] = r[i] ?? ''
+      })
+      return norm(rec)
+    })
+  }
+  throw new Error(`不支持的文件类型: ${ext}（仅 .json / .csv）`)
+}
+
+if (PRODUCTS_MODE) {
+  let rawProducts
+  try {
+    rawProducts = readProductsInput(file)
+  } catch (e) {
+    console.error(`解析失败: ${e.message}`)
+    process.exit(2)
+  }
+  const isCsvFile = path.extname(file).toLowerCase() === '.csv'
+  const validProducts = []
+  const skippedProducts = [] // { row, reason }
+  const seenProductIds = new Set()
+
+  for (const [idx, rec] of rawProducts.entries()) {
+    const rowLabel = isCsvFile ? `CSV 第 ${idx + 2} 行` : `第 ${idx + 1} 条`
+    const fail = (reason) => {
+      if (STRICT) {
+        console.error(`✗ ${rowLabel}: ${reason}\n--strict 模式，遇第一个无效行退出`)
+        process.exit(1)
+      }
+      skippedProducts.push({ row: rowLabel, reason })
+    }
+
+    // id：必填非空且文件内唯一
+    const id = String(rec.id ?? '').trim()
+    if (!id) {
+      fail('产品 id 必填且非空')
+      continue
+    }
+    if (seenProductIds.has(id)) {
+      fail(`产品 id 重复: ${id}`)
+      continue
+    }
+    // name：必填非空
+    const name = String(rec.name ?? '').trim()
+    if (!name) {
+      fail('产品名称必填且非空')
+      continue
+    }
+    seenProductIds.add(id)
+    validProducts.push({ id, name })
+  }
+
+  // --merge：按 id 合并进已有 board.json 的 products（新覆盖旧）；
+  // 已有文件无 products（或不存在）时退化为替换。dry-run 同样预演合并结果（不写文件）
+  let finalProducts = validProducts
+  if (MERGE && existsSync(OUT_FILE)) {
+    try {
+      const prev = JSON.parse(readFileSync(OUT_FILE, 'utf8'))
+      if (Array.isArray(prev?.products)) {
+        const map = new Map(prev.products.map((p) => [String(p.id), p]))
+        for (const p of validProducts) map.set(p.id, p) // 同 id 覆盖、新 id 追加
+        finalProducts = [...map.values()]
+      }
+    } catch {
+      console.warn('⚠ 已有 board.json 解析失败，--merge 退化为全量替换')
+    }
+  }
+
+  console.log('\n📥 产品目录导入报告')
+  console.log(`源文件: ${path.resolve(file)}`)
+  console.log(
+    `模式: ${DRY_RUN ? 'dry-run（不写文件）' : MERGE ? 'merge（按 id 合并进已有 products，新覆盖旧）' : '全量替换产品目录'}`,
+  )
+  console.log(`总条数: ${rawProducts.length} | 有效: ${validProducts.length} | 跳过: ${skippedProducts.length}`)
+  for (const s of skippedProducts) console.log(`  ✗ ${s.row}: ${s.reason}`)
+  console.log(`产品目录（${finalProducts.length} 个）:`)
+  for (const p of finalProducts) console.log(`  ${p.id}  ${p.name}`)
+
+  if (DRY_RUN) {
+    console.log(`\n[dry-run] 未写出文件（目标: ${path.relative(ROOT, OUT_FILE)}）`)
+  } else {
+    mkdirSync(path.dirname(OUT_FILE), { recursive: true })
+    writeFileSync(
+      OUT_FILE,
+      JSON.stringify({ products: finalProducts, importedAt: new Date().toISOString() }, null, 2) + '\n',
+      'utf8',
+    )
+    console.log(`\n✓ 已写出: ${path.relative(ROOT, OUT_FILE)}（${finalProducts.length} 个产品）`)
+    console.log('  仅接管产品目录、不影响现有内容卡片；下次打开/刷新页面时自动生效')
+  }
+
+  // exit code 语义同 items 版：strict 已在上面处理；默认有跳过 → 1，全有效 → 0
+  process.exit(skippedProducts.length > 0 ? 1 : 0)
+}
+
+// ---------------------------------------------------------------------------
+// 主流程（items 模式）
 // ---------------------------------------------------------------------------
 let input
 try {
@@ -211,6 +348,7 @@ const valid = []
 const skipped = [] // { row, reason }
 const warnings = [] // 未知 product_id
 let forcedNullCount = 0
+let emptyProductCount = 0 // 未填写归属产品（置 ''，UI 显示「不明」）
 const seenIds = new Set()
 
 for (const [idx, rec] of input.records.entries()) {
@@ -259,14 +397,13 @@ for (const [idx, rec] of input.records.entries()) {
     continue
   }
 
-  // product_id：必填；不在目录 → 警告但保留
+  // product_id：可空——缺失/空置 ''（未归属，UI 显示「不明」，报告汇总，不跳行）；
+  // 有值但不在目录 → 警告但保留（显示侧同样降级为「不明」，tooltip 保留原始 id）
   const product_id = String(rec.product_id ?? '').trim()
   if (!product_id) {
-    fail('product_id 必填且非空')
-    continue
-  }
-  if (!knownProducts.has(product_id)) {
-    warnings.push(`${rowLabel}: 未知 product_id "${product_id}"（已保留，UI 降级显示 id）`)
+    emptyProductCount++
+  } else if (!knownProducts.has(product_id)) {
+    warnings.push(`${rowLabel}: 未知 product_id "${product_id}"（已保留，UI 显示「不明」）`)
   }
 
   // 指标：可空 / 非负数字；未发布强制 null
@@ -347,6 +484,8 @@ for (const s of skipped) console.log(`  ✗ ${s.row}: ${s.reason}`)
 const unpublishedCount = valid.filter((it) => it.publish_at > NOW).length
 console.log(`未发布（publish_at 晚于当前时间，指标已强制置 null）: ${unpublishedCount} 条`)
 if (forcedNullCount > 0) console.log(`  其中 ${forcedNullCount} 条原本带了指标值，已按未发布语义置 null`)
+if (emptyProductCount > 0)
+  console.log(`未填写归属产品: ${emptyProductCount} 条（已置空，UI 显示「不明」）`)
 if (warnings.length > 0) {
   console.log(`未知 product_id 警告 (${warnings.length}):`)
   for (const w of warnings) console.log(`  ⚠ ${w}`)

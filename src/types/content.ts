@@ -36,7 +36,11 @@ export interface ContentItem {
   /** 评审备注 / 复盘文案，允许为空字符串 */
   comment: string
 
-  /** 归属产品 id，引用 content-data.ts 的 PRODUCTS 目录 */
+  /**
+   * 归属产品 id，引用 content-data.ts 的产品目录（seed 目录优先、内置目录 fallback）。
+   * `''` 语义 = 未归属，显示「不明」；目录查不到的 id 同样显示「不明」
+   * （tooltip 保留原始 id 便于排查）。
+   */
   product_id: string
 
   /**

@@ -16,15 +16,17 @@ npm run build      # 构建
 
 ```bash
 npm run import:data -- <文件.json|文件.csv> [--dry-run] [--merge] [--strict]
+npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-run] [--merge] [--strict]
 ```
 
 - 读取 JSON / CSV → 逐行校验、归一化为 `ContentItem` → 按日期分组计算 orders → 写出 `public/data/board.json`（结构 `{ items, orders, products?, importedAt }`）。
 - **下次打开或刷新页面自动生效**：应用启动时 `fetch('data/board.json')`，若其 `importedAt` 与 localStorage 中记录的标记不同，则采用文件数据并覆写 localStorage；相同则保留页面上的后续编辑。再次执行 CLI 导入（产生新 `importedAt`）才会重新接管。
+- `--products`（独立产品目录导入，不与 items 文件混用）：只导入产品目录，写出 `{ products, importedAt }`（无 `items` 键）——页面接管时**仅更新产品目录，不动现有内容卡片**；默认替换 seed 产品目录，`--merge` 按 id 合并（新覆盖旧）。产品文件格式：JSON 为 `[{ "id", "name" }, ...]` 或 `{ "products": [...] }`；CSV 表头 `产品ID,产品名称`（别名：id/产品ID/产品编号、name/产品名/产品名称/名称）。校验：id 必填非空且文件内唯一、name 必填非空，逐行带行号报错，退出码语义同 items 版。
 - `--dry-run`：只校验 + 打印报告，不写文件。
 - `--merge`：合并进已有 `board.json`（同 id 覆盖、新 id 追加，orders 全量重算）；默认全量替换。
 - `--strict`：遇第一个无效行即非零退出；默认跳过无效行并在报告汇总（有跳过 exit 1，全有效 exit 0）。
 
-示例文件：`examples/import-sample.json`（含自定义 products 目录）、`examples/import-sample.csv`（中文表头、含引号转义演示）。
+示例文件：`examples/import-sample.json`（含自定义 products 目录）、`examples/import-sample.csv`（中文表头、含引号转义演示）、`examples/products-sample.json` / `examples/products-sample.csv`（独立产品目录）。
 
 ### 文件格式
 
@@ -38,7 +40,7 @@ npm run import:data -- <文件.json|文件.csv> [--dry-run] [--merge] [--strict]
 | 计划发布时间 | `publish_at` | 必填；接受 `YYYY-MM-DDTHH:mm`、`YYYY-MM-DD HH:mm`、`YYYY/M/D H:mm`（可带秒），统一归一化为 `YYYY-MM-DDTHH:mm`；日期不限于看板默认窗口 |
 | ROI | `roi` | 可空或非负数字；未发布强制置 null |
 | 备注 | `comment` | 可空，默认 `''` |
-| 产品ID | `product_id` | 必填非空；不在目录中 → 警告但保留（UI 降级显示 id） |
+| 产品ID | `product_id` | 可空：缺失/空置 `''`（未归属，UI 显示「不明」，报告汇总条数，不跳行）；不在目录中 → 警告但保留（UI 同样显示「不明」，tooltip 保留原始 id 便于排查） |
 | 曝光4h | `propagation_4h` | 可空或非负数字；未发布强制置 null |
 | 互动4h | `engagement_4h` | 可空或非负数字；未发布强制置 null |
 

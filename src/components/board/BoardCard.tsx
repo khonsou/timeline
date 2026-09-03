@@ -3,7 +3,7 @@ import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import type { ContentItem } from '@/types/content'
-import { TAGS, resolveProduct } from '@/lib/content-data'
+import { TAGS, UNKNOWN_PRODUCT_CLS, resolveProduct } from '@/lib/content-data'
 import { publishDateOf, publishTimeOf, isPublished } from '@/lib/board-view'
 import { formatCompact, formatRoi } from '@/lib/format'
 
@@ -141,8 +141,12 @@ function CardView(p: CardViewProps) {
           <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-500">
             {publishTimeOf(p.card)}
           </span>
-          <span className="truncate text-[11px] text-slate-400">
-            {product?.name ?? p.card.product_id}
+          <span
+            data-card-product
+            title={product.unknown && product.rawId ? `原始 product_id: ${product.rawId}` : undefined}
+            className={`truncate text-[11px] ${product.unknown ? UNKNOWN_PRODUCT_CLS : 'text-slate-400'}`}
+          >
+            {product.name}
           </span>
         </div>
       </div>

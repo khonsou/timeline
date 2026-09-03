@@ -49,7 +49,8 @@ export const PRODUCT_BY_ID: Record<string, Product> = Object.fromEntries(
   PRODUCTS.map((p) => [p.id, p]),
 )
 
-// 运行时产品目录：board.json 携带 products 时优先于内置目录；未知 id 降级显示 id 本身
+// 运行时产品目录：board.json 携带 products 时优先于内置目录；
+// 空 id / 目录未命中 → 「不明」（name 固定为「不明」，rawId 保留原始值供 tooltip 排查）
 let runtimeProducts: Record<string, Product> | null = null
 export function setRuntimeProducts(products?: Product[]) {
   runtimeProducts =
@@ -57,8 +58,28 @@ export function setRuntimeProducts(products?: Product[]) {
       ? Object.fromEntries(products.map((p) => [p.id, p]))
       : null
 }
-export function resolveProduct(id: string): Product {
-  return runtimeProducts?.[id] ?? PRODUCT_BY_ID[id] ?? { id, name: id }
+
+export const UNKNOWN_PRODUCT_LABEL = '不明'
+/** 「不明」共用视觉：淡色 + 极轻虚线下划线，与正常产品名区分但不刺眼 */
+export const UNKNOWN_PRODUCT_CLS =
+  'text-slate-300 underline decoration-dotted decoration-slate-300/80 underline-offset-2'
+
+export interface ResolvedProduct extends Product {
+  /** true = 未归属（空 id）或目录未命中；此时 name 固定为「不明」 */
+  unknown: boolean
+  /** 原始 product_id（unknown 且非空时用于 tooltip 排查；命中时等同 id） */
+  rawId: string
+}
+
+/**
+ * 归属产品解析（卡片面与详情页共用）：seed 目录优先 → 内置目录（含 P-1000）fallback →
+ * 空 id / 未命中 → 「不明」。保证任何 product_id 取值下显示都不出 bug。
+ */
+export function resolveProduct(id: string): ResolvedProduct {
+  const raw = String(id ?? '').trim()
+  const hit = runtimeProducts?.[raw] ?? PRODUCT_BY_ID[raw]
+  if (hit) return { ...hit, unknown: false, rawId: raw }
+  return { id: raw, name: UNKNOWN_PRODUCT_LABEL, unknown: true, rawId: raw }
 }
 
 /** 当前生效的产品目录：内置 PRODUCTS + 运行时（seed products 优先覆盖）去重合并 */

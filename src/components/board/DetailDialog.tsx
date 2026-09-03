@@ -4,7 +4,7 @@ import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
 import TypePicker from '@/components/board/TypePicker'
 import type { ContentItem } from '@/types/content'
-import { listProducts, resolveProduct } from '@/lib/content-data'
+import { UNKNOWN_PRODUCT_CLS, listProducts, resolveProduct } from '@/lib/content-data'
 import { isPublished } from '@/lib/board-view'
 import { formatCompact, formatPublishAt, formatRoi } from '@/lib/format'
 
@@ -285,7 +285,13 @@ export default function DetailDialog({
                     <select
                       data-edit-input="product_id"
                       autoFocus
-                      value={draft}
+                      // 当前值为空/未知 id 时显示在「不明」项；原始 id 放 tooltip 排查
+                      value={listProducts().some((p) => p.id === draft) ? draft : ''}
+                      title={
+                        draft && !listProducts().some((p) => p.id === draft)
+                          ? `原始 product_id: ${draft}`
+                          : undefined
+                      }
                       onChange={(e) => {
                         onUpdate(card.id, { product_id: e.target.value })
                         cancelField()
@@ -299,6 +305,7 @@ export default function DetailDialog({
                       }}
                       className={`mt-0.5 ${INPUT_BASE} ${INPUT_OK}`}
                     >
+                      <option value="">不明（不归属）</option>
                       {listProducts().map((p) => (
                         <option key={p.id} value={p.id}>
                           {p.name}（{p.id}）
@@ -309,11 +316,27 @@ export default function DetailDialog({
                     <p
                       data-edit-field="product_id"
                       onClick={() => startField('product_id', card.product_id)}
-                      title="点击编辑"
+                      title={
+                        product?.unknown
+                          ? product.rawId
+                            ? `原始 product_id: ${product.rawId}（点击编辑）`
+                            : '未归属产品（点击编辑）'
+                          : '点击编辑'
+                      }
                       className="mt-0.5 cursor-pointer truncate rounded px-1 -mx-1 text-[13px] font-medium text-slate-700 transition-colors hover:bg-white"
                     >
-                      {product?.name ?? card.product_id}{' '}
-                      <span className="text-[11px] font-normal text-slate-400">{card.product_id}</span>
+                      {product?.unknown ? (
+                        <span data-detail-product-unknown className={UNKNOWN_PRODUCT_CLS}>
+                          不明
+                        </span>
+                      ) : (
+                        <>
+                          {product?.name}{' '}
+                          <span className="text-[11px] font-normal text-slate-400">
+                            {card.product_id}
+                          </span>
+                        </>
+                      )}
                     </p>
                   )}
                 </div>

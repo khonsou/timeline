@@ -127,29 +127,47 @@ export default function App() {
       .then((seed: unknown) => {
         if (cancelled || !seed) return
         const importedAt = (seed as { importedAt?: unknown }).importedAt
-        const valid = validateState(seed)
-        if (!valid || typeof importedAt !== 'string') return
-        // importedAt 与 localStorage 标记相同 ⇒ 用户编辑已在 localStorage，不再接管
+        if (typeof importedAt !== 'string') return
+        // importedAt 与 localStorage 标记相同 ⇒ 已接管过（用户编辑在 localStorage），不再接管
         if (localStorage.getItem(SEED_MARKER_KEY) === importedAt) return
 
         const products = (seed as { products?: unknown }).products
-        try {
-          if (
-            Array.isArray(products) &&
-            products.length > 0 &&
-            products.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
-          ) {
-            setRuntimeProducts(products as Product[])
-            localStorage.setItem(SEED_PRODUCTS_KEY, JSON.stringify(products))
-          } else {
-            setRuntimeProducts(undefined)
-            localStorage.removeItem(SEED_PRODUCTS_KEY)
+        const validProducts =
+          Array.isArray(products) &&
+          products.length > 0 &&
+          products.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
+            ? (products as Product[])
+            : null
+        const valid = validateState(seed)
+
+        if (valid) {
+          // 全量接管：items + orders（products 有则接管目录、无则回落内置目录）
+          try {
+            if (validProducts) {
+              setRuntimeProducts(validProducts)
+              localStorage.setItem(SEED_PRODUCTS_KEY, JSON.stringify(validProducts))
+            } else {
+              setRuntimeProducts(undefined)
+              localStorage.removeItem(SEED_PRODUCTS_KEY)
+            }
+            localStorage.setItem(SEED_MARKER_KEY, importedAt)
+          } catch {
+            // 存储不可用时仅内存生效
           }
-          localStorage.setItem(SEED_MARKER_KEY, importedAt)
-        } catch {
-          // 存储不可用时仅内存生效
+          setState(valid)
+          return
         }
-        setState(valid)
+
+        // 仅产品目录接管（board.json 无 items 键）：不动用户现有 items/orders
+        if (validProducts) {
+          try {
+            setRuntimeProducts(validProducts)
+            localStorage.setItem(SEED_PRODUCTS_KEY, JSON.stringify(validProducts))
+            localStorage.setItem(SEED_MARKER_KEY, importedAt)
+          } catch {
+            // 存储不可用时仅内存生效
+          }
+        }
       })
       .catch(() => {
         // 404 / 解析失败：静默跳过
