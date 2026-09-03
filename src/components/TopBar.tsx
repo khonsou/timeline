@@ -6,7 +6,6 @@ interface TopBarProps {
   dateStr: string
   onBackToToday: () => void
   onAddToToday: () => void
-  onReset: () => void
 }
 
 export default function TopBar({
@@ -15,7 +14,6 @@ export default function TopBar({
   dateStr,
   onBackToToday,
   onAddToToday,
-  onReset,
 }: TopBarProps) {
   return (
     <header className="z-20 shrink-0 border-b border-slate-200/80 bg-white/85 backdrop-blur">
@@ -43,9 +41,6 @@ export default function TopBar({
           </Button>
           <Button size="sm" onClick={onAddToToday}>
             + 空卡片
-          </Button>
-          <Button size="sm" variant="outline" onClick={onReset}>
-            重置数据
           </Button>
         </div>
       </div>

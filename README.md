@@ -2,6 +2,8 @@
 
 简化版 Trello，但把「列」换成时间轴：横轴为日期（默认今天 ±14 天，数据驱动可扩展），纵列为当天内容卡片。React + TypeScript + Vite + Tailwind + shadcn/ui + dnd-kit，纯本地 H5，数据存 localStorage。
 
+**首次启动**：没有历史数据时，今天列会出现两张引导卡（「欢迎使用拾光轴 · 5 分钟上手」与「CLI 批量导入真实数据」），点开即可查看完整操作说明；删掉它们或开始录入自己的内容后，引导卡不会再次出现。
+
 ```bash
 npm install
 npm run dev        # 开发
@@ -46,11 +48,14 @@ npm run import:data -- <文件.json|文件.csv> [--dry-run] [--merge] [--strict]
 
 **数据驱动的看板窗口**：日列范围 = `max(今天 ±14 天, 数据最早/最晚日期)`，窗口外的历史/未来数据导入后自动扩列。
 
-### 数据优先级与重置语义
+### 数据优先级与初始数据
 
-优先级：**`board.json`（importedAt 变化时接管） > localStorage > dummy data**。
+优先级：**`board.json`（importedAt 变化时接管） > localStorage（`timeline-board-v4`） > 首次启动引导卡**。
 
-顶栏「重置数据」= 清空 localStorage 并重新生成 dummy data，同时**吸收当前 seed 标记**——重置后旧的 `board.json` 不会再接管；再次执行 CLI 导入（新 `importedAt`）才会重新接管。也就是说：导入了 `board.json` 之后，重置一次即可安心回到 dummy；想恢复成导入的数据，删掉 `public/data/board.json` 后重新跑一次导入即可。
+- localStorage 中没有数据（首次启动）→ 播种两张引导卡（今天列，待发布、无指标）。
+- localStorage 数据结构合法即照用——**包括空数组**：把卡片全部删除是你的合法状态，刷新不会复活引导卡。
+- localStorage 数据损坏 → 视同首次启动，重新播种引导卡。
+- 想清空全部数据重新开始：浏览器 DevTools 里清除站点数据（或 `localStorage.clear()`）后刷新，即回到两张引导卡的初始状态。
 
 ### 无效行演示
 

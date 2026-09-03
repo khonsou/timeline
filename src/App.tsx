@@ -6,7 +6,7 @@ import type { ContentItem, ContentType } from '@/types/content'
 import {
   PRODUCTS,
   TYPE_KEYS,
-  generateContent,
+  guideCards,
   pad2,
   setRuntimeProducts,
   todayStr,
@@ -15,9 +15,9 @@ import {
 } from '@/lib/content-data'
 import { nextOrder, publishDateOf, type Orders } from '@/lib/board-view'
 
-const STORAGE_KEY = 'timeline-board-v3'
-const SEED_MARKER_KEY = 'timeline-board-v3:seedImportedAt'
-const SEED_PRODUCTS_KEY = 'timeline-board-v3:seedProducts'
+const STORAGE_KEY = 'timeline-board-v4'
+const SEED_MARKER_KEY = 'timeline-board-v4:seedImportedAt'
+const SEED_PRODUCTS_KEY = 'timeline-board-v4:seedProducts'
 const PUBLISH_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
 
 interface PersistedState {
@@ -25,13 +25,13 @@ interface PersistedState {
   orders: Orders
 }
 
-// 校验 { items, orders } 结构；合法返回修补后的数据，非法返回 null
+// 校验 { items, orders } 结构；合法返回修补后的数据，非法返回 null。
+// items 允许为空数组——用户删光卡片是合法状态，刷新不得复活引导卡。
 function validateState(parsed: unknown): PersistedState | null {
   const items = (parsed as PersistedState | null)?.items
   const orders = (parsed as PersistedState | null)?.orders
   if (
     Array.isArray(items) &&
-    items.length > 0 &&
     items.every(
       (c) =>
         c &&
@@ -63,7 +63,10 @@ function validateState(parsed: unknown): PersistedState | null {
   return null
 }
 
-// localStorage 持久化：启动时读取并校验，非法则重新生成假数据
+// localStorage 加载语义：
+//   key 不存在（首次启动）→ 播种两张引导卡；
+//   key 存在且结构合法（含空 items）→ 照用；
+//   key 存在但结构损坏 → 视同首次启动，重新播种引导卡。
 function loadState(): PersistedState {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -72,9 +75,9 @@ function loadState(): PersistedState {
       if (valid) return valid
     }
   } catch {
-    // 数据损坏时回落到假数据
+    // 数据损坏时落到引导卡
   }
-  return generateContent()
+  return guideCards()
 }
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
@@ -86,8 +89,6 @@ export default function App() {
   const [detailCardId, setDetailCardId] = useState<string | null>(null)
   const [detailAutoEdit, setDetailAutoEdit] = useState(false)
   const boardApiRef = useRef<BoardApi | null>(null)
-  // 最近一次从 board.json 看到的 importedAt（重置时吸收标记用）
-  const lastSeedImportedAt = useRef<string | null>(null)
 
   // 每次变更写入 localStorage
   useEffect(() => {
@@ -99,8 +100,8 @@ export default function App() {
   }, [state])
 
   // ------------------------------------------------------------------
-  // 启动加载顺序：board.json（importedAt 变化才接管）> localStorage > dummy
-  // 同步部分已用 localStorage/dummy 渲染，这里异步检查 CLI 导入的 seed
+  // 启动加载顺序：board.json（importedAt 变化才接管）> localStorage > 引导卡
+  // 同步部分已用 localStorage/引导卡渲染，这里异步检查 CLI 导入的 seed
   // ------------------------------------------------------------------
   useEffect(() => {
     // 上次 seed 携带的产品目录（导入接管时持久化下来的）
@@ -128,7 +129,6 @@ export default function App() {
         const importedAt = (seed as { importedAt?: unknown }).importedAt
         const valid = validateState(seed)
         if (!valid || typeof importedAt !== 'string') return
-        lastSeedImportedAt.current = importedAt
         // importedAt 与 localStorage 标记相同 ⇒ 用户编辑已在 localStorage，不再接管
         if (localStorage.getItem(SEED_MARKER_KEY) === importedAt) return
 
@@ -255,19 +255,6 @@ export default function App() {
 
   const addToToday = () => addCard(todayStr())
 
-  const resetData = () => {
-    closeDetail()
-    // 重置 = 清 localStorage 并重新生成 dummy。
-    // 吸收当前 seed 标记：重置后旧 board.json 不再接管；
-    // 再次 CLI 导入（新 importedAt）才会重新接管
-    try {
-      localStorage.setItem(SEED_MARKER_KEY, lastSeedImportedAt.current ?? '')
-    } catch {
-      // ignore
-    }
-    setState(generateContent())
-  }
-
   const detailCard = detailCardId ? (items.find((c) => c.id === detailCardId) ?? null) : null
 
   return (
@@ -278,7 +265,6 @@ export default function App() {
         dateStr={dateStr}
         onBackToToday={() => boardApiRef.current?.scrollToToday('smooth')}
         onAddToToday={addToToday}
-        onReset={resetData}
       />
       <Board
         items={items}

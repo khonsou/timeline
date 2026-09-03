@@ -18,7 +18,7 @@ const OUT_FILE = path.join(ROOT, 'public', 'data', 'board.json')
 
 const TYPES = ['图文', '视频', '音频', '直播', '数据']
 // 内置产品目录（与 src/lib/content-data.ts 的 PRODUCTS 保持一致）
-const BUILTIN_PRODUCTS = new Set(['P-1001', 'P-1002', 'P-1003', 'P-1004', 'P-1005', 'P-1006'])
+const BUILTIN_PRODUCTS = new Set(['P-1000', 'P-1001', 'P-1002', 'P-1003', 'P-1004', 'P-1005', 'P-1006'])
 
 // 中文表头/字段别名 → ContentItem 英文字段
 const ALIAS = {

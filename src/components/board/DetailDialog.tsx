@@ -461,7 +461,7 @@ export default function DetailDialog({
                   <p
                     onClick={startCommentEdit}
                     title="点击编辑备注"
-                    className={`mt-1.5 cursor-text whitespace-pre-wrap rounded-lg px-2.5 py-2 -mx-1 text-sm leading-relaxed transition-colors hover:bg-slate-50 ${
+                    className={`mt-1.5 cursor-text whitespace-pre-line rounded-lg px-2.5 py-2 -mx-1 text-sm leading-relaxed transition-colors hover:bg-slate-50 ${
                       card.comment ? 'text-slate-600' : 'text-slate-300'
                     }`}
                   >
