@@ -18,6 +18,7 @@ npm run build      # 构建前端产物 dist/（部署见 docs/deployment.md）
 - **服务端**（`server/index.mjs`，Node ≥ 22.5 直跑）：单表 `boards`（board_id 16 位 hex / name / doc JSON / version / password_hash / 时间戳）；doc = `{ items, orders, products, members, meta }`，前端四份状态原样打包。密码 scrypt 加盐哈希（`scrypt:<salt>:<hash>` + timingSafeEqual 校验），token = `base64url(payload).base64url(HMAC-SHA256)`（密钥 `BOARD_SECRET`，**生产必须设固定值**，缺省随机则重启后 token 全失效）。
 - **本机缓存**：localStorage `timeline-board-v4:b:<boardId>` 存整份 doc——离线/慢网也能先看到内容，全量 GET 随后接管。
 - **部署**：nginx 静态托管 `dist/` + 反代 `/api` → `server/index.mjs`（pm2 托管），见 [docs/deployment.md](docs/deployment.md) 与 `deploy/`（nginx.conf / ecosystem.config.cjs）；备份 = 拷贝 SQLite 文件。
+- **Agent API（v18）**：第三方 agent 的 item 级读写端点（items 过滤查询 / 单卡 GET / 白名单 PATCH / products / members 目录），逐字段审计（`audit_log` 表 + GET `/audit`）+ 每板每 IP 120 次/分钟限速；鉴权与人同一套密码换 token，完整说明见 [docs/agent-api.md](docs/agent-api.md)。
 
 ## 时间轴窗口与容量（v16）
 
