@@ -1,4 +1,4 @@
-import type { ContentItem, ContentType } from '@/types/content'
+import type { ContentItem, ContentType, Member } from '@/types/content'
 import type { Orders } from './board-view'
 import { publishDateOf } from './board-view'
 
@@ -84,6 +84,52 @@ export function listProducts(): Product[] {
 }
 
 // ---------------------------------------------------------------------------
+// 成员目录（与产品目录完全同构）：ContentItem.content_owner_id / delivery_owner_id 引用之。
+// 内置种子仅 2 个示例成员；真实成员通过 CLI 导入自动登记 / 应用内「成员管理」进入运行时目录
+// ---------------------------------------------------------------------------
+export const MEMBERS: Member[] = [
+  { id: 'M-1001', name: '林晓' },
+  { id: 'M-1002', name: '陈远' },
+]
+export const MEMBER_BY_ID: Record<string, Member> = Object.fromEntries(
+  MEMBERS.map((m) => [m.id, m]),
+)
+
+// 运行时成员目录 = App 的一等成员状态（localStorage 持久化；初始 = 内置种子）。
+// App 的任何成员变更（成员管理增删改 / CLI 导入接管 / UI 导入 memberHints）都经
+// setRuntimeMembers 同步到这里；空 id / 目录未命中 → 「未分配」（rawId 供 tooltip 排查）
+let runtimeMembers: Record<string, Member> = { ...MEMBER_BY_ID }
+export function setRuntimeMembers(members?: Member[]) {
+  // undefined → 回落内置种子；[]（空目录）是合法状态（用户删光成员），原样生效
+  runtimeMembers =
+    members === undefined
+      ? { ...MEMBER_BY_ID }
+      : Object.fromEntries(members.map((m) => [m.id, m]))
+}
+
+export const UNASSIGNED_MEMBER_LABEL = '未分配'
+
+export interface ResolvedMember extends Member {
+  /** true = 未分配（空 id）或目录未命中；此时 name 固定为「未分配」 */
+  unassigned: boolean
+  /** 原始 owner id（unassigned 且非空时用于 tooltip 排查；命中时等同 id） */
+  rawId: string
+}
+
+/** 负责人解析（详情页共用）：只读运行时成员目录 → 空 id / 未命中 → 「未分配」 */
+export function resolveMember(id: string): ResolvedMember {
+  const raw = String(id ?? '').trim()
+  const hit = runtimeMembers[raw]
+  if (hit) return { ...hit, unassigned: false, rawId: raw }
+  return { id: raw, name: UNASSIGNED_MEMBER_LABEL, unassigned: true, rawId: raw }
+}
+
+/** 当前生效的成员目录（= 运行时状态，选择器选项顺序即状态数组顺序） */
+export function listMembers(): Member[] {
+  return Object.values(runtimeMembers)
+}
+
+// ---------------------------------------------------------------------------
 // 日期工具
 // ---------------------------------------------------------------------------
 export const pad2 = (n: number) => String(n).padStart(2, '0')
@@ -153,6 +199,9 @@ export function guideCards(): { items: ContentItem[]; orders: Orders } {
     roi: null,
     comment,
     product_id: 'P-1000',
+    status: '待发布',
+    content_owner_id: '',
+    delivery_owner_id: '',
     propagation_4h: null,
     engagement_4h: null,
   })

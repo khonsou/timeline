@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { Boxes, Upload } from 'lucide-react'
+import { Boxes, Upload, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 
 interface TopBarProps {
@@ -9,6 +9,7 @@ interface TopBarProps {
   onBackToToday: () => void
   onAddToToday: () => void
   onOpenProducts: () => void
+  onOpenMembers: () => void
   onImportFile: (file: File) => void
 }
 
@@ -19,6 +20,7 @@ export default function TopBar({
   onBackToToday,
   onAddToToday,
   onOpenProducts,
+  onOpenMembers,
   onImportFile,
 }: TopBarProps) {
   const fileRef = useRef<HTMLInputElement>(null)
@@ -60,6 +62,10 @@ export default function TopBar({
           <Button size="sm" variant="ghost" onClick={onOpenProducts} data-products-btn>
             <Boxes className="size-3.5" />
             产品管理
+          </Button>
+          <Button size="sm" variant="ghost" onClick={onOpenMembers} data-members-btn>
+            <Users className="size-3.5" />
+            成员管理
           </Button>
           <Button size="sm" variant="ghost" onClick={() => fileRef.current?.click()} data-import-btn>
             <Upload className="size-3.5" />

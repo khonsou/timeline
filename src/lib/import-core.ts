@@ -9,7 +9,7 @@
  *
  * 注意：本文件内只允许相对路径 import（Node 裸跑不认识 '@/‘ 别名）。
  */
-import type { ContentItem } from '../types/content'
+import type { ContentItem, ContentStatus, Member } from '../types/content'
 
 export interface ProductInput {
   id: string
@@ -29,7 +29,9 @@ export interface SkippedRow {
 export interface ValidateItemsOptions {
   isCsv: boolean
   knownProducts: Set<string>
-  /** 当前时间键 YYYY-MM-DDTHH:mm（未发布判定），由调用方注入（核心不含时钟 API 之外依赖） */
+  /** 现有成员目录 姓名→id（负责人按姓名解析；未知姓名自动登记为新成员） */
+  knownMembers: Map<string, string>
+  /** 当前时间键 YYYY-MM-DDTHH:mm（status 缺省推导 / 未发布统计用），由调用方注入 */
   now: string
   /** true 时遇第一个无效行抛 StrictRowSignal（CLI --strict；UI 不用） */
   strict?: boolean
@@ -40,8 +42,10 @@ export interface ValidateItemsResult {
   skipped: SkippedRow[]
   /** 未知 product_id 的自动登记清单（name 缺省用 id 占位；内嵌 products 中已有的 id 不重复收集） */
   productHints: ProductInput[]
+  /** 未知负责人姓名的自动登记清单（按姓名；同姓名多行复用同一新 id） */
+  memberHints: Member[]
   emptyProductCount: number // 未填写归属产品（置 ''，UI 显示「不明」）
-  forcedNullCount: number // 未发布但原本带了指标值的条数
+  forcedNullCount: number // status ≠ 已发布但原本带了指标值的条数
 }
 
 export interface MergeProductsResult {
@@ -85,6 +89,37 @@ export function mergeProducts(existing: ProductInput[], incoming: ProductInput[]
   return { merged, added, updated, unchanged }
 }
 
+export interface MergeMembersResult {
+  merged: Member[]
+  added: number // incoming 中的新姓名追加数
+  unchanged: number // 同名复用既有 id 的数量
+}
+
+/**
+ * 成员目录差分合并（与 mergeProducts 同哲学，但**匹配键是姓名**）：
+ * incoming 姓名在 existing 中已存在 → 复用既有 id（unchanged，条目不变）；
+ * 新姓名 → 按 incoming 给的 id 追加（added）；existing 未提及的一律保留
+ * （导入只能加成员、不能删——删成员走页面「成员管理」）。
+ * 姓名即键决定了不存在「更新」维度（同名不同 id 时永远复用既有 id）。
+ */
+export function mergeMembers(existing: Member[], incoming: Member[]): MergeMembersResult {
+  const merged = existing.map((m) => ({ id: m.id, name: m.name }))
+  const byName = new Map(merged.map((m, i) => [m.name, i]))
+  let added = 0
+  let unchanged = 0
+  for (const m of incoming) {
+    const i = byName.get(m.name)
+    if (i !== undefined) {
+      unchanged++
+    } else {
+      byName.set(m.name, merged.length)
+      merged.push({ id: m.id, name: m.name })
+      added++
+    }
+  }
+  return { merged, added, unchanged }
+}
+
 export interface ValidateProductsOptions {
   isCsv: boolean
   strict?: boolean
@@ -107,22 +142,29 @@ export function isStrictRowSignal(e: unknown): e is StrictRowSignal {
 
 export const TYPES = ['图文', '视频', '音频', '直播', '数据'] as const
 
+/** 内容状态枚举（与 types/content.ts 的 ContentStatus 一致；运行时校验用） */
+export const STATUSES: readonly ContentStatus[] = ['待执行', '待发布', '已发布']
+
 // 中文表头/字段别名 → ContentItem 英文字段
 const ALIAS: Record<string, string> = {
   标题: 'title',
   类型: 'type',
   计划发布时间: 'publish_at',
+  状态: 'status', // v14：内容状态（待执行/待发布/已发布），缺省按 publish_at 推导
   备注: 'comment',
   产品ID: 'product_id',
   产品名: 'product_name', // 卡片行可选携带产品名：未知 product_id 自动登记进目录时用作名称
   产品名称: 'product_name',
+  内容负责人: 'content_owner', // 按姓名填写：目录命中复用 id，未知姓名自动登记（memberHints）
+  投放负责人: 'delivery_owner',
   ROI: 'roi',
   曝光4h: 'propagation_4h',
   互动4h: 'engagement_4h',
 }
 const FIELD_KEYS = [
-  'id', 'title', 'type', 'publish_at', 'roi', 'comment',
-  'product_id', 'product_name', 'propagation_4h', 'engagement_4h',
+  'id', 'title', 'type', 'publish_at', 'status', 'roi', 'comment',
+  'product_id', 'product_name', 'content_owner', 'delivery_owner',
+  'propagation_4h', 'engagement_4h',
 ]
 
 // 产品文件表头别名 → id / name
@@ -374,13 +416,35 @@ export function validateItems(
   records: Record<string, unknown>[],
   opts: ValidateItemsOptions,
 ): ValidateItemsResult {
-  const { isCsv, knownProducts, now, strict } = opts
+  const { isCsv, knownProducts, knownMembers, now, strict } = opts
   const valid: ContentItem[] = []
   const skipped: SkippedRow[] = []
   const hintNames = new Map<string, string>() // 未知 product_id → 登记名（占位名可被后续行的 product_name 升级）
+  const memberHintByName = new Map<string, string>() // 未知负责人姓名 → 新成员 id
+  const memberHints: Member[] = []
   let forcedNullCount = 0
   let emptyProductCount = 0
   const seenIds = new Set<string>()
+
+  // 成员自动 id：M-1xxx 段，取现有目录 id 数字后缀 max+1（与目录现有 id 不冲突）
+  let memberSeq = 1000
+  for (const id of knownMembers.values()) {
+    const m = id.match(/(\d+)$/)
+    if (m) memberSeq = Math.max(memberSeq, Number(m[1]))
+  }
+  /** 负责人姓名 → 成员 id：空 → ''（未分配，不警告不计数）；目录命中 → 既有 id；未知 → 自动登记 */
+  const resolveOwner = (raw: unknown): string => {
+    const name = String(raw ?? '').trim()
+    if (!name) return ''
+    const hit = knownMembers.get(name)
+    if (hit) return hit
+    const hinted = memberHintByName.get(name)
+    if (hinted) return hinted
+    const id = `M-${String(++memberSeq).padStart(4, '0')}`
+    memberHintByName.set(name, id)
+    memberHints.push({ id, name })
+    return id
+  }
 
   for (const [idx, rec] of records.entries()) {
     const rowLabel = isCsv ? `CSV 第 ${idx + 2} 行` : `第 ${idx + 1} 条`
@@ -414,6 +478,19 @@ export function validateItems(
       continue
     }
 
+    // status：可空——缺省按 publish_at 推导（未来 → 待发布，否则 → 已发布）；
+    // 显式给定则必须命中 3 态枚举，非法值跳行
+    const statusRaw = String(rec.status ?? '').trim()
+    let status: ContentStatus
+    if (!statusRaw) {
+      status = publish_at > now ? '待发布' : '已发布'
+    } else if ((STATUSES as readonly string[]).includes(statusRaw)) {
+      status = statusRaw as ContentStatus
+    } else {
+      fail(`status 非法: "${statusRaw}"，合法值: ${STATUSES.join(' / ')}`)
+      continue
+    }
+
     // id：缺失时按内容哈希确定性生成（保证 --merge 幂等：同文件重复导入不产生重复条目）；
     // 显式 id 直接使用；重复报错
     const productRaw = String(rec.product_id ?? '').trim()
@@ -435,7 +512,8 @@ export function validateItems(
       emptyProductCount++
     }
 
-    // 指标：可空 / 非负数字；未发布强制 null
+    // 指标：可空 / 非负数字；status ≠ 已发布 → 强制 null（v14 起按状态而非按时间；
+    // 默认推导下与时间口径一致，显式标「已发布」可为未来卡片解锁指标）
     const roi = normalizeMetric(rec.roi, 'roi')
     if (roi.error) {
       fail(roi.error)
@@ -452,29 +530,35 @@ export function validateItems(
       continue
     }
 
-    const unpublished = publish_at > now
-    if (unpublished && (roi.value !== null || prop.value !== null || eng.value !== null)) {
+    const metricsLocked = status !== '已发布'
+    if (metricsLocked && (roi.value !== null || prop.value !== null || eng.value !== null)) {
       forcedNullCount++
     }
 
     seenIds.add(id)
-    // 行校验全部通过后才收集产品 hint（跳过行不贡献）
+    // 行校验全部通过后才收集自动登记（跳过行不贡献）：
+    // 产品 hint（未知 id）+ 负责人解析（未知姓名登记为新成员）
     if (product_id && !knownProducts.has(product_id)) {
       const pn = String(rec.product_name ?? '').trim()
       const prevName = hintNames.get(product_id)
       if (prevName === undefined) hintNames.set(product_id, pn || product_id)
       else if (prevName === product_id && pn) hintNames.set(product_id, pn) // 占位名 → 第一个非空 product_name
     }
+    const content_owner_id = resolveOwner(rec.content_owner)
+    const delivery_owner_id = resolveOwner(rec.delivery_owner)
     valid.push({
       id,
       title,
       type: type as ContentItem['type'],
       publish_at,
-      roi: unpublished ? null : roi.value,
+      roi: metricsLocked ? null : roi.value,
       comment: String(rec.comment ?? ''),
       product_id,
-      propagation_4h: unpublished ? null : prop.value,
-      engagement_4h: unpublished ? null : eng.value,
+      status,
+      content_owner_id,
+      delivery_owner_id,
+      propagation_4h: metricsLocked ? null : prop.value,
+      engagement_4h: metricsLocked ? null : eng.value,
     })
   }
 
@@ -482,6 +566,7 @@ export function validateItems(
     valid,
     skipped,
     productHints: [...hintNames].map(([id, name]) => ({ id, name })),
+    memberHints,
     emptyProductCount,
     forcedNullCount,
   }

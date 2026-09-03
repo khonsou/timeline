@@ -15,6 +15,8 @@
       "roi": 3.8,
       "comment": "早期投放素材，曝光稳定",
       "product_id": "P-2001",
+      "content_owner": "林晓",
+      "delivery_owner": "陈远",
       "propagation_4h": 86400,
       "engagement_4h": 6900
     },
@@ -48,6 +50,8 @@
       "roi": 4.5,
       "comment": "ROI 达标，可追加预算",
       "product_id": "P-2003",
+      "content_owner": "陈远",
+      "delivery_owner": "林晓",
       "propagation_4h": 158000,
       "engagement_4h": 12600
     },
@@ -100,12 +104,15 @@
       "title": "曜岩键盘新品预热视频",
       "type": "视频",
       "publish_at": "2026-09-18T10:00",
-      "roi": null,
-      "comment": "product_id 不在目录，随 product_name 自动登记为新产品",
+      "status": "已发布",
+      "roi": 2.2,
+      "comment": "product_id 不在目录，随 product_name 自动登记为新产品；显式「已发布」为未来日期解锁指标；内容负责人 苏晴 未在目录，按姓名自动登记为新成员",
       "product_id": "P-2100",
       "product_name": "曜岩客制化键盘",
-      "propagation_4h": null,
-      "engagement_4h": null
+      "content_owner": "苏晴",
+      "delivery_owner": "陈远",
+      "propagation_4h": 8800,
+      "engagement_4h": 920
     }
   ]
 }

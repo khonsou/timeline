@@ -77,7 +77,7 @@ function CardView(p: CardViewProps) {
             {tag.label}
           </span>
           <span
-            title={published ? '已发布' : '待发布'}
+            title={p.card.status ?? (published ? '已发布' : '待发布')}
             className={`h-1.5 w-1.5 rounded-full transition-opacity duration-150 group-hover:opacity-0 ${
               published ? 'bg-emerald-500' : 'bg-slate-300'
             }`}
@@ -99,7 +99,7 @@ function CardView(p: CardViewProps) {
           <p className="mt-0.5 line-clamp-1 text-xs text-slate-400">{p.card.comment}</p>
         )}
 
-        {/* 指标区：已发布 = 3 列迷你统计格 + 互动率细条；待发布 = 虚线占位 */}
+        {/* 指标区：已发布 = 3 列迷你统计格 + 互动率细条；待执行/待发布 = 虚线占位（显示实际状态） */}
         {published ? (
           <>
             <div className="mt-2 grid grid-cols-3 divide-x divide-slate-100 rounded-lg bg-slate-50/80 py-1.5">
@@ -132,7 +132,7 @@ function CardView(p: CardViewProps) {
           </>
         ) : (
           <div className="mt-2 rounded-lg border border-dashed border-slate-200 py-2 text-center text-[11px] text-slate-300">
-            待发布
+            {p.card.status ?? '待发布'}
           </div>
         )}
 

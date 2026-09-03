@@ -3,25 +3,36 @@ import TopBar from '@/components/TopBar'
 import Board, { type BoardApi } from '@/components/board/Board'
 import DetailDialog from '@/components/board/DetailDialog'
 import ProductManagerDialog from '@/components/board/ProductManagerDialog'
+import MemberManagerDialog from '@/components/board/MemberManagerDialog'
 import ImportResultDialog, { type ImportReport } from '@/components/board/ImportResultDialog'
-import type { ContentItem, ContentType } from '@/types/content'
+import type { ContentItem, ContentType, Member } from '@/types/content'
 import {
+  MEMBERS,
   PRODUCTS,
   TYPE_KEYS,
   guideCards,
   pad2,
+  setRuntimeMembers,
   setRuntimeProducts,
   todayStr,
   uid,
   type Product,
 } from '@/lib/content-data'
 import { nextOrder, publishDateOf, type Orders } from '@/lib/board-view'
-import { computeOrders, mergeProducts, readItemsInput, validateItems } from '@/lib/import-core'
+import {
+  STATUSES,
+  computeOrders,
+  mergeMembers,
+  mergeProducts,
+  readItemsInput,
+  validateItems,
+} from '@/lib/import-core'
 
 const STORAGE_KEY = 'timeline-board-v4'
 const SEED_MARKER_KEY = 'timeline-board-v4:seedImportedAt'
 const PRODUCTS_KEY = 'timeline-board-v4:products'
 const LEGACY_SEED_PRODUCTS_KEY = 'timeline-board-v4:seedProducts' // v11 遗留 key，仅作迁移读取
+const MEMBERS_KEY = 'timeline-board-v4:members'
 const PUBLISH_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
 
 interface PersistedState {
@@ -62,7 +73,28 @@ function validateState(parsed: unknown): PersistedState | null {
         patched[item.id] = nextOrder(items as ContentItem[], patched, publishDateOf(item))
       }
     }
-    return { items: items as ContentItem[], orders: patched }
+    // v14 迁移：旧存档没有 status / 负责人字段，这里一次性归一化补齐——
+    // status 缺失时按原时间规则推导（publish_at > 现在 → 待发布，否则已发布），
+    // 与 v13 及之前的"按时间置 null"行为完全一致，旧数据指标展示不变。
+    const nowKey = Date.now()
+    const migrated = (items as ContentItem[]).map((it) => {
+      const rawStatus = (it as { status?: unknown }).status
+      const status: ContentItem['status'] =
+        typeof rawStatus === 'string' && (STATUSES as readonly string[]).includes(rawStatus)
+          ? (rawStatus as ContentItem['status'])
+          : new Date(it.publish_at).getTime() > nowKey
+            ? '待发布'
+            : '已发布'
+      const co = (it as { content_owner_id?: unknown }).content_owner_id
+      const dvo = (it as { delivery_owner_id?: unknown }).delivery_owner_id
+      return {
+        ...it,
+        status,
+        content_owner_id: typeof co === 'string' ? co : '',
+        delivery_owner_id: typeof dvo === 'string' ? dvo : '',
+      }
+    })
+    return { items: migrated, orders: patched }
   }
   return null
 }
@@ -104,6 +136,24 @@ function loadProducts(): Product[] {
   return parse(localStorage.getItem(PRODUCTS_KEY)) ?? parse(localStorage.getItem(LEGACY_SEED_PRODUCTS_KEY)) ?? PRODUCTS
 }
 
+// ---------------------------------------------------------------------------
+// 成员目录：与产品目录完全同构。初始 = 内置成员（M-1001 林晓 / M-1002 陈远）；
+// 空数组是合法状态（用户删光成员）
+// ---------------------------------------------------------------------------
+function loadMembers(): Member[] {
+  try {
+    const raw = localStorage.getItem(MEMBERS_KEY)
+    if (!raw) return MEMBERS
+    const arr: unknown = JSON.parse(raw)
+    if (Array.isArray(arr) && arr.every((m) => m && typeof m.id === 'string' && typeof m.name === 'string')) {
+      return arr as Member[]
+    }
+  } catch {
+    // 落到内置成员
+  }
+  return MEMBERS
+}
+
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
 export default function App() {
@@ -119,6 +169,7 @@ export default function App() {
   const [detailCardId, setDetailCardId] = useState<string | null>(null)
   const [detailAutoEdit, setDetailAutoEdit] = useState(false)
   const [productsOpen, setProductsOpen] = useState(false) // 产品管理弹窗
+  const [membersOpen, setMembersOpen] = useState(false) // 成员管理弹窗
   const [importReport, setImportReport] = useState<ImportReport | null>(null) // 导入结果弹窗
   const boardApiRef = useRef<BoardApi | null>(null)
 
@@ -130,6 +181,23 @@ export default function App() {
       // 存储不可用时仅内存生效
     }
     setProducts(next)
+  }
+
+  // 成员目录一等状态：变更唯一入口 applyMembers（与 applyProducts 完全同构）
+  const [members, setMembers] = useState<Member[]>(() => {
+    const m = loadMembers()
+    setRuntimeMembers(m) // 首帧渲染前同步，resolveMember/listMembers 即刻可用
+    return m
+  })
+
+  const applyMembers = (next: Member[]) => {
+    setRuntimeMembers(next)
+    try {
+      localStorage.setItem(MEMBERS_KEY, JSON.stringify(next))
+    } catch {
+      // 存储不可用时仅内存生效
+    }
+    setMembers(next)
   }
 
   // 每次变更写入 localStorage
@@ -163,6 +231,13 @@ export default function App() {
           seedProducts.every((p) => p && typeof p.id === 'string' && typeof p.name === 'string')
             ? (seedProducts as Product[])
             : null
+        const seedMembers = (seed as { members?: unknown }).members
+        const validMembers =
+          Array.isArray(seedMembers) &&
+          seedMembers.length > 0 &&
+          seedMembers.every((m) => m && typeof m.id === 'string' && typeof m.name === 'string')
+            ? (seedMembers as Member[])
+            : null
         const valid = validateState(seed)
         const mark = () => {
           try {
@@ -171,19 +246,26 @@ export default function App() {
             // 存储不可用时仅内存生效
           }
         }
+        // 成员目录与产品目录同哲学：seed 携带 members 时差分合并进现有目录
+        // （mergeMembers 以姓名为键，同名复用既有 id，导入永不删除成员）
+        const mergeSeedMembers = () => {
+          if (validMembers) applyMembers(mergeMembers(members, validMembers).merged)
+        }
 
         if (valid) {
-          // 全量接管：items + orders；携带 products 时**差分合并**进现有产品目录
-          // （v13：导入只能加/改产品、永不删除，删产品走「产品管理」弹窗）
+          // 全量接管：items + orders；携带 products/members 时**差分合并**进现有目录
+          // （v13/v14：导入只能加/改目录、永不删除，删除走对应管理弹窗）
           if (validProducts) applyProducts(mergeProducts(products, validProducts).merged)
+          mergeSeedMembers()
           mark()
           setState(valid)
           return
         }
 
-        // 仅产品目录接管（board.json 无 items 键）：不动用户现有 items/orders，目录同样差分合并
-        if (validProducts) {
-          applyProducts(mergeProducts(products, validProducts).merged)
+        // 仅目录接管（board.json 无 items 键）：不动用户现有 items/orders，目录同样差分合并
+        if (validProducts || validMembers) {
+          if (validProducts) applyProducts(mergeProducts(products, validProducts).merged)
+          mergeSeedMembers()
           mark()
         }
       })
@@ -216,23 +298,22 @@ export default function App() {
     }))
 
   const updateCard = (id: string, patch: Partial<ContentItem>) => {
-    // publish_at 语义：日期部分变化 → 卡片移到目标日列末尾（orders 更新）；
-    // 改到未来 → 三指标强制置 null（与 CLI 导入同口径的未发布语义）
+    // publish_at 语义：日期部分变化 → 卡片移到目标日列末尾（orders 更新）
     const newPublishAt = patch.publish_at
     if (typeof newPublishAt === 'string') {
       const item = items.find((c) => c.id === id)
       if (item) {
-        const now = new Date()
-        const nowKey = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`
-        if (newPublishAt > nowKey) {
-          patch = { ...patch, roi: null, propagation_4h: null, engagement_4h: null }
-        }
         const newDate = newPublishAt.slice(0, 10)
         if (newDate !== publishDateOf(item)) {
           const order = nextOrder(items, orders, newDate)
           setOrders((prev) => ({ ...prev, [id]: order }))
         }
       }
+    }
+    // v14 指标锁定改为按状态：切到非「已发布」→ 三指标强制置 null（与 CLI 导入同口径）；
+    // 改 publish_at 到未来不再置 null（规则已整体迁移到 status）
+    if (typeof patch.status === 'string' && patch.status !== '已发布') {
+      patch = { ...patch, roi: null, propagation_4h: null, engagement_4h: null }
     }
     setItems((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
   }
@@ -282,6 +363,9 @@ export default function App() {
       product_id,
       propagation_4h: null,
       engagement_4h: null,
+      status: '待执行',
+      content_owner_id: '',
+      delivery_owner_id: '',
     }
     setItems((prev) => [...prev, item])
     setOrders((prev) => ({ ...prev, [id]: order }))
@@ -318,6 +402,8 @@ export default function App() {
       isCsv: ext === '.csv',
       // 内嵌 products 的 id 视为已知：不重复收集 hint，内嵌 name 优先
       knownProducts: new Set([...products.map((p) => p.id), ...(input.products ?? []).map((p) => p.id)]),
+      // 负责人按姓名解析：已知姓名复用既有 id，未知姓名自动登记进 memberHints
+      knownMembers: new Map(members.map((m) => [m.name, m.id])),
       now: nowKey,
     })
     if (r.valid.length === 0) {
@@ -339,17 +425,21 @@ export default function App() {
     const incoming = mergeProducts(r.productHints, input.products ?? [])
     const diff = mergeProducts(products, incoming.merged)
     if (incoming.merged.length > 0) applyProducts(diff.merged)
+    // 成员目录差分合并：未知姓名按 memberHints 自动登记（mergeMembers 以姓名为键，同名复用既有 id）
+    const mdiff = mergeMembers(members, r.memberHints)
+    if (r.memberHints.length > 0) applyMembers(mdiff.merged)
     setImportReport({
       filename,
       imported: r.valid.length,
       skipped: r.skipped,
-      unpublished: r.valid.filter((it) => it.publish_at > nowKey).length,
+      unpublished: r.valid.filter((it) => it.status !== '已发布').length,
       noProduct: r.emptyProductCount,
       productsRegistered: r.productHints.length,
       productsDiff:
         incoming.merged.length > 0
           ? { added: diff.added, updated: diff.updated, kept: diff.unchanged }
           : undefined,
+      membersRegistered: r.memberHints.length,
     })
   }
 
@@ -364,6 +454,7 @@ export default function App() {
         onBackToToday={() => boardApiRef.current?.scrollToToday('smooth')}
         onAddToToday={addToToday}
         onOpenProducts={() => setProductsOpen(true)}
+        onOpenMembers={() => setMembersOpen(true)}
         onImportFile={handleImportFile}
       />
       <Board
@@ -389,6 +480,13 @@ export default function App() {
         items={items}
         onClose={() => setProductsOpen(false)}
         onApply={applyProducts}
+      />
+      <MemberManagerDialog
+        open={membersOpen}
+        members={members}
+        items={items}
+        onClose={() => setMembersOpen(false)}
+        onApply={applyMembers}
       />
       <ImportResultDialog report={importReport} onClose={() => setImportReport(null)} />
     </div>

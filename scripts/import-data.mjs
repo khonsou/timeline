@@ -16,6 +16,12 @@
  * name===id 的占位名不覆盖既有名称）。items 中未知 product_id 按 productHints 自动登记
  * （可选 product_name 作名，缺省 id 占位）并合并进写出的 products，应用加载逻辑保持简单。
  *
+ * v14 成员目录同理：负责人按**姓名**填写（内容负责人/投放负责人列），已知姓名复用既有 id，
+ * 未知姓名自动登记（memberHints，M-1xxx 段自动 id）并差分合并进写出的 members 累积全量
+ * （mergeMembers 以姓名为键，同名复用既有 id，导入永不删成员——删成员走页面「成员管理」）。
+ * 指标强制 null 规则 v14 起按**状态**：status ≠ 已发布 → 三指标恒 null；
+ * status 缺省按 publish_at 推导（未来 → 待发布，否则已发布），显式「已发布」可解锁未来卡片指标。
+ *
  * 解析/校验/哈希/orders/差分全部来自共享核心 src/lib/import-core.ts
  * （Node 24 原生 strip-types 直接引用；与应用内「卡片增量导入」同一套规则）。
  */
@@ -25,6 +31,7 @@ import { fileURLToPath } from 'node:url'
 import {
   computeOrders,
   isStrictRowSignal,
+  mergeMembers,
   mergeProducts,
   readItemsInput,
   readProductsInput,
@@ -37,6 +44,11 @@ const OUT_FILE = path.join(ROOT, 'public', 'data', 'board.json')
 
 // 内置产品目录（与 src/lib/content-data.ts 的 PRODUCTS 保持一致：仅看板自身 P-1000）
 const BUILTIN_PRODUCTS = new Set(['P-1000'])
+// 内置成员目录（与 src/lib/content-data.ts 的 MEMBERS 保持一致）
+const BUILTIN_MEMBERS = [
+  { id: 'M-1001', name: '林晓' },
+  { id: 'M-1002', name: '陈远' },
+]
 
 const pad = (n) => String(n).padStart(2, '0')
 
@@ -75,6 +87,16 @@ function prevBoardProducts() {
   try {
     const prev = JSON.parse(readFileSync(OUT_FILE, 'utf8'))
     return Array.isArray(prev?.products) ? prev.products : []
+  } catch {
+    return []
+  }
+}
+
+// 已有 board.json 的成员目录（差分合并基线；无 members 键时为空数组）
+function prevBoardMembers() {
+  try {
+    const prev = JSON.parse(readFileSync(OUT_FILE, 'utf8'))
+    return Array.isArray(prev?.members) ? prev.members : []
   } catch {
     return []
   }
@@ -158,13 +180,18 @@ const knownProducts = new Set([
   ...prevBoardProducts().map((p) => String(p.id)),
   ...(input.products ?? []).map((p) => p.id),
 ])
+// 负责人按姓名解析：内置成员 + 已有 board.json 成员目录为已知姓名（同名复用既有 id）
+const knownMembers = new Map(
+  [...BUILTIN_MEMBERS, ...prevBoardMembers()].map((m) => [String(m.name), String(m.id)]),
+)
 const NOW = nowKey()
 
-let valid, skipped, productHints, emptyProductCount, forcedNullCount
+let valid, skipped, productHints, memberHints, emptyProductCount, forcedNullCount
 try {
-  ;({ valid, skipped, productHints, emptyProductCount, forcedNullCount } = validateItems(input.records, {
+  ;({ valid, skipped, productHints, memberHints, emptyProductCount, forcedNullCount } = validateItems(input.records, {
     isCsv,
     knownProducts,
+    knownMembers,
     now: NOW,
     strict: STRICT,
   }))
@@ -212,6 +239,12 @@ const incomingProducts = mergeProducts(productHints, input.products ?? [])
 const pdiff = mergeProducts(prevBoardProducts(), incomingProducts.merged)
 const finalProducts = pdiff.merged.length > 0 ? pdiff.merged : undefined
 
+// 成员目录（v14，与产品目录同哲学）：未知负责人姓名按 memberHints 自动登记，
+// 与已有 board.json 成员目录按**姓名**差分合并（同名复用既有 id）后累积全量写出；
+// 导入只能加成员，删除走页面「成员管理」。
+const mdiff = mergeMembers(prevBoardMembers(), memberHints)
+const finalMembers = mdiff.merged.length > 0 ? mdiff.merged : undefined
+
 // ---------------------------------------------------------------------------
 // 报告
 // ---------------------------------------------------------------------------
@@ -220,8 +253,8 @@ console.log(`源文件: ${path.resolve(file)}`)
 console.log(`模式: ${DRY_RUN ? 'dry-run（不写文件）' : MERGE ? 'merge（合并进已有 board.json）' : '全量替换'}`)
 console.log(`总条数: ${input.records.length} | 有效: ${valid.length} | 跳过: ${skipped.length}`)
 for (const s of skipped) console.log(`  ✗ ${s.row}: ${s.reason}`)
-const unpublishedCount = valid.filter((it) => it.publish_at > NOW).length
-console.log(`未发布（publish_at 晚于当前时间，指标已强制置 null）: ${unpublishedCount} 条`)
+const unpublishedCount = valid.filter((it) => it.status !== '已发布').length
+console.log(`未发布（status ≠ 已发布，指标已强制置 null）: ${unpublishedCount} 条`)
 if (forcedNullCount > 0) console.log(`  其中 ${forcedNullCount} 条原本带了指标值，已按未发布语义置 null`)
 if (emptyProductCount > 0)
   console.log(`未填写归属产品: ${emptyProductCount} 条（已置空，UI 显示「不明」）`)
@@ -229,6 +262,10 @@ if (productHints.length > 0) {
   console.log(`自动登记新产品 (${productHints.length}):`)
   for (const h of productHints)
     console.log(`  ✚ ${h.id}  ${h.name}${h.name === h.id ? '（缺省名占位，可在「产品管理」改名）' : ''}`)
+}
+if (memberHints.length > 0) {
+  console.log(`自动登记新成员 (${memberHints.length}):`)
+  for (const h of memberHints) console.log(`  ✚ ${h.id}  ${h.name}`)
 }
 const dist = new Map()
 for (const it of finalItems) {
@@ -240,6 +277,8 @@ for (const [d, n] of [...dist.entries()].sort()) console.log(`  ${d}  ${'█'.re
 console.log(`orders: 已按日期分组、组内按时分排序重算（共 ${Object.keys(orders).length} 条）`)
 if (finalProducts)
   console.log(`产品目录差分：新增 ${pdiff.added} / 更新 ${pdiff.updated} / 保留 ${pdiff.unchanged}（共 ${finalProducts.length} 个）`)
+if (finalMembers)
+  console.log(`成员目录差分：新增 ${mdiff.added} / 同名复用 ${mdiff.unchanged}（共 ${finalMembers.length} 个）`)
 
 if (DRY_RUN) {
   console.log(`\n[dry-run] 未写出文件（目标: ${path.relative(ROOT, OUT_FILE)}）`)
@@ -249,6 +288,7 @@ if (DRY_RUN) {
     items: finalItems,
     orders,
     ...(finalProducts ? { products: finalProducts } : {}),
+    ...(finalMembers ? { members: finalMembers } : {}),
     importedAt: new Date().toISOString(),
   }
   writeFileSync(OUT_FILE, JSON.stringify(out, null, 2) + '\n', 'utf8')

@@ -17,6 +17,8 @@ export interface ImportReport {
   productsRegistered?: number
   /** 产品目录差分结果（仅本次导入涉及产品时存在；全为 0 即纯幂等重合则不展示该行） */
   productsDiff?: { added: number; updated: number; kept: number }
+  /** 自动登记的新成员数（未知负责人姓名，按姓名登记 M-1xxx；为 0 不展示该行） */
+  membersRegistered?: number
 }
 
 interface ImportResultDialogProps {
@@ -125,6 +127,11 @@ export default function ImportResultDialog({ report, onClose }: ImportResultDial
                       <p data-report-registered className="mt-2 text-xs text-emerald-600">
                         ✚ 自动登记新产品 {report.productsRegistered} 个（未知 product_id；缺名时以 id
                         占位，可在「产品管理」改名）
+                      </p>
+                    )}
+                    {typeof report.membersRegistered === 'number' && report.membersRegistered > 0 && (
+                      <p data-report-members-registered className="mt-2 text-xs text-emerald-600">
+                        ✚ 自动登记新成员 {report.membersRegistered} 个（按姓名；删成员请用「成员管理」）
                       </p>
                     )}
                     {report.skipped && report.skipped.length > 0 && (

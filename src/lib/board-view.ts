@@ -14,9 +14,14 @@ export const publishDateOf = (item: ContentItem): string => item.publish_at.slic
 /** publish_at 的时分部分（卡片时间胶囊展示用） */
 export const publishTimeOf = (item: ContentItem): string => item.publish_at.slice(11, 16)
 
-/** 是否已发布（publish_at ≤ now ⇒ 必有 4h 指标；未来计划 ⇒ 指标为 null） */
+/**
+ * 是否已发布（v14 起读 status 字段：仅 '已发布' 解锁指标；旧数据无 status 时
+ * 按 publish_at ≤ now 兜底推导——加载迁移（App.validateState）已保证渲染前必有 status）
+ */
 export const isPublished = (item: ContentItem, now: Date = new Date()): boolean =>
-  item.publish_at <= `${fmtDate(now)}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+  item.status
+    ? item.status === '已发布'
+    : item.publish_at <= `${fmtDate(now)}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`
 
 const pad2 = (n: number) => String(n).padStart(2, '0')
 function fmtDate(d: Date): string {

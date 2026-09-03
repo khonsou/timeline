@@ -4,11 +4,26 @@ import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
 import TypePicker from '@/components/board/TypePicker'
 import type { ContentItem } from '@/types/content'
-import { UNKNOWN_PRODUCT_CLS, listProducts, resolveProduct } from '@/lib/content-data'
+import {
+  UNKNOWN_PRODUCT_CLS,
+  listMembers,
+  listProducts,
+  resolveMember,
+  resolveProduct,
+} from '@/lib/content-data'
 import { isPublished } from '@/lib/board-view'
+import { STATUSES } from '@/lib/import-core'
 import { formatCompact, formatPublishAt, formatRoi } from '@/lib/format'
 
-type EditField = 'publish_at' | 'product_id' | 'roi' | 'propagation_4h' | 'engagement_4h' | 'rate'
+type EditField =
+  | 'publish_at'
+  | 'product_id'
+  | 'content_owner_id'
+  | 'delivery_owner_id'
+  | 'roi'
+  | 'propagation_4h'
+  | 'engagement_4h'
+  | 'rate'
 
 interface DetailDialogProps {
   card: ContentItem | null // null = 关闭
@@ -167,6 +182,80 @@ export default function DetailDialog({
     'group/cell cursor-pointer rounded-lg px-3 py-1 text-center transition-colors hover:bg-white'
   const inputCls = `${INPUT_BASE} ${invalid ? INPUT_BAD : INPUT_OK} text-center`
 
+  // 负责人信息格（内容/投放共用，镜像「归属产品」格模式）：
+  // 展示态未分配（空 id / 目录未命中）→ 淡色「未分配」+ tooltip 保留原始 id；
+  // 编辑态为下拉（成员目录 + 顶部「未分配」），未知存量 id 降级显示在「未分配」项
+  const ownerCell = (label: string, field: 'content_owner_id' | 'delivery_owner_id') => {
+    if (!card) return null
+    const owner = resolveMember(card[field])
+    const members = listMembers()
+    return (
+      <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+        <p className="text-[10px] text-slate-400">{label}</p>
+        {editingField === field ? (
+          <select
+            data-edit-input={field}
+            autoFocus
+            // 当前值为空/未知 id 时显示在「未分配」项；原始 id 放 tooltip 排查
+            value={members.some((m) => m.id === draft) ? draft : ''}
+            title={
+              draft && !members.some((m) => m.id === draft) ? `原始 id: ${draft}` : undefined
+            }
+            onChange={(e) => {
+              const v = e.target.value
+              onUpdate(
+                card.id,
+                field === 'content_owner_id'
+                  ? { content_owner_id: v }
+                  : { delivery_owner_id: v },
+              )
+              cancelField()
+            }}
+            onBlur={cancelField}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                cancelField()
+              }
+            }}
+            className={`mt-0.5 ${INPUT_BASE} ${INPUT_OK}`}
+          >
+            <option value="">未分配</option>
+            {members.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}（{m.id}）
+              </option>
+            ))}
+          </select>
+        ) : (
+          <p
+            data-edit-field={field}
+            onClick={() => startField(field, card[field])}
+            title={
+              owner.unassigned
+                ? owner.rawId
+                  ? `原始 id: ${owner.rawId}（点击编辑）`
+                  : '未分配（点击编辑）'
+                : '点击编辑'
+            }
+            className="mt-0.5 cursor-pointer truncate rounded px-1 -mx-1 text-[13px] font-medium text-slate-700 transition-colors hover:bg-white"
+          >
+            {owner.unassigned ? (
+              <span data-detail-owner-unassigned className={UNKNOWN_PRODUCT_CLS}>
+                未分配
+              </span>
+            ) : (
+              <>
+                {owner.name}{' '}
+                <span className="text-[11px] font-normal text-slate-400">{card[field]}</span>
+              </>
+            )}
+          </p>
+        )}
+      </div>
+    )
+  }
+
   return (
     <Dialog open={!!card} onOpenChange={(open) => !open && onClose()}>
       <DialogPortal>
@@ -193,15 +282,21 @@ export default function DetailDialog({
                   onChange={(t) => onUpdate(card.id, { type: t })}
                   onOpenChange={setTypePickerOpen}
                 />
-                {published ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+                {/* 状态徽章（三态）：已发布 = emerald 实心；待发布 = 虚线灰；待执行 = 虚线浅灰空心点 */}
+                {card.status === '已发布' ? (
+                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                     已发布
                   </span>
-                ) : (
-                  <span className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] text-slate-400">
+                ) : card.status === '待发布' ? (
+                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] text-slate-400">
                     <span className="h-1.5 w-1.5 rounded-full bg-slate-300" />
                     待发布
+                  </span>
+                ) : (
+                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] text-slate-400">
+                    <span className="h-1.5 w-1.5 rounded-full border border-slate-300" />
+                    待执行
                   </span>
                 )}
                 <DialogPrimitive.Close
@@ -340,6 +435,33 @@ export default function DetailDialog({
                     </p>
                   )}
                 </div>
+                {ownerCell('内容负责人', 'content_owner_id')}
+                {ownerCell('投放负责人', 'delivery_owner_id')}
+              </div>
+
+              {/* 3.5 状态分段：点击即切换；切到非「已发布」时 App 层强制三指标置 null（锁定） */}
+              <div data-status-seg className="mt-3 flex items-center gap-1 rounded-xl bg-slate-50 p-1">
+                <span className="shrink-0 px-2 text-[10px] text-slate-400">状态</span>
+                {STATUSES.map((s) => {
+                  const active = card.status === s
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      data-status-option={s}
+                      onClick={() => !active && onUpdate(card.id, { status: s })}
+                      className={`flex-1 rounded-lg px-2 py-1 text-[12px] transition-colors ${
+                        active
+                          ? s === '已发布'
+                            ? 'bg-emerald-500 font-medium text-white shadow-sm'
+                            : 'bg-slate-800 font-medium text-white shadow-sm'
+                          : 'text-slate-500 hover:bg-white'
+                      }`}
+                    >
+                      {s}
+                    </button>
+                  )
+                })}
               </div>
 
               {/* 4. 指标区：已发布 = 可编辑统计格 + 可编辑互动率；待发布 = 占位 + 引导 */}
@@ -455,9 +577,11 @@ export default function DetailDialog({
                 </div>
               ) : (
                 <div className="mt-4 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 py-5 text-center">
-                  <p className="text-xs text-slate-300">内容待发布，发布后 4 小时数据将在此展示</p>
+                  <p className="text-xs text-slate-300">
+                    状态为{card.status}时指标锁定，发布后 4 小时数据将在此展示
+                  </p>
                   <p className="mt-1 text-[10px] text-slate-300">
-                    将计划发布时间改到过去即可录入数据
+                    切换为「已发布」即可录入数据
                   </p>
                 </div>
               )}
