@@ -1,6 +1,7 @@
 import { useRef } from 'react'
-import { Boxes, Upload, Users } from 'lucide-react'
+import { Boxes, Moon, Sun, Upload, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useTheme } from '@/hooks/useTheme'
 import { CAPACITY_WARN_AT, MAX_CARDS } from '@/lib/content-data'
 
 export type SyncDot = 'loading' | 'synced' | 'syncing' | 'offline'
@@ -43,6 +44,7 @@ export default function TopBar({
   onImportFile,
 }: TopBarProps) {
   const fileRef = useRef<HTMLInputElement>(null)
+  const { theme, toggleTheme } = useTheme()
   const sync = syncStatus ? SYNC_META[syncStatus] : null
   // v16 容量警示：≥1500 提示剩余额度 + 按时间切片新建看板；≥2000 禁用加卡/导入
   const capacityFull = total >= MAX_CARDS
@@ -151,6 +153,17 @@ export default function TopBar({
           </Button>
           <Button size="sm" disabled={capacityFull} onClick={onAddToToday}>
             + 空卡片
+          </Button>
+          {/* v20 暗色主题切换：顶栏最右，localStorage 持久化（useTheme） */}
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={toggleTheme}
+            data-theme-toggle
+            aria-label={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}
+            title={theme === 'dark' ? '切换到亮色主题' : '切换到暗色主题'}
+          >
+            {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
           </Button>
         </div>
       </div>
