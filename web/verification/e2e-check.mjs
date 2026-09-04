@@ -21,6 +21,10 @@
  *   v16 窗口化适配：卡片计数一律按「窗口 [首列,末列] 内应渲染数」校验，不再假设全量渲染；
  *   固定日期锚点（examples/import-sample.json）与旧套件一致，要求运行日落在样例数据 ±30 天窗口内。
  *
+ * v19 碰撞判定修复（t57）：全局 closestCorners 下拖拽卡自身 rect 长期赢下判定、
+ *   相邻日落点无高亮成功率低；修复为 pointerWithin 锁列 + 列内 closestCorners。
+ *   t57 断言「甩进邻列 30% 深处」时 over=目标列、isOver 高亮、落定切日且时分保留。
+ *
  * 运行：node verification/e2e-check.mjs
  *   - 自带 fixture：spawn API server（:5198，独立 tmp sqlite）+ vite（:5199，API_PORT=5198 反代）
  *   - 驱动本机 Chrome（headless）走真实 UI；跑完杀进程组 + 删 tmp sqlite + 删 CLI 产物 board.json
@@ -1050,6 +1054,63 @@ async function main() {
     await waitFor(async () => (await cardColumnDate('E2E 卡 06')) === leftColDate, 6000, '落定到指针下列')
     ok(Math.abs(dayDiff(leftColDate, TODAY)) <= 30, `落点 ${leftColDate} 在窗口内`)
     await sleep(500)
+  })
+
+  await t('t57 相邻日拖拽：甩进邻列 30% 深处即判定落点（v19 碰撞判定修复回归）', async () => {
+    // 前置状态：t12 已把「E2E 卡 05」落定 today+3（publish_at = today+3T10:04）
+    const fromDate = addDays(TODAY, 3)
+    eq(await cardColumnDate('E2E 卡 05'), fromDate, 't57 前提：卡 05 在 today+3')
+    // t13 的 autoScroll 改变了 scrollLeft，先把 today+3 滚到视口第 3 列（today+2/+4 均可见）
+    await ev((d) => {
+      const s = document.querySelector('.h-full.overflow-auto')
+      const col = s.querySelector(`[data-date="${d}"]`)
+      const r = col.getBoundingClientRect()
+      const sr = s.getBoundingClientRect()
+      s.scrollLeft += r.left - sr.left - 512
+    }, fromDate)
+    await sleep(400)
+    // 目标 = 相邻空列：优先 today+2（ fixture 无卡），被占则用 today+4
+    const cand = [addDays(TODAY, 2), addDays(TODAY, 4)]
+    let target = null
+    for (const d of cand) {
+      const n = await ev((date) => document.querySelectorAll(`.h-full.overflow-auto [data-date="${date}"] [data-card-title]`).length, d)
+      if (n === 0) { target = d; break }
+    }
+    ok(target, '找到相邻空列作为落点')
+    const from = await ev(() => {
+      const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+        (p) => p.textContent === 'E2E 卡 05',
+      )
+      const r = el.closest('.group').getBoundingClientRect()
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    })
+    const toX = await ev((d) => {
+      const r = document.querySelector(`.h-full.overflow-auto [data-date="${d}"]`).getBoundingClientRect()
+      return r.left + Math.round(r.width * 0.3) // 邻列左缘内侧 30%：旧判定下 over 仍是拖拽卡自身的位置
+    }, target)
+    await page.mouse.move(from.x, from.y)
+    await page.mouse.down()
+    try {
+      await page.mouse.move(from.x + (toX > from.x ? 30 : -30), from.y + 6, { steps: 4 })
+      await sleep(80)
+      await page.mouse.move(toX, from.y + 4, { steps: 10 })
+      await sleep(280)
+      // 判定级断言：指针在邻列 30% 深处，over 必须已是目标列（旧判定此处为拖拽卡自身）
+      eq(await ev(() => window.__dndOver ?? null), `col-${target}`, '拖拽中 over = 目标列')
+      const ring = await ev((d) => {
+        const col = document.querySelector(`.h-full.overflow-auto [data-date="${d}"]`)
+        return col?.querySelector(':scope > .rounded-2xl')?.className.includes('ring-2') ?? false
+      }, target)
+      ok(ring, '目标列 isOver 高亮（落点反馈）')
+      await page.screenshot({ path: path.join(VDIR, 'board-v19-adjacent-drag.png') })
+    } finally {
+      await page.mouse.up()
+    }
+    await waitFor(async () => (await cardColumnDate('E2E 卡 05')) === target, 6000, '落定相邻日')
+    await sleep(1200) // 等同步层落盘 localStorage
+    const it = await storedItem(boardId, 'E2E 卡 05')
+    eq(it?.publish_at, `${target}T10:04`, 'publish_at 日期部分切换、时分保留')
+    await sleep(500) // 等 click 抑制解除
   })
 
   await t('t14 删除卡片', async () => {

@@ -4,8 +4,10 @@ import {
   DragOverlay,
   PointerSensor,
   closestCorners,
+  pointerWithin,
   useSensor,
   useSensors,
+  type CollisionDetection,
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
@@ -81,6 +83,8 @@ export default function Board({
   const centerRef = useRef(center)
   const prevCenterRef = useRef(center)
   const activeIdRef = useRef<string | null>(null)
+  /** 拖拽源列日期（碰撞判定用：非源列时排除拖拽卡自身，保住目标列高亮） */
+  const dragSourceDateRef = useRef<string | null>(null)
   // 窗口外跳转：setCenter 后由布局效应消费（先补偿，再定位到目标列）
   const pendingJumpRef = useRef<{
     date: string
@@ -304,6 +308,53 @@ export default function Board({
   // 跨日拖拽：更新 publish_at 的日期部分、保留时分（数据层语义变更）
   // 同列排序：只动 orders（不碰实体）
   // ------------------------------------------------------------------
+  /**
+   * 碰撞判定（v19 修复「相邻日拖拽成功率低」）：
+   * 旧版全局 closestCorners 按「拖拽物四角 ↔ 各 droppable 四角」距离取最近，
+   * 拖拽卡自身的 droppable rect（钉在原列）与全高列 rect 的纵向距离惩罚，
+   * 使指针深入邻列 30% 时胜出者仍是拖拽卡自身（实测 82/86 次判定），
+   * 目标列从不高亮，落点只靠划过瞬时的几次判定碰巧续命 → 邻日成功率低。
+   * 组合判定：
+   * 1) pointerWithin 先锁定指针所在的「列」（横向看板直觉：指针在哪列就落哪列）；
+   * 2) 列内仍用 closestCorners 选具体 over（卡片/列本身）——同列排序与
+   *    卡片间中点插入语义与旧版一致；
+   * 3) 指针在「非源列」时把拖拽卡自身移出候选：乐观插入后自身 rect 恰好
+   *    落在指针旁，若参选会把 over 吸成自身、目标列高亮随即丢失；排除后
+   *    over 恒为目标列/其卡片，isOver 落点反馈在列内全程保持。回到源列时
+   *    自身恢复候选（原位松手 = no-op，与旧版一致）；
+   * 4) 指针不在任何列内（列缝/表头/列外空白）→ 回落全局 closestCorners。
+   * __dndOver 仅在 dev（含 e2e）下暴露最近一次判定胜出者，供验证脚本断言。
+   */
+  const boardCollisionDetection: CollisionDetection = (args) => {
+    const within = pointerWithin(args)
+    let collisions = within
+    if (within.length > 0) {
+      const columnHit =
+        within.find((c) => c.data?.droppableContainer?.data?.current?.type === 'column') ??
+        within[0]
+      const date = columnHit.data?.droppableContainer?.data?.current?.date as
+        | string
+        | undefined
+      if (date !== undefined) {
+        const scoped = closestCorners({
+          ...args,
+          droppableContainers: args.droppableContainers.filter(
+            (c) =>
+              c.data.current?.date === date &&
+              (date === dragSourceDateRef.current || c.id !== args.active.id),
+          ),
+        })
+        if (scoped.length > 0) collisions = scoped
+      }
+    }
+    if (collisions.length === 0) collisions = closestCorners(args)
+    if (import.meta.env.DEV) {
+      ;(window as unknown as { __dndOver?: string | null }).__dndOver = collisions[0]
+        ? String(collisions[0].id)
+        : null
+    }
+    return collisions
+  }
   // 拖拽落定/取消后：click 事件紧跟 pointerup 同步触发，之后解除抑制
   const suppressTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const scheduleSuppressReset = () => {
@@ -318,6 +369,8 @@ export default function Board({
     suppressClickRef.current = true // 拖拽期间发生的 click 一律抑制
     const id = String(e.active.id)
     activeIdRef.current = id
+    const dragging = items.find((c) => c.id === id)
+    dragSourceDateRef.current = dragging ? publishDateOf(dragging) : null
     setActiveId(id)
   }
 
@@ -408,7 +461,7 @@ export default function Board({
     <div className="relative min-h-0 flex-1">
       <DndContext
         sensors={sensors}
-        collisionDetection={closestCorners}
+        collisionDetection={boardCollisionDetection}
         onDragStart={handleDragStart}
         onDragOver={handleDragOver}
         onDragEnd={handleDragEnd}
