@@ -23,7 +23,7 @@ import ProductManagerDialog from '@/components/board/ProductManagerDialog'
 import MemberManagerDialog from '@/components/board/MemberManagerDialog'
 import ImportResultDialog, { type ImportReport } from '@/components/board/ImportResultDialog'
 import { Button } from '@/components/ui/button'
-import type { ContentItem, Member } from '@/types/content'
+import type { ContentItem, Member } from '@timeline/core/types'
 import {
   MAX_CARDS,
   MEMBERS,
@@ -36,14 +36,14 @@ import {
   uid,
   type Product,
 } from '@/lib/content-data'
-import { nextOrder, publishDateOf, type Orders } from '@/lib/board-view'
+import { nextOrder, publishDateOf, type Orders } from '@timeline/core/board-view'
 import {
   computeOrders,
   mergeMembers,
   mergeProducts,
   readItemsInput,
   validateItems,
-} from '@/lib/import-core'
+} from '@timeline/core/import-core'
 import { validateDoc, type BoardDoc } from '@/lib/board-doc'
 import {
   ApiError,

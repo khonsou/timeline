@@ -3,9 +3,10 @@
  * 内容哈希 id（纯 TS 实现 SHA-1）、orders 计算、产品目录差分合并（mergeProducts）。
  *
  * 纯 TypeScript、无 Node API 依赖（TextEncoder/DataView 为跨端 Web API）：
- * - CLI：scripts/import-data.mjs 以 `import ... from '../src/lib/import-core.ts'`
- *   直接引用（Node 24 原生 strip-types，仅可擦除语法：无 enum / 命名空间 / 参数属性）
- * - 应用内「卡片增量导入」：src/App.tsx 经 vite 引用（'@/lib/import-core'）
+ * - CLI：@timeline/cli（packages/cli/import-data.mjs）经包名 '@timeline/core/import-core' 引用
+ *   （Node 24 strip-types 经 workspaces 软链直引，仅可擦除语法：无 enum / 命名空间 / 参数属性）
+ * - server：@timeline/server（packages/server/index.mjs）同方式引用
+ * - 应用内「卡片增量导入」：web/src 经 vite 引用（'@timeline/core/import-core'）
  *
  * 注意：本文件内只允许相对路径 import（Node 裸跑不认识 '@/‘ 别名）。
  */
@@ -144,6 +145,19 @@ export const TYPES = ['图文', '视频', '音频', '直播', '数据'] as const
 
 /** 内容状态枚举（与 types/content.ts 的 ContentStatus 一致；运行时校验用） */
 export const STATUSES: readonly ContentStatus[] = ['待执行', '待发布', '已发布']
+
+/**
+ * 内置产品/成员目录（三端共用同一来源）：
+ * - 产品仅看板自身 P-1000「光轴」（首次启动引导卡归属）
+ * - 成员为 2 个示例种子
+ * 真实产品/成员经 CLI 导入 / 页面「产品管理」「成员管理」/ Agent API 进入运行时目录。
+ * v19 起集中在这里：CLI 与 web（content-data）都引用此常量，不再各自内联副本。
+ */
+export const BUILTIN_PRODUCTS: ProductInput[] = [{ id: 'P-1000', name: '光轴' }]
+export const BUILTIN_MEMBERS: Member[] = [
+  { id: 'M-1001', name: '林晓' },
+  { id: 'M-1002', name: '陈远' },
+]
 
 // 中文表头/字段别名 → ContentItem 英文字段
 const ALIAS: Record<string, string> = {

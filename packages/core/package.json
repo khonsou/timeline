@@ -1,0 +1,19 @@
+{
+  "name": "@timeline/core",
+  "version": "1.0.0",
+  "description": "拾光轴共享契约层：内容类型、导入校验/差分合并、看板视图派生、格式化（纯 TS 零依赖，Node strip-types 直引）",
+  "type": "module",
+  "exports": {
+    "./types": "./types/content.ts",
+    "./types/content.ts": "./types/content.ts",
+    "./import-core": "./lib/import-core.ts",
+    "./board-view": "./lib/board-view.ts",
+    "./format": "./lib/format.ts",
+    "./lib/import-core.ts": "./lib/import-core.ts",
+    "./lib/board-view.ts": "./lib/board-view.ts",
+    "./lib/format.ts": "./lib/format.ts"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

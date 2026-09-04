@@ -18,7 +18,7 @@
                                                                      │ 写出
                                                                      ▼
 ┌──────────────────────┐   首页新建看板 → 勾选          ┌──────────────────────────┐
-│ 新看板（服务端）      │ ◀─「从本机现有数据初始化」────  │ public/data/board.json   │
+│ 新看板（服务端）      │ ◀─「从本机现有数据初始化」────  │ web/public/data/board.json   │
 │ 列表页 / → /b/:id     │   （默认勾选，一次性种子）      │ { items, orders,         │
 └──────────────────────┘                                  │   products?, members?,   │
                                                           │   importedAt }           │
@@ -72,7 +72,7 @@ npm run import:data -- examples/import-sample.csv
   P-2004  磐石移动电源 20000mAh
   P-2005  清风桌面循环扇
 
-✓ 已写出: public/data/board.json（5 个产品）
+✓ 已写出: web/public/data/board.json（5 个产品）
   仅接管产品目录、不影响现有内容卡片；下次打开/刷新页面时自动生效
 ```
 
@@ -97,14 +97,14 @@ orders: 已按日期分组、组内按时分排序重算（共 9 条）
 产品目录差分：新增 2 / 更新 0 / 保留 0（共 7 个）
 成员目录差分：新增 1 / 同名复用 0（共 1 个）
 
-✓ 已写出: public/data/board.json（9 条）
+✓ 已写出: web/public/data/board.json（9 条）
   下次打开/刷新页面时自动生效（importedAt 变化才会接管 localStorage）
 ```
 
 然后**刷新看板页面**（或重新打开），9 条示例内容就出现在对应日期的列里，产品目录里能看到自动登记的 P-2099 / P-2100，「成员管理」弹窗里能看到自动登记的苏晴（负责人按**姓名**填写：林晓/陈远是内置成员直接复用，未知名自动登记，详见第 8 节）。
 
 > 也可以只跑第 2 步：卡片照常导入，P-2001~P-2005 会按占位名（= id）自动登记——之后补导产品目录文件，真实名称会差分更新覆盖占位名（反向不会：占位名永远不覆盖真实名称）。
-> 想恢复初始状态（两张引导卡）：删除 `public/data/board.json`，清除浏览器 localStorage 后刷新（详见 FAQ Q3）。
+> 想恢复初始状态（两张引导卡）：删除 `web/public/data/board.json`，清除浏览器 localStorage 后刷新（详见 FAQ Q3）。
 
 ## 4. 命令与参数
 
@@ -133,7 +133,7 @@ npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-ru
 
 ## 5. 字段规范
 
-共 12 个字段。字段口径的权威定义见 `src/types/content.ts` 的 JSDoc。
+共 12 个字段。字段口径的权威定义见 `packages/core/types/content.ts` 的 JSDoc。
 
 | 字段 | 类型 | 必填 | 口径与规则 | 缺失 / 空值行为 |
 |---|---|---|---|---|
@@ -344,13 +344,13 @@ P-2002,深海降噪耳机
 ## 11. 常见问题 FAQ
 
 **Q1：导入成功了，页面却没变化？**
-先**刷新页面**（接管发生在刷新/重新打开时）。刷新后仍旧：① 确认命令真的写出了文件（报告末尾应有 `✓ 已写出: public/data/board.json`）；② 如果你手动删除过 `public/data/board.json`，dev server 对 `public/` 有进程级缓存——重启 `npm run dev` 再刷新；③ 浏览器开了多个看板标签页时，全部刷新。
+先**刷新页面**（接管发生在刷新/重新打开时）。刷新后仍旧：① 确认命令真的写出了文件（报告末尾应有 `✓ 已写出: web/public/data/board.json`）；② 如果你手动删除过 `web/public/data/board.json`，dev server 对 `public/` 有进程级缓存——重启 `npm run dev` 再刷新；③ 浏览器开了多个看板标签页时，全部刷新。
 
 **Q2：再次运行导入，会覆盖我在页面上改过的内容吗？**
 会。每次导入生成新 `importedAt`，页面下次刷新即被文件数据接管覆写。页面上的编辑想长期保留，就不要重跑导入；文件只当初始快照用。
 
 **Q3：想清空看板、恢复最初的两张引导卡？**
-两步都要做：① 删除 `public/data/board.json`（否则刷新又被文件接管；dev server 运行中删文件需重启 `npm run dev`）；② 浏览器 DevTools → Console 执行 `localStorage.clear()`（或 Application → Storage → Clear site data），再刷新。另外：在页面上把卡片逐张删光是合法状态，刷新不会复活引导卡。
+两步都要做：① 删除 `web/public/data/board.json`（否则刷新又被文件接管；dev server 运行中删文件需重启 `npm run dev`）；② 浏览器 DevTools → Console 执行 `localStorage.clear()`（或 Application → Storage → Clear site data），再刷新。另外：在页面上把卡片逐张删光是合法状态，刷新不会复活引导卡。
 
 **Q4：`publish_at` 老报「无法解析」？写法对照：**
 

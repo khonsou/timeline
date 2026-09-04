@@ -34,7 +34,8 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer-core'
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') // web 包根
+const REPO_ROOT = path.resolve(ROOT, '..') // 仓库根（server/cli/examples/node_modules 所在）
 const VDIR = path.join(ROOT, 'verification')
 mkdirSync(VDIR, { recursive: true })
 
@@ -268,8 +269,8 @@ async function startServers() {
   }
   const apiLog = createWriteStream(path.join(VDIR, 'e2e-api.log'))
   const webLog = createWriteStream(path.join(VDIR, 'e2e-web.log'))
-  apiProc = spawn(process.execPath, [path.join(ROOT, 'server/index.mjs')], {
-    cwd: ROOT,
+  apiProc = spawn(process.execPath, [path.join(REPO_ROOT, 'packages/server/index.mjs')], {
+    cwd: REPO_ROOT,
     detached: true,
     env: {
       ...process.env,
@@ -284,9 +285,9 @@ async function startServers() {
   apiProc.stderr.pipe(apiLog)
   webProc = spawn(
     process.execPath,
-    [path.join(ROOT, 'node_modules/vite/bin/vite.js'), '--port', String(WEB_PORT), '--strictPort'],
+    [path.join(REPO_ROOT, 'node_modules/vite/bin/vite.js'), '--port', String(WEB_PORT), '--strictPort'],
     {
-      cwd: ROOT,
+      cwd: ROOT, // vite 在 web 包内跑（index.html / vite.config.ts 所在）
       detached: true,
       env: { ...process.env, API_PORT: String(API_PORT) },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -1274,7 +1275,7 @@ async function main() {
   })
 
   await t('t24 CLI 导入 → 首页初始化建数据板（旧 importTakesOver）', async () => {
-    execSync('npm run import:data -- examples/import-sample.json', { cwd: ROOT, stdio: 'pipe' })
+    execSync('npm run import:data -- examples/import-sample.json', { cwd: REPO_ROOT, stdio: 'pipe' })
     const { importedAt } = JSON.parse(readFileSync(BOARD_JSON, 'utf8'))
     await waitViteServes(importedAt)
 
@@ -1723,7 +1724,7 @@ async function main() {
   })
 
   await t('t40 产品独立导入接管 + 初始化建产品板（旧 v11ProductsOnlyTakeover）', async () => {
-    execSync('npm run import:data -- --products examples/products-sample.json', { cwd: ROOT, stdio: 'pipe' })
+    execSync('npm run import:data -- --products examples/products-sample.json', { cwd: REPO_ROOT, stdio: 'pipe' })
     const { importedAt } = JSON.parse(readFileSync(BOARD_JSON, 'utf8'))
     await waitViteServes(importedAt)
     // CLI 层：累积 9 个、无 items 键、同 id 改名 / 新 id 追加 / 未提及保留
@@ -2278,7 +2279,7 @@ async function main() {
     let out = ''
     let code = 0
     try {
-      out = execSync(`npm run import:data -- "${tmpCsv}"`, { cwd: ROOT, encoding: 'utf8' })
+      out = execSync(`npm run import:data -- "${tmpCsv}"`, { cwd: REPO_ROOT, encoding: 'utf8' })
     } catch (err) {
       code = err.status ?? -1
       out = `${err.stdout ?? ''}${err.stderr ?? ''}`

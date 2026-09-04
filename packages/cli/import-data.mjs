@@ -22,13 +22,16 @@
  * 指标强制 null 规则 v14 起按**状态**：status ≠ 已发布 → 三指标恒 null；
  * status 缺省按 publish_at 推导（未来 → 待发布，否则已发布），显式「已发布」可解锁未来卡片指标。
  *
- * 解析/校验/哈希/orders/差分全部来自共享核心 src/lib/import-core.ts
- * （Node 24 原生 strip-types 直接引用；与应用内「卡片增量导入」同一套规则）。
+ * 解析/校验/哈希/orders/差分全部来自共享核心 @timeline/core（packages/core/lib/import-core.ts，
+ * Node 24 strip-types 经 workspaces 软链直引；与应用内「卡片增量导入」同一套规则）。
+ * v19 起内置产品/成员目录常量也由 @timeline/core 统一提供（不再内联副本）。
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
+  BUILTIN_MEMBERS,
+  BUILTIN_PRODUCTS,
   computeOrders,
   isStrictRowSignal,
   mergeMembers,
@@ -37,18 +40,14 @@ import {
   readProductsInput,
   validateItems,
   validateProducts,
-} from '../src/lib/import-core.ts'
+} from '@timeline/core/import-core'
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const OUT_FILE = path.join(ROOT, 'public', 'data', 'board.json')
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
+// 写出目标：web 包的 public（vite 伺服根；首页「从本机现有数据初始化」读取）
+const OUT_FILE = path.join(REPO_ROOT, 'web', 'public', 'data', 'board.json')
 
-// 内置产品目录（与 src/lib/content-data.ts 的 PRODUCTS 保持一致：仅看板自身 P-1000）
-const BUILTIN_PRODUCTS = new Set(['P-1000'])
-// 内置成员目录（与 src/lib/content-data.ts 的 MEMBERS 保持一致）
-const BUILTIN_MEMBERS = [
-  { id: 'M-1001', name: '林晓' },
-  { id: 'M-1002', name: '陈远' },
-]
+// 内置产品目录 id 集合（常量本体来自 @timeline/core，三端同一来源）
+const BUILTIN_PRODUCT_IDS = new Set(BUILTIN_PRODUCTS.map((p) => p.id))
 
 const pad = (n) => String(n).padStart(2, '0')
 
@@ -148,7 +147,7 @@ if (PRODUCTS_MODE) {
   for (const p of finalProducts) console.log(`  ${p.id}  ${p.name}`)
 
   if (DRY_RUN) {
-    console.log(`\n[dry-run] 未写出文件（目标: ${path.relative(ROOT, OUT_FILE)}）`)
+    console.log(`\n[dry-run] 未写出文件（目标: ${path.relative(REPO_ROOT, OUT_FILE)}）`)
   } else {
     mkdirSync(path.dirname(OUT_FILE), { recursive: true })
     writeFileSync(
@@ -156,7 +155,7 @@ if (PRODUCTS_MODE) {
       JSON.stringify({ products: finalProducts, importedAt: new Date().toISOString() }, null, 2) + '\n',
       'utf8',
     )
-    console.log(`\n✓ 已写出: ${path.relative(ROOT, OUT_FILE)}（${finalProducts.length} 个产品）`)
+    console.log(`\n✓ 已写出: ${path.relative(REPO_ROOT, OUT_FILE)}（${finalProducts.length} 个产品）`)
     console.log('  仅接管产品目录、不影响现有内容卡片；下次打开/刷新页面时自动生效')
   }
 
@@ -176,7 +175,7 @@ try {
 }
 
 const knownProducts = new Set([
-  ...BUILTIN_PRODUCTS,
+  ...BUILTIN_PRODUCT_IDS,
   ...prevBoardProducts().map((p) => String(p.id)),
   ...(input.products ?? []).map((p) => p.id),
 ])
@@ -288,7 +287,7 @@ if (finalMembers)
   console.log(`成员目录差分：新增 ${mdiff.added} / 同名复用 ${mdiff.unchanged}（共 ${finalMembers.length} 个）`)
 
 if (DRY_RUN) {
-  console.log(`\n[dry-run] 未写出文件（目标: ${path.relative(ROOT, OUT_FILE)}）`)
+  console.log(`\n[dry-run] 未写出文件（目标: ${path.relative(REPO_ROOT, OUT_FILE)}）`)
 } else {
   mkdirSync(path.dirname(OUT_FILE), { recursive: true })
   const out = {
@@ -299,7 +298,7 @@ if (DRY_RUN) {
     importedAt: new Date().toISOString(),
   }
   writeFileSync(OUT_FILE, JSON.stringify(out, null, 2) + '\n', 'utf8')
-  console.log(`\n✓ 已写出: ${path.relative(ROOT, OUT_FILE)}（${finalItems.length} 条）`)
+  console.log(`\n✓ 已写出: ${path.relative(REPO_ROOT, OUT_FILE)}（${finalItems.length} 条）`)
   console.log('  下次打开/刷新页面时自动生效（importedAt 变化才会接管 localStorage）')
 }
 

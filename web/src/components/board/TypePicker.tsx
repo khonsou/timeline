@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ContentType } from '@/types/content'
+import type { ContentType } from '@timeline/core/types'
 import { TAGS, TYPE_KEYS } from '@/lib/content-data'
 
 interface TypePickerProps {

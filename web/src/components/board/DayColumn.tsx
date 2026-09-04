@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import type { ContentItem } from '@/types/content'
+import type { ContentItem } from '@timeline/core/types'
 import type { DayInfo } from '@/lib/content-data'
 import SortableCard from './BoardCard'
 

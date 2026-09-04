@@ -1,0 +1,14 @@
+{
+  "name": "@timeline/server",
+  "version": "1.0.0",
+  "description": "拾光轴看板 API server（零 native 依赖：node:http + node:sqlite + node:crypto；Agent API + 审计 + 限速）",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "@timeline/core": "1.0.0"
+  },
+  "scripts": {
+    "start": "node index.mjs",
+    "test": "node test/smoke.mjs"
+  }
+}

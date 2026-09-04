@@ -9,14 +9,17 @@ module.exports = {
   apps: [
     {
       name: 'timeline-board-api',
-      script: 'server/index.mjs',
+      // v19 分包后：server 包入口；其依赖 @timeline/core 经根 node_modules 软链解析
+      // （packages/ 目录结构需完整保留，pm2 在仓库根启动）
+      script: 'packages/server/index.mjs',
       // node:sqlite 需要 Node ≥ 22.5（建议 24 LTS）；零 native 依赖，无需构建
       env: {
         API_PORT: 8787,
         // BOARD_SECRET: '换成 openssl rand -hex 32 生成的固定值',
-        // BOARD_DB: '/var/lib/timeline-board/boards.sqlite', // 缺省 server/boards.sqlite
+        // BOARD_DB: '/var/lib/timeline-board/boards.sqlite', // 缺省 packages/server/boards.sqlite
         // BOARD_TOKEN_HOURS: 12,   // token 有效期（小时）
         // BOARD_LOCK_SECONDS: 60,  // 同板连续 5 次密码失败锁定时长（秒）
+        // BOARD_AGENT_RPM: 120,    // v18 item 级端点限速（每 board 每 IP 次/分钟）
       },
       // 单实例即可：node:sqlite 同步驱动 + WAL，看板量级无并发瓶颈
       instances: 1,

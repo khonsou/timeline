@@ -1,0 +1,12 @@
+{
+  "name": "@timeline/cli",
+  "version": "1.0.0",
+  "description": "拾光轴真实数据批量导入 CLI（items JSON/CSV + --products 独立模式；与 UI 增量导入同一套校验合并语义）",
+  "type": "module",
+  "bin": {
+    "timeline-import": "import-data.mjs"
+  },
+  "dependencies": {
+    "@timeline/core": "1.0.0"
+  }
+}

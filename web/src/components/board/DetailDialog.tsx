@@ -3,7 +3,7 @@ import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
 import TypePicker from '@/components/board/TypePicker'
-import type { ContentItem } from '@/types/content'
+import type { ContentItem } from '@timeline/core/types'
 import {
   UNKNOWN_PRODUCT_CLS,
   listMembers,
@@ -11,9 +11,9 @@ import {
   resolveMember,
   resolveProduct,
 } from '@/lib/content-data'
-import { isPublished } from '@/lib/board-view'
-import { STATUSES } from '@/lib/import-core'
-import { formatCompact, formatPublishAt, formatRoi } from '@/lib/format'
+import { isPublished } from '@timeline/core/board-view'
+import { STATUSES } from '@timeline/core/import-core'
+import { formatCompact, formatPublishAt, formatRoi } from '@timeline/core/format'
 
 type EditField =
   | 'publish_at'

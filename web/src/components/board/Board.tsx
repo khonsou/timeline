@@ -10,7 +10,7 @@ import {
   type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core'
-import type { ContentItem } from '@/types/content'
+import type { ContentItem } from '@timeline/core/types'
 import {
   WINDOW_DAYS,
   WINDOW_RADIUS,
@@ -19,7 +19,7 @@ import {
   dayDiff,
   todayStr,
 } from '@/lib/content-data'
-import { cardsInDay, publishDateOf, publishTimeOf, type Orders } from '@/lib/board-view'
+import { cardsInDay, publishDateOf, publishTimeOf, type Orders } from '@timeline/core/board-view'
 import DayColumn from './DayColumn'
 import BoardMinimap from './BoardMinimap'
 import { OverlayCard } from './BoardCard'

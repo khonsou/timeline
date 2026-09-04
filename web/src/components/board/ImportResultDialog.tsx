@@ -1,7 +1,7 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
-import type { SkippedRow } from '@/lib/import-core'
+import type { SkippedRow } from '@timeline/core/import-core'
 
 /** UI 增量导入的结果报告（成功与失败两态；失败时不落任何数据） */
 export interface ImportReport {

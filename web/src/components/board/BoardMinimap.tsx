@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react'
-import type { ContentItem } from '@/types/content'
+import type { ContentItem } from '@timeline/core/types'
 import { WINDOW_DAYS, WINDOW_RADIUS, addDays, dayDiff, pad2, todayStr } from '@/lib/content-data'
-import { publishDateOf } from '@/lib/board-view'
+import { publishDateOf } from '@timeline/core/board-view'
 
 const COLUMN_STEP = 236 + 12
 const SIDE_PADDING = 16

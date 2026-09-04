@@ -7,7 +7,7 @@
  *  2. 「从本机现有数据初始化」的 legacy 读取：v14 及之前的单板 localStorage 四键
  *     + CLI 生成的 public/data/board.json 种子（两制并存：CLI 数据经首页初始化进板）
  */
-import type { ContentItem, ContentType, Member } from '@/types/content'
+import type { ContentItem, ContentType, Member } from '@timeline/core/types'
 import {
   MEMBERS,
   PRODUCTS,
@@ -15,8 +15,8 @@ import {
   guideCards,
   type Product,
 } from '@/lib/content-data'
-import { nextOrder, publishDateOf, type Orders } from '@/lib/board-view'
-import { STATUSES, mergeMembers, mergeProducts } from '@/lib/import-core'
+import { nextOrder, publishDateOf, type Orders } from '@timeline/core/board-view'
+import { STATUSES, mergeMembers, mergeProducts } from '@timeline/core/import-core'
 
 export interface BoardDoc {
   items: ContentItem[]

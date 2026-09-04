@@ -7,13 +7,13 @@
 ## 架构
 
 ```
-浏览器 ──► nginx :80 ──静态──► dist/（npm run build 产物）
+浏览器 ──► nginx :80 ──静态──► web/dist/（npm run build 产物）
                 └── /api ──► 127.0.0.1:8787  Node API server（pm2 托管）
-                                                  └── SQLite（server/boards.sqlite，WAL）
+                                                  └── SQLite（packages/server/boards.sqlite，WAL）
 ```
 
-- **API server**：`server/index.mjs`，零 native 依赖（node:http + node:sqlite + node:crypto），Node 直接运行，无需构建。
-- **数据**：单表 `boards`（board_id / name / doc JSON / version / password_hash / 时间戳），整板 JSON 覆盖写（LWW）。
+- **API server**：`packages/server/index.mjs`（@timeline/server），零 native 依赖（node:http + node:sqlite + node:crypto），Node 直接运行，无需构建。
+- **数据**：单表 `boards`（board_id / name / doc JSON / version / password_hash / 时间戳）+ v18 起 `audit_log`（PATCH 逐字段审计），整板 JSON 覆盖写（LWW）。
 - **鉴权**：密码 → scrypt 哈希校验 → HMAC token（默认 12h）；同板连续 5 次失败锁 60s。
 
 ## 1. 环境准备
@@ -33,16 +33,18 @@ sudo npm i -g pm2 nginx
 ```bash
 # 本地或服务器上构建前端
 npm ci
-npm run build          # 产物在 dist/
+npm run build          # 产物在 web/dist/
 
 # 服务器目录规划（示例）
 sudo mkdir -p /var/www/timeline-board /var/lib/timeline-board
-sudo cp -r dist/* /var/www/timeline-board/          # 前端静态产物
-# 项目本体（server/ 与 deploy/）放到如 /opt/timeline-board
+sudo cp -r web/dist/* /var/www/timeline-board/      # 前端静态产物
+# 项目本体（packages/ 与 deploy/）放到如 /opt/timeline-board
 ```
 
-> 说明：`server/index.mjs` 只依赖 Node 内置模块，**不需要 node_modules**；
-> 部署 `server/index.mjs` 一个文件即可运行（BOARD_DB 指向数据目录）。
+> 说明（v19 起）：`packages/server/index.mjs` 运行时只依赖 Node 内置模块 + `@timeline/core`
+> （packages/core，Node 24 strip-types 直引 .ts，零构建）；**需连同 packages/server 与
+> packages/core 两个目录一起部署**（保留 packages/ 相对结构，或保留根 node_modules 的
+> @timeline/core 软链），BOARD_DB 指向数据目录。
 
 ## 3. 启动 API server（pm2）
 
@@ -62,10 +64,11 @@ curl http://127.0.0.1:8787/api/health   # → {"ok":true}
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `API_PORT` | `8787` | API 监听端口 |
-| `BOARD_DB` | `server/boards.sqlite` | SQLite 文件路径 |
+| `BOARD_DB` | `packages/server/boards.sqlite` | SQLite 文件路径 |
 | `BOARD_SECRET` | 随机（警告） | token HMAC 密钥，**生产必须设为固定值** |
 | `BOARD_TOKEN_HOURS` | `12` | token 有效期（小时） |
 | `BOARD_LOCK_SECONDS` | `60` | 同板连续 5 次密码失败后的锁定时长（秒） |
+| `BOARD_AGENT_RPM` | `120` | v18 item 级端点限速（每 board 每 IP 次/分钟） |
 
 ## 4. nginx 反代
 
@@ -101,8 +104,8 @@ sqlite3 /var/lib/timeline-board/boards.sqlite ".backup '/backup/boards-$(date +%
 ```bash
 git pull            # 或上传新包
 npm ci && npm run build
-sudo cp -r dist/* /var/www/timeline-board/
-pm2 restart timeline-board-api    # server/index.mjs 有变化时
+sudo cp -r web/dist/* /var/www/timeline-board/
+pm2 restart timeline-board-api    # packages/server 或 packages/core 有变化时
 ```
 
 ## 7. 安全须知

@@ -1,6 +1,7 @@
-import type { ContentItem, ContentType, Member } from '@/types/content'
-import type { Orders } from './board-view'
-import { publishDateOf } from './board-view'
+import type { ContentItem, ContentType, Member } from '@timeline/core/types'
+import { BUILTIN_MEMBERS, BUILTIN_PRODUCTS } from '@timeline/core/import-core'
+import type { Orders } from '@timeline/core/board-view'
+import { publishDateOf } from '@timeline/core/board-view'
 
 // ---------------------------------------------------------------------------
 // 日期轴范围：今天 ±14 天，共 29 个日列
@@ -30,14 +31,14 @@ export const TYPE_KEYS = Object.keys(TAGS) as ContentType[]
 
 // ---------------------------------------------------------------------------
 // 产品目录（数据层常量），ContentItem.product_id 引用之
-// 内置目录仅 P-1000 光轴（看板自身，首次启动引导卡归属）；
+// 内置目录本体在 @timeline/core（BUILTIN_PRODUCTS：仅看板自身 P-1000 光轴）；
 // 真实产品通过 CLI --products / 应用内「产品管理」/ items 内嵌 products 进入运行时目录
 // ---------------------------------------------------------------------------
 export interface Product {
   id: string
   name: string
 }
-export const PRODUCTS: Product[] = [{ id: 'P-1000', name: '光轴' }]
+export const PRODUCTS: Product[] = BUILTIN_PRODUCTS.map((p) => ({ ...p }))
 export const PRODUCT_BY_ID: Record<string, Product> = Object.fromEntries(
   PRODUCTS.map((p) => [p.id, p]),
 )
@@ -85,12 +86,10 @@ export function listProducts(): Product[] {
 
 // ---------------------------------------------------------------------------
 // 成员目录（与产品目录完全同构）：ContentItem.content_owner_id / delivery_owner_id 引用之。
-// 内置种子仅 2 个示例成员；真实成员通过 CLI 导入自动登记 / 应用内「成员管理」进入运行时目录
+// 内置种子本体在 @timeline/core（BUILTIN_MEMBERS，2 个示例成员）；
+// 真实成员通过 CLI 导入自动登记 / 应用内「成员管理」进入运行时目录
 // ---------------------------------------------------------------------------
-export const MEMBERS: Member[] = [
-  { id: 'M-1001', name: '林晓' },
-  { id: 'M-1002', name: '陈远' },
-]
+export const MEMBERS: Member[] = BUILTIN_MEMBERS.map((m) => ({ ...m }))
 export const MEMBER_BY_ID: Record<string, Member> = Object.fromEntries(
   MEMBERS.map((m) => [m.id, m]),
 )
@@ -266,7 +265,7 @@ export function guideCards(): { items: ContentItem[]; orders: Orders } {
       '· 命令：npm run import:data -- 你的数据.csv（或 .json）\n' +
         '· --dry-run 先校验不写文件 · --merge 合并已有数据 · --strict 遇错即停\n' +
         '· 支持中文字段名表头；id 可留空（按内容哈希自动生成）\n' +
-        '· 导入后刷新页面自动生效；字段口径见 src/types/content.ts\n' +
+        '· 导入后刷新页面自动生效；字段口径见 packages/core/types/content.ts\n' +
         '· 示例文件：examples/import-sample.json / import-sample.csv\n' +
         '· 完整指南：docs/cli-import-guide.md（可直接粘贴到飞书文档）',
     ),

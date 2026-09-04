@@ -1,4 +1,4 @@
-import type { ContentItem } from '@/types/content'
+import type { ContentItem } from '../types/content'
 
 // ---------------------------------------------------------------------------
 // 视图层：看板摆放状态（纯展示，随拖拽变化）。

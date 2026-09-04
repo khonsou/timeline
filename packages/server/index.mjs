@@ -28,7 +28,7 @@
  *   GET   /api/boards/:id/audit?limit=50 PATCH 审计（倒序，limit ≤200）
  *   限速：以上端点每 board 每 IP 120 次/分钟（BOARD_AGENT_RPM 可调），超限 429 { error, retry_after }
  *
- * 环境变量：API_PORT（默认 8787）/ BOARD_DB（默认 server/boards.sqlite）/
+ * 环境变量：API_PORT（默认 8787）/ BOARD_DB（默认 packages/server/boards.sqlite）/
  *   BOARD_SECRET（token 签名密钥；缺省生成随机并警告，重启后 token 全失效）/
  *   BOARD_TOKEN_HOURS（默认 12）/ BOARD_LOCK_SECONDS（默认 60）/ BOARD_AGENT_RPM（默认 120）
  */
@@ -38,12 +38,14 @@ import path from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
-// v18：PATCH 校验复用 import-core 的枚举与归一化规则（Node 24 原生 strip-types，与 CLI 同方式直引）
-import { TYPES, STATUSES, normalizePublishAt } from '../src/lib/import-core.ts'
+// v18+：PATCH 校验复用 @timeline/core 的枚举与归一化规则（Node 24 strip-types 经
+// workspaces 软链直引包内 .ts——realpath 不在 node_modules 内，类型擦除生效，零构建）
+import { TYPES, STATUSES, normalizePublishAt } from '@timeline/core/import-core'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.API_PORT || 8787)
-const DB_PATH = process.env.BOARD_DB || path.join(ROOT, 'server', 'boards.sqlite')
+// 默认库文件落在 server 包目录内（packages/server/boards.sqlite）；生产用 BOARD_DB 指向数据目录
+const DB_PATH = process.env.BOARD_DB || path.join(path.dirname(fileURLToPath(import.meta.url)), 'boards.sqlite')
 const TOKEN_TTL_MS = Number(process.env.BOARD_TOKEN_HOURS || 12) * 3600_000
 const LOCK_MS = Number(process.env.BOARD_LOCK_SECONDS || 60) * 1000
 const MAX_FAILS = 5

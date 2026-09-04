@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
- * 开发双进程启动器（v15）：一条 `npm run dev` 同时起
- *   1. API server（server/index.mjs，端口 API_PORT，默认 8787）
- *   2. vite dev server（转发 CLI 的 --host/--port 等全部参数）
+ * 开发双进程启动器（v15 起；v19 分包路径适配）：一条 `npm run dev` 同时起
+ *   1. API server（packages/server/index.mjs，端口 API_PORT，默认 8787）
+ *   2. vite dev server（cwd = web/，转发 CLI 的 --host/--port 等全部参数）
  * 退出时两个进程一起杀（SIGINT/SIGTERM/父进程退出均兜底）。
  *
  * Kimi Work 预览：`npm run dev -- --host localhost --port 7100 --strictPort`
@@ -13,16 +13,17 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const WEB = path.join(ROOT, 'web')
 const API_PORT = process.env.API_PORT || '8787'
 const VITE_BIN = path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js')
-const SERVER_BIN = path.join(ROOT, 'server', 'index.mjs')
+const SERVER_BIN = path.join(ROOT, 'packages', 'server', 'index.mjs')
 
 const children = []
 let shuttingDown = false
 
-function start(name, args, env = {}) {
+function start(name, args, cwd = ROOT, env = {}) {
   const child = spawn(process.execPath, args, {
-    cwd: ROOT,
+    cwd,
     stdio: 'inherit',
     env: { ...process.env, API_PORT: API_PORT, ...env },
   })
@@ -59,6 +60,6 @@ process.on('SIGTERM', () => shutdown(143))
 // 兜底：父进程以任何方式退出（含未捕获异常）时，子进程一并带走
 process.on('exit', killAll)
 
-console.log(`[dev] API server → http://127.0.0.1:${API_PORT}（BOARD_DB=${process.env.BOARD_DB || 'server/boards.sqlite'}）`)
+console.log(`[dev] API server → http://127.0.0.1:${API_PORT}（BOARD_DB=${process.env.BOARD_DB || 'packages/server/boards.sqlite'}）`)
 start('api', [SERVER_BIN])
-start('vite', [VITE_BIN, ...process.argv.slice(2)])
+start('vite', [VITE_BIN, ...process.argv.slice(2)], WEB)

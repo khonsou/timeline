@@ -2,10 +2,10 @@ import type { DraggableAttributes } from '@dnd-kit/core'
 import type { SyntheticListenerMap } from '@dnd-kit/core/dist/hooks/utilities'
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
-import type { ContentItem } from '@/types/content'
+import type { ContentItem } from '@timeline/core/types'
 import { TAGS, UNKNOWN_PRODUCT_CLS, resolveProduct } from '@/lib/content-data'
-import { publishDateOf, publishTimeOf, isPublished } from '@/lib/board-view'
-import { formatCompact, formatRoi } from '@/lib/format'
+import { publishDateOf, publishTimeOf, isPublished } from '@timeline/core/board-view'
+import { formatCompact, formatRoi } from '@timeline/core/format'
 
 // ---------------------------------------------------------------------------
 // CardView：卡片面（单击开详情，不再 inline 编辑），被 SortableCard 与 DragOverlay 复用
