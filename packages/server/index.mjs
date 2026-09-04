@@ -22,7 +22,7 @@
  * v18 item 级端点（第三方 agent 读写；同一套 Bearer token，无独立 agent key）：
  *   GET   /api/boards/:id/items?date=&product_id=&member=&status=&q=  卡片列表（过滤可叠加，按 publish_at 排序）
  *   GET   /api/boards/:id/items/:itemId                               单张卡片（404 处理）
- *   PATCH /api/boards/:id/items/:itemId  白名单字段补丁（校验复用 import-core 规则；逐字段审计）
+ *   PATCH /api/boards/:id/items/:itemId  白名单字段补丁（校验复用 patch-core 规则；逐字段审计）
  *   GET   /api/boards/:id/products       产品目录
  *   GET   /api/boards/:id/members        成员目录
  *   GET   /api/boards/:id/audit?limit=50 PATCH 审计（倒序，limit ≤200）
@@ -38,9 +38,9 @@ import path from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
-// v18+：PATCH 校验复用 @timeline/core 的枚举与归一化规则（Node 24 strip-types 经
+// v18+：PATCH 校验/合并规则下沉 @timeline/core/patch-core（Node 24 strip-types 经
 // workspaces 软链直引包内 .ts——realpath 不在 node_modules 内，类型擦除生效，零构建）
-import { TYPES, STATUSES, normalizePublishAt } from '@timeline/core/import-core'
+import { applyItemPatch } from '@timeline/core/patch-core'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.API_PORT || 8787)
@@ -184,64 +184,9 @@ function agentRateLimited(boardId, ip) {
 }
 
 // ---------------------------------------------------------------------------
-// v18 PATCH 校验：白名单字段 + import-core 同口径规则与同风格中文文案
+// v18 PATCH：白名单/逐字段校验/负责人解析/指标联动/跨日 orders 已下沉
+// @timeline/core/patch-core（applyItemPatch），此处仅保留审计序列化（审计属 server 职责）
 // ---------------------------------------------------------------------------
-const PATCH_FIELDS = [
-  'title',
-  'type',
-  'status',
-  'publish_at',
-  'product_id',
-  'content_owner_id',
-  'delivery_owner_id',
-  'roi',
-  'propagation_4h',
-  'engagement_4h',
-  'comment',
-]
-
-/** 空 → null；非负数字 → number；其余报错（与 import-core normalizeMetric 同口径同文案） */
-function normalizeMetricPatch(raw, name) {
-  if (raw === null || raw === undefined || String(raw).trim() === '') return { value: null }
-  const n = Number(raw)
-  if (!Number.isFinite(n) || n < 0) return { value: null, error: `${name} 须为空或非负数字，得到 "${raw}"` }
-  return { value: n }
-}
-
-/** 成员自动 id：扫描目录 id 数字后缀取 max+1（与 MemberManagerDialog.nextMemberId 一致） */
-function nextMemberId(members) {
-  let max = 1000
-  for (const m of members) {
-    const match = String(m.id).match(/(\d+)$/)
-    if (match) max = Math.max(max, Number(match[1]))
-  }
-  return `M-${String(max + 1).padStart(4, '0')}`
-}
-
-/**
- * 负责人值解析（mergeMembers 语义）：空 → ''（未分配）；命中既有 id → 原样；
- * 命中既有姓名 → 复用其 id；未知姓名 → 自动登记进目录（追加到 pendingMembers）
- */
-function resolveOwnerPatch(raw, members, pendingMembers) {
-  const v = String(raw ?? '').trim()
-  if (!v) return ''
-  const byId = [...members, ...pendingMembers].find((m) => m.id === v)
-  if (byId) return byId.id
-  const byName = [...members, ...pendingMembers].find((m) => m.name === v)
-  if (byName) return byName.id
-  const id = nextMemberId([...members, ...pendingMembers])
-  pendingMembers.push({ id, name: v })
-  return id
-}
-
-/** 目标日列内下一个 order（与 board-view.nextOrder 同语义：末尾 order+1，空列 0） */
-function nextOrderPatch(items, orders, date) {
-  const col = items
-    .map((c, i) => ({ c, i }))
-    .filter(({ c }) => c.publish_at.slice(0, 10) === date)
-    .sort((a, b) => (orders[a.c.id] ?? 0) - (orders[b.c.id] ?? 0) || a.i - b.i)
-  return col.length ? (orders[col[col.length - 1].c.id] ?? 0) + 1 : 0
-}
 
 /** 审计值序列化：字符串原样，其余（null/number）JSON 序列化 */
 const auditVal = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
@@ -480,78 +425,28 @@ const server = http.createServer(async (req, res) => {
         }
         const item = doc.items.find((it) => it.id === itemId)
         if (!item) return send(res, 404, { error: '卡片不存在' })
-        const bad = Object.keys(body).filter((k) => !PATCH_FIELDS.includes(k))
-        if (bad.length) return send(res, 400, { error: `不支持修改的字段: ${bad.join(', ')}` })
 
-        // 逐字段校验归一化（import-core 同口径规则与文案）
-        const errors = []
-        const next = { ...item }
-        const pendingMembers = [] // 本次 PATCH 自动登记的新成员（mergeMembers 语义）
-        if ('title' in body) {
-          const v = String(body.title ?? '').trim()
-          if (!v) errors.push('title 必填且非空')
-          else next.title = v
+        // 白名单 + 逐字段校验 + 负责人解析 + 指标联动 + 跨日 orders：全部在 core patch-core
+        const r = applyItemPatch(body, item, { members: doc.members, items: doc.items, orders: doc.orders })
+        if (r.unknownFields.length) {
+          return send(res, 400, { error: `不支持修改的字段: ${r.unknownFields.join(', ')}` })
         }
-        if ('type' in body) {
-          const v = String(body.type ?? '').trim()
-          if (!TYPES.includes(v)) errors.push(`type 非法: "${v}"，合法值: ${TYPES.join(' / ')}`)
-          else next.type = v
-        }
-        if ('status' in body) {
-          const v = String(body.status ?? '').trim()
-          if (!STATUSES.includes(v)) errors.push(`status 非法: "${v}"，合法值: ${STATUSES.join(' / ')}`)
-          else next.status = v
-        }
-        if ('publish_at' in body) {
-          const v = normalizePublishAt(body.publish_at)
-          if (!v) {
-            errors.push(
-              `publish_at 无法解析: "${body.publish_at}"（接受 YYYY-MM-DDTHH:mm / YYYY-MM-DD HH:mm / YYYY/M/D H:mm）`,
-            )
-          } else next.publish_at = v
-        }
-        // 未知 product_id 保留原样、不动目录（PATCH 不携带 product_name，不触发登记）
-        if ('product_id' in body) next.product_id = String(body.product_id ?? '').trim()
-        if ('content_owner_id' in body) next.content_owner_id = resolveOwnerPatch(body.content_owner_id, doc.members, pendingMembers)
-        if ('delivery_owner_id' in body) next.delivery_owner_id = resolveOwnerPatch(body.delivery_owner_id, doc.members, pendingMembers)
-        for (const f of ['roi', 'propagation_4h', 'engagement_4h']) {
-          if (f in body) {
-            const r = normalizeMetricPatch(body[f], f)
-            if (r.error) errors.push(r.error)
-            else next[f] = r.value
-          }
-        }
-        if ('comment' in body) next.comment = String(body.comment ?? '')
-        if (errors.length) return send(res, 400, { error: errors.join('；') })
-
-        // 与 UI updateCard 同口径：最终状态非「已发布」→ 三指标强制 null
-        if (next.status !== '已发布') {
-          next.roi = null
-          next.propagation_4h = null
-          next.engagement_4h = null
-        }
+        if (r.errors.length) return send(res, 400, { error: r.errors.join('；') })
 
         // 按实际变化字段审计；无变化 → 200 但不写审计、version 不增
-        const changes = PATCH_FIELDS.filter((f) => next[f] !== item[f]).map((f) => ({
-          field: f,
-          old_value: item[f],
-          new_value: next[f],
-        }))
-        if (!changes.length && !pendingMembers.length) {
+        if (!r.changes.length && !r.pendingMembers.length) {
           return send(res, 200, { changed: false, version: row.version, item })
         }
 
-        // orders 联动（与 UI updateCard 一致）：publish_at 跨日 → 排到目标日列末尾；同日时分变更不动
-        const oldDate = item.publish_at.slice(0, 10)
-        const newDate = next.publish_at.slice(0, 10)
-        if (newDate !== oldDate) doc.orders[itemId] = nextOrderPatch(doc.items, doc.orders, newDate)
+        // orders 联动：publish_at 跨日 → 排到目标日列末尾；同日时分变更不动
+        if (r.orderUpdate) doc.orders[itemId] = r.orderUpdate.order
 
-        doc.items = doc.items.map((it) => (it.id === itemId ? next : it))
-        if (pendingMembers.length) doc.members = [...doc.members, ...pendingMembers]
+        doc.items = doc.items.map((it) => (it.id === itemId ? r.next : it))
+        if (r.pendingMembers.length) doc.members = [...doc.members, ...r.pendingMembers]
         const now = new Date().toISOString()
         qUpdate.run(JSON.stringify(doc), now, id) // 与 PUT 同一持久化路径（version+1、updated_at 刷新）
-        for (const c of changes) qAuditInsert.run(now, id, itemId, c.field, auditVal(c.old_value), auditVal(c.new_value))
-        return send(res, 200, { changed: true, version: qGet.get(id).version, item: next })
+        for (const c of r.changes) qAuditInsert.run(now, id, itemId, c.field, auditVal(c.old_value), auditVal(c.new_value))
+        return send(res, 200, { changed: true, version: qGet.get(id).version, item: r.next })
       }
 
       return send(res, 405, { error: 'method not allowed' })

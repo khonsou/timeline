@@ -29,8 +29,8 @@
 - **monorepo 分包（v19，2026-09）**：不拆多仓库，单仓 npm workspaces 四包（core 契约 / server / cli / web）；core 以 `.ts` 源码经 workspaces 软链 + strip-types 零构建直引三端。
 - **拖拽碰撞检测 = 组合式判定**（v19，2026-09-04）：pointerWithin 锁列 + 列内 closestCorners + 非源列排除拖拽卡自身。根因：全局 closestCorners 按角距判定，被拖拽卡自身 rect（钉在原列）截胡——实测指针深入邻列 30% 时自身赢下 82/86 次判定，目标列从不高亮。**不得回退为单一全局判定**（回归锁：e2e t57）。
 - **Agent API（v18）**：item 级读写 + 逐字段审计（audit_log）+ 每板每 IP 120 次/分钟限速；鉴权与人类访问同口径（URL + 密码换 token），不另设密钥体系。
+- **Agent PATCH 规则唯一定义在 core**（v20，2026-09-04）：白名单校验/指标联动/负责人解析/跨日 orders 更新下沉 `packages/core/lib/patch-core.ts`（applyItemPatch 纯函数），server 的 PATCH 路由只保留 HTTP/鉴权/审计/限速薄调用。已知差异（非 bug）：web BoardPage 按 patch 时点判定指标 gate，core 按最终态判定（更严）；web MemberManagerDialog 的 nextMemberId 与 core 重复，留作后续下沉项。
 
 ## 待做（已确认方向，未实施）
 
-- **Agent PATCH 校验/合并逻辑下沉 core**（待做）：目前 Agent 白名单 PATCH 的字段规则在 server 内实现，计划下沉 `packages/core` 与导入校验同源。**当前状态：未开始，不要按已完成引用。**
-- **server 单文件拆分**（待做）：`packages/server/index.mjs` 571 行（DB/鉴权/Agent/路由一体），功能稳定后再拆模块；拆分不是当前功能任务的一部分。
+- **server 单文件拆分**（待做）：`packages/server/index.mjs`（DB/鉴权/Agent/路由一体），功能稳定后再拆模块；拆分不是当前功能任务的一部分。
