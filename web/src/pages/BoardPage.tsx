@@ -48,6 +48,7 @@ import { validateDoc, type BoardDoc } from '@/lib/board-doc'
 import {
   ApiError,
   authBoard,
+  apiPath,
   clearToken,
   getBoard,
   getToken,
@@ -309,7 +310,7 @@ function SyncedBoard({
       const token = getToken(boardId)
       if (!token) return
       // pagehide 时用 keepalive 尽力补推（页面即将关闭，不等响应）
-      void fetch(`/api/boards/${boardId}`, {
+      void fetch(apiPath(`/api/boards/${boardId}`), {
         method: 'PUT',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
         body: JSON.stringify({ doc: docRef.current }),
