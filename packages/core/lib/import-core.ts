@@ -329,8 +329,8 @@ export function normalizePublishAt(raw: unknown): string | null {
   return `${y}-${pad(mo)}-${pad(d)}T${pad(h)}:${pad(mi)}`
 }
 
-/** 空 → null；非负数字 → number；其余报错 */
-function normalizeMetric(raw: unknown, name: string): { value: number | null; error?: string } {
+/** 空 → null；非负数字 → number；其余报错（Agent PATCH 经 patch-core 复用同口径同文案） */
+export function normalizeMetric(raw: unknown, name: string): { value: number | null; error?: string } {
   if (raw === undefined || raw === null || String(raw).trim() === '') return { value: null }
   const n = Number(raw)
   if (!Number.isFinite(n) || n < 0)

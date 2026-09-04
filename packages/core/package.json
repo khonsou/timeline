@@ -9,9 +9,11 @@
     "./import-core": "./lib/import-core.ts",
     "./board-view": "./lib/board-view.ts",
     "./format": "./lib/format.ts",
+    "./patch-core": "./lib/patch-core.ts",
     "./lib/import-core.ts": "./lib/import-core.ts",
     "./lib/board-view.ts": "./lib/board-view.ts",
-    "./lib/format.ts": "./lib/format.ts"
+    "./lib/format.ts": "./lib/format.ts",
+    "./lib/patch-core.ts": "./lib/patch-core.ts"
   },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\""
