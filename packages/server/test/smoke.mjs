@@ -1,14 +1,19 @@
 #!/usr/bin/env node
 /**
  * @timeline/server 冒烟（node 脚本，无浏览器）：起子进程 server（端口 5197 +
- * 临时 sqlite + BOARD_AGENT_RPM=3 便于构造 429），跑通 v18 Agent API 主链路：
+ * 临时 sqlite 自建自删），跑通 Agent API 主链路：
  * 建板 → 密码换 token → items 过滤 → 单卡 → PATCH（校验/指标联动/负责人登记/
- * orders 联动）→ audit → 无变化幂等 → 限速 429 → 删板。跑完杀进程组、删临时库。
+ * orders 联动 / If-Match）→ audit → 无变化幂等 →
+ * v19 change-set 全流程（创建/预校验 400/GET/commit/审计五字段/幂等重试/键复用 409/
+ * 版本冲突 conflicted/校验失败 rejected/cancel/惰性 expired/2000 上限全批拒绝）→
+ * PUT If-Match → 删板。随后换 BOARD_AGENT_RPM=3 低上限实例补测限速 429。
+ * 跑完杀进程组、删临时库。
  *
  * 端口纪律：仅用 5197；不碰 5198/5199（e2e）与 7100/7101/7102/8787。
  */
 import { spawn } from 'node:child_process'
 import { existsSync, rmSync } from 'node:fs'
+import { DatabaseSync } from 'node:sqlite'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -31,12 +36,13 @@ const ok = (cond, name, detail = '') => {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function api(method, p, body, token) {
+async function api(method, p, body, token, headers = {}) {
   const res = await fetch(`${API}${p}`, {
     method,
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...headers,
     },
     body: body === undefined ? undefined : JSON.stringify(body),
   })
@@ -46,7 +52,7 @@ async function api(method, p, body, token) {
   } catch {
     // 204
   }
-  return { status: res.status, body: json }
+  return { status: res.status, body: json, headers: res.headers }
 }
 
 let proc = null
@@ -149,6 +155,189 @@ try {
   const audit2 = await api('GET', `/boards/${bid}/audit?limit=1`, undefined, tk)
   ok(pSame.body.changed === false && full2.body.version === v1 && audit2.body.entries[0].id === a1, '无变化 PATCH 幂等（不写审计不增 version）')
 
+  // ------------------------------------------------------------------
+  // v19 change-set 全流程（协议 §5.4–5.7）
+  // ------------------------------------------------------------------
+  const ver0 = full2.body.version
+
+  // 预校验失败：空 operations → 400，不产生记录
+  const csBad = await api('POST', `/boards/${bid}/change-sets`, { base_version: ver0, operations: [] }, tk)
+  ok(csBad.status === 400 && /非空数组/.test(csBad.body.error), 'change-set 空 operations 预校验 400')
+
+  // 创建提案：2 create（含 links）+ 1 patch（未知负责人姓名登记）
+  const csCreate = await api(
+    'POST',
+    `/boards/${bid}/change-sets`,
+    {
+      base_version: ver0,
+      source: { type: 'agent', external_run_id: 'run-smoke-001' },
+      actor: { type: 'agent', id: 'agent-smoke' },
+      operations: [
+        { op: 'create', client_ref: 'row-1', item: { title: 'CS新卡A', publish_at: `${day(0)}T20:00` } },
+        {
+          op: 'create',
+          client_ref: 'row-2',
+          item: {
+            title: 'CS新卡B',
+            publish_at: `${day(0)}T21:00`,
+            links: [{ id: 'l1', rel: 'publish', url: 'https://x.com/p/1', platform: 'xiaohongshu' }],
+          },
+        },
+        { op: 'patch', item_id: 's-03', changes: { comment: 'Agent 回填完成', delivery_owner_id: '钱七' } },
+      ],
+    },
+    tk,
+  )
+  ok(
+    csCreate.status === 201 && csCreate.body.status === 'pending' && /^cs-[0-9a-f]{16}$/.test(csCreate.body.change_set_id),
+    'change-set 创建 201 pending',
+    JSON.stringify(csCreate.body),
+  )
+  ok(csCreate.body.expires_at > csCreate.body.created_at && csCreate.body.result === null, 'expires_at 写入，result 初始 null')
+  const csid = csCreate.body.change_set_id
+
+  // GET review + 404
+  const csGet = await api('GET', `/boards/${bid}/change-sets/${csid}`, undefined, tk)
+  ok(csGet.status === 200 && csGet.body.operations.length === 3 && csGet.body.actor.id === 'agent-smoke', 'change-set GET review')
+  const cs404 = await api('GET', `/boards/${bid}/change-sets/cs-0000000000000000`, undefined, tk)
+  ok(cs404.status === 404, 'change-set 404')
+
+  // commit（带幂等键）→ committed：version+1、items 映射、卡片可见、orders 列尾、成员登记
+  const commit = await api('POST', `/boards/${bid}/change-sets/${csid}/commit`, {}, tk, { 'idempotency-key': 'commit-smoke-1' })
+  ok(commit.status === 200 && commit.body.status === 'committed' && commit.body.version === ver0 + 1, 'commit → committed version+1', JSON.stringify(commit.body))
+  ok(
+    commit.body.items.length === 2 && commit.body.items[0].client_ref === 'row-1' && commit.body.items[1].client_ref === 'row-2',
+    'client_ref → id 映射',
+  )
+  const board1 = await api('GET', `/boards/${bid}`, undefined, tk)
+  const doc1 = board1.body.doc
+  ok(board1.body.version === ver0 + 1 && doc1.items.length === 5, '提交后卡片可见（3+2=5）')
+  const [idA, idB] = commit.body.items.map((x) => x.id)
+  ok(doc1.orders[idA] === 1 && doc1.orders[idB] === 2 && doc1.orders['s-02'] === 0, '新卡按 ops 顺序排当日列尾，已有顺序不动')
+  ok(doc1.items.find((it) => it.id === idB).links?.[0]?.url === 'https://x.com/p/1', 'links 随 create 写入')
+  ok(doc1.members.some((m) => m.name === '钱七'), '未知负责人姓名经 change-set 登记')
+  ok(doc1.items.find((it) => it.id === 's-03').comment === 'Agent 回填完成', 'patch op 生效')
+
+  // 审计五字段：actor / source / change_set_id / request_id（逐条复制）
+  const auditCs = await api('GET', `/boards/${bid}/audit?limit=50`, undefined, tk)
+  const csEntries = auditCs.body.entries.filter((e) => e.change_set_id === csid)
+  const e0 = csEntries[0] ?? {}
+  ok(
+    csEntries.length > 0 &&
+      csEntries.every((e) => e.request_id && e.request_id === e0.request_id) &&
+      JSON.parse(e0.actor ?? 'null')?.id === 'agent-smoke' &&
+      JSON.parse(e0.source ?? 'null')?.external_run_id === 'run-smoke-001',
+    '审计含 actor/source/change_set_id/request_id（同 ts 同 request_id）',
+    JSON.stringify(e0),
+  )
+  ok(auditCs.body.entries.some((e) => e.change_set_id === null), '直接 PATCH 审计 change_set_id=null')
+
+  // 幂等：同键同内容重试 → 相同结果，version 不再增
+  const retry = await api('POST', `/boards/${bid}/change-sets/${csid}/commit`, {}, tk, { 'idempotency-key': 'commit-smoke-1' })
+  const boardAfterRetry = await api('GET', `/boards/${bid}`, undefined, tk)
+  ok(
+    retry.status === 200 && retry.body.version === commit.body.version && boardAfterRetry.body.version === ver0 + 1,
+    '同 Idempotency-Key 重试返回首次结果（version 不增）',
+  )
+  // 同键不同内容 → 409 IDEMPOTENCY_KEY_REUSE
+  const reuse = await api('POST', `/boards/${bid}/change-sets/${csid}/commit`, { note: 'changed' }, tk, { 'idempotency-key': 'commit-smoke-1' })
+  ok(reuse.status === 409 && reuse.body.error === 'IDEMPOTENCY_KEY_REUSE', '同键不同内容 409 IDEMPOTENCY_KEY_REUSE')
+  // 无键重复 commit → 409 已终态
+  const recommit = await api('POST', `/boards/${bid}/change-sets/${csid}/commit`, {}, tk)
+  ok(recommit.status === 409 && recommit.body.status === 'committed', '无键重复 commit → 409 已终态')
+
+  // 版本冲突：base_version 过期 → 409 + conflicted + 看板零变化
+  const csStale = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: ver0, // 已过期（当前 ver0+1）
+    operations: [{ op: 'create', item: { title: '幽灵卡', publish_at: `${day(0)}T22:00` } }],
+  }, tk)
+  const commitStale = await api('POST', `/boards/${bid}/change-sets/${csStale.body.change_set_id}/commit`, {}, tk)
+  ok(commitStale.status === 409 && commitStale.body.error === 'VERSION_CONFLICT' && commitStale.body.current_version === ver0 + 1, 'base_version 过期 → 409 VERSION_CONFLICT')
+  const csStaleGet = await api('GET', `/boards/${bid}/change-sets/${csStale.body.change_set_id}`, undefined, tk)
+  const boardStale = await api('GET', `/boards/${bid}`, undefined, tk)
+  ok(csStaleGet.body.status === 'conflicted' && boardStale.body.doc.items.length === 5, 'conflicted 落库且看板零变化')
+
+  // 校验失败：commit 时 core 全量校验报错 → 400 + rejected + 看板零变化
+  const csInvalid = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: ver0 + 1,
+    operations: [{ op: 'patch', item_id: 'ghost-card', changes: { title: 'x' } }],
+  }, tk)
+  ok(csInvalid.status === 201, 'patch 不存在卡片可过预校验（存在性检查在 commit）')
+  const commitInvalid = await api('POST', `/boards/${bid}/change-sets/${csInvalid.body.change_set_id}/commit`, {}, tk)
+  ok(commitInvalid.status === 400 && /卡片不存在/.test(commitInvalid.body.error), 'commit 校验失败 400（中文文案透传）')
+  const csInvalidGet = await api('GET', `/boards/${bid}/change-sets/${csInvalid.body.change_set_id}`, undefined, tk)
+  const boardInvalid = await api('GET', `/boards/${bid}`, undefined, tk)
+  ok(
+    csInvalidGet.body.status === 'rejected' && Array.isArray(csInvalidGet.body.result?.errors) && boardInvalid.body.version === ver0 + 1,
+    'rejected 落库（result 含 errors），看板零变化',
+  )
+
+  // cancel：pending → rejected；重复 cancel / 终态 commit → 409
+  const csCancel = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: ver0 + 1,
+    operations: [{ op: 'create', item: { title: '待取消', publish_at: `${day(0)}T23:00` } }],
+  }, tk)
+  const cancel1 = await api('POST', `/boards/${bid}/change-sets/${csCancel.body.change_set_id}/cancel`, {}, tk)
+  ok(cancel1.status === 200 && cancel1.body.status === 'rejected', 'cancel → rejected')
+  const cancel2 = await api('POST', `/boards/${bid}/change-sets/${csCancel.body.change_set_id}/cancel`, {}, tk)
+  ok(cancel2.status === 409, '重复 cancel → 409')
+  const commitCancelled = await api('POST', `/boards/${bid}/change-sets/${csCancel.body.change_set_id}/commit`, {}, tk)
+  ok(commitCancelled.status === 409, '已取消 commit → 409')
+
+  // 惰性过期：直接改库 expires_at 到过去 → GET 触发 expired 并落库；commit 409
+  const csExp = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: ver0 + 1,
+    operations: [{ op: 'create', item: { title: '过期卡', publish_at: `${day(0)}T23:30` } }],
+  }, tk)
+  {
+    const tdb = new DatabaseSync(DB)
+    tdb.prepare('UPDATE change_sets SET expires_at = ? WHERE change_set_id = ?').run(new Date(Date.now() - 1000).toISOString(), csExp.body.change_set_id)
+    tdb.close()
+  }
+  const csExpGet = await api('GET', `/boards/${bid}/change-sets/${csExp.body.change_set_id}`, undefined, tk)
+  ok(csExpGet.body.status === 'expired', '惰性过期：GET 判定 expired')
+  const csExpGet2 = await api('GET', `/boards/${bid}/change-sets/${csExp.body.change_set_id}`, undefined, tk)
+  ok(csExpGet2.body.status === 'expired', 'expired 已落库（非每次重算）')
+  const commitExp = await api('POST', `/boards/${bid}/change-sets/${csExp.body.change_set_id}/commit`, {}, tk)
+  ok(commitExp.status === 409 && commitExp.body.status === 'expired', '过期 commit → 409')
+
+  // PATCH If-Match：符合 → 正常；不符 → 409；不带 → 旧行为
+  const curV = (await api('GET', `/boards/${bid}`, undefined, tk)).body.version
+  const pMatch = await api('PATCH', `/boards/${bid}/items/s-02`, { comment: 'if-match ok' }, tk, { 'if-match': String(curV) })
+  ok(pMatch.status === 200 && pMatch.body.changed === true, 'PATCH If-Match 符合 → 正常')
+  const pConflict = await api('PATCH', `/boards/${bid}/items/s-02`, { comment: 'x' }, tk, { 'if-match': String(curV) })
+  ok(pConflict.status === 409 && pConflict.body.error === 'VERSION_CONFLICT' && pConflict.body.current_version === curV + 1, 'PATCH If-Match 不符 → 409 VERSION_CONFLICT')
+  const pNoMatch = await api('PATCH', `/boards/${bid}/items/s-02`, { comment: 'if-match ok' }, tk)
+  ok(pNoMatch.status === 200 && pNoMatch.body.changed === false, 'PATCH 不带 If-Match 维持旧行为')
+
+  // 2000 张上限：change-set 批量 create 触发全批拒绝
+  const many = Array.from({ length: 1999 }, (_, i) => ({
+    id: `b-${i}`, title: `卡${i}`, type: '图文', publish_at: `${day(0)}T09:00`, roi: null, comment: '',
+    product_id: '', status: '待执行', content_owner_id: '', delivery_owner_id: '', propagation_4h: null, engagement_4h: null,
+  }))
+  const bigDoc = {
+    items: many,
+    orders: Object.fromEntries(many.map((it, i) => [it.id, i])),
+    products: [], members: [],
+    meta: { name: 'big', created_at: new Date().toISOString() },
+  }
+  const mkBig = await api('POST', '/boards', { name: 'big', password: 'pw', doc: bigDoc })
+  const bigBid = mkBig.body.board_id
+  const tkBig = (await api('POST', `/boards/${bigBid}/auth`, { password: 'pw' })).body.token
+  const csBig = await api('POST', `/boards/${bigBid}/change-sets`, {
+    base_version: 1,
+    operations: [
+      { op: 'create', item: { title: '超限A', publish_at: `${day(1)}T09:00` } },
+      { op: 'create', item: { title: '超限B', publish_at: `${day(1)}T10:00` } },
+    ],
+  }, tkBig)
+  const commitBig = await api('POST', `/boards/${bigBid}/change-sets/${csBig.body.change_set_id}/commit`, {}, tkBig)
+  ok(commitBig.status === 400 && /2000 张上限/.test(commitBig.body.error), '2000 张上限全批拒绝 400')
+  const bigAfter = await api('GET', `/boards/${bigBid}`, undefined, tkBig)
+  const csBigGet = await api('GET', `/boards/${bigBid}/change-sets/${csBig.body.change_set_id}`, undefined, tkBig)
+  ok(bigAfter.body.doc.items.length === 1999 && csBigGet.body.status === 'rejected', '超限看板零变化 + rejected 落库')
+  await api('DELETE', `/boards/${bigBid}`, { password: 'pw' })
+
   const del = await api('DELETE', `/boards/${bid}`, { password: 'pw' })
   ok(del.status === 204, '删板 204')
 
@@ -159,6 +348,13 @@ try {
   const put = await api('PUT', `/boards/${bid2}`, { doc }, tk2)
   const same = await api('GET', `/boards/${bid2}?version=${put.body.version}`, undefined, tk2)
   ok(put.status === 200 && same.body.changed === false, 'PUT/version 轮询语义不变')
+  ok(put.headers.get('deprecation') === 'true', 'PUT 无 If-Match → 兼容模式 + Deprecation 头')
+
+  // PUT If-Match：符合 → 200；不符 → 409
+  const putMatch = await api('PUT', `/boards/${bid2}`, { doc }, tk2, { 'if-match': String(put.body.version) })
+  ok(putMatch.status === 200 && putMatch.headers.get('deprecation') === null, 'PUT If-Match 符合 → 200 且无 Deprecation 头')
+  const putConflict = await api('PUT', `/boards/${bid2}`, { doc }, tk2, { 'if-match': String(put.body.version) })
+  ok(putConflict.status === 409 && putConflict.body.error === 'VERSION_CONFLICT', 'PUT If-Match 不符 → 409 VERSION_CONFLICT')
   await api('DELETE', `/boards/${bid2}`, { password: 'pw' })
 } catch (e) {
   failed++
@@ -172,7 +368,53 @@ try {
     }
   }
   await sleep(200)
-  for (const f of [DB, `${DB}-wal`, `${DB}-shm`]) rmSync(f, { force: true })
+}
+
+// ---------------------------------------------------------------------------
+// 限速 429 用例：BOARD_AGENT_RPM=3 低上限实例（换独立临时库，同端口重启）
+// ---------------------------------------------------------------------------
+let proc2 = null
+const DB2 = `${DB}-rl`
+try {
+  for (const f of [DB2, `${DB2}-wal`, `${DB2}-shm`]) rmSync(f, { force: true })
+  proc2 = spawn(process.execPath, [SERVER], {
+    detached: true,
+    env: { ...process.env, API_PORT: String(PORT), BOARD_DB: DB2, BOARD_SECRET: 'smoke-secret', BOARD_AGENT_RPM: '3' },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(500) })
+      if (r.ok) break
+    } catch {}
+    if (i > 40) throw new Error('限速实例启动超时')
+    await sleep(250)
+  }
+  const mkRl = await api('POST', '/boards', { name: '限速', password: 'pw' })
+  const rlBid = mkRl.body.board_id
+  const rlTk = (await api('POST', `/boards/${rlBid}/auth`, { password: 'pw' })).body.token
+  const rl1 = await api('GET', `/boards/${rlBid}/items`, undefined, rlTk)
+  const rl2 = await api('GET', `/boards/${rlBid}/items`, undefined, rlTk)
+  const rl3 = await api('GET', `/boards/${rlBid}/items`, undefined, rlTk)
+  const rl4 = await api('GET', `/boards/${rlBid}/items`, undefined, rlTk)
+  ok(rl1.status === 200 && rl2.status === 200 && rl3.status === 200, '限速窗口内前 3 次放行')
+  ok(rl4.status === 429 && rl4.body.retry_after > 0, '第 4 次 429 + retry_after', JSON.stringify(rl4.body))
+  // change-sets 计入同一限速桶
+  const rl5 = await api('POST', `/boards/${rlBid}/change-sets`, { base_version: 1, operations: [{ op: 'create', item: { title: 'x', publish_at: '2026-09-10T09:00' } }] }, rlTk)
+  ok(rl5.status === 429, 'change-sets 端点计入同一限速桶')
+} catch (e) {
+  failed++
+  console.error('  ✗ 限速用例异常：', e)
+} finally {
+  if (proc2 && !proc2.killed) {
+    try {
+      process.kill(-proc2.pid, 'SIGKILL')
+    } catch {
+      try { proc2.kill('SIGKILL') } catch {}
+    }
+  }
+  await sleep(200)
+  for (const f of [DB, `${DB}-wal`, `${DB}-shm`, DB2, `${DB2}-wal`, `${DB2}-shm`]) rmSync(f, { force: true })
 }
 
 console.log(`\n[server-smoke] ${passed} PASS / ${failed} FAIL`)
