@@ -15,10 +15,13 @@ export interface BoardSummary {
 export class ApiError extends Error {
   status: number
   retryAfter?: number
-  constructor(status: number, message: string, retryAfter?: number) {
+  /** 409 VERSION_CONFLICT 时服务端返回的当前版本 */
+  currentVersion?: number
+  constructor(status: number, message: string, retryAfter?: number, currentVersion?: number) {
     super(message)
     this.status = status
     this.retryAfter = retryAfter
+    this.currentVersion = currentVersion
   }
 }
 
@@ -31,14 +34,14 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(0, e instanceof Error ? e.message : String(e))
   }
   if (res.status === 204) return undefined as T
-  let body: { error?: string; retry_after?: number } = {}
+  let body: { error?: string; retry_after?: number; current_version?: number } = {}
   try {
     body = await res.json()
   } catch {
     // 非 JSON 响应（不应发生）
   }
   if (!res.ok) {
-    throw new ApiError(res.status, body.error ?? `HTTP ${res.status}`, body.retry_after)
+    throw new ApiError(res.status, body.error ?? `HTTP ${res.status}`, body.retry_after, body.current_version)
   }
   return body as T
 }
@@ -99,11 +102,20 @@ export const getBoard = (boardId: string, version?: number) =>
     authed(boardId),
   )
 
-export const putBoard = (boardId: string, doc: BoardDoc) =>
+/**
+ * 整板 PUT（M4 起携带 If-Match 版本保护）。
+ * version 省略（-1，从未与远端对齐）→ 兼容模式无版本头，服务端放行但标记 Deprecation。
+ * 409 时抛出 ApiError（status 409 + currentVersion），由同步层走 pending-patch 重放恢复。
+ */
+export const putBoard = (boardId: string, doc: BoardDoc, version?: number) =>
   req<{ version: number }>(`/api/boards/${boardId}`, {
     ...authed(boardId),
     method: 'PUT',
-    headers: { 'content-type': 'application/json', ...authed(boardId).headers },
+    headers: {
+      'content-type': 'application/json',
+      ...authed(boardId).headers,
+      ...(version !== undefined && version >= 0 ? { 'if-match': String(version) } : {}),
+    },
     body: JSON.stringify({ doc }),
   })
 

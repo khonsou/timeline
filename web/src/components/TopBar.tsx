@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { useTheme } from '@/hooks/useTheme'
 import { CAPACITY_WARN_AT, MAX_CARDS } from '@/lib/content-data'
 
-export type SyncDot = 'loading' | 'synced' | 'syncing' | 'offline'
+export type SyncDot = 'loading' | 'synced' | 'syncing' | 'offline' | 'conflict' | 'conflict-failed'
 
 interface TopBarProps {
   total: number
@@ -12,8 +12,10 @@ interface TopBarProps {
   dateStr: string
   /** v15：看板名（列表页返回链接旁展示） */
   boardName?: string
-  /** v15：同步状态指示（已同步/同步中/离线） */
+  /** v15：同步状态指示（已同步/同步中/离线；M4 增加冲突恢复中/冲突需刷新） */
   syncStatus?: SyncDot
+  /** M4：syncStatus = conflict-failed 时状态点变为可点按钮，点击重新走冲突恢复 */
+  onSyncRefresh?: () => void
   /** v15：返回看板列表 */
   onBackHome?: () => void
   onBackToToday: () => void
@@ -28,6 +30,17 @@ const SYNC_META: Record<SyncDot, { dot: string; text: string; title: string }> =
   synced: { dot: 'bg-emerald-500', text: '已同步', title: '与服务器一致' },
   syncing: { dot: 'bg-amber-400 animate-pulse', text: '同步中', title: '正在与服务器同步…' },
   offline: { dot: 'bg-rose-400', text: '离线', title: '网络不可达：改动已存本机缓存，恢复后自动补推' },
+  // M4：复用「同步中」的 amber 脉冲样式，不新增视觉设计
+  conflict: {
+    dot: 'bg-amber-400 animate-pulse',
+    text: '冲突恢复中',
+    title: '检测到并发修改，正在基于最新快照自动合并重试…',
+  },
+  'conflict-failed': {
+    dot: 'bg-rose-400',
+    text: '冲突需刷新',
+    title: '自动恢复未成功：你的编辑已保存在本机缓存，点击重新同步',
+  },
 }
 
 export default function TopBar({
@@ -36,6 +49,7 @@ export default function TopBar({
   dateStr,
   boardName,
   syncStatus,
+  onSyncRefresh,
   onBackHome,
   onBackToToday,
   onAddToToday,
@@ -76,7 +90,19 @@ export default function TopBar({
         </div>
 
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
-          {sync && (
+          {sync && syncStatus === 'conflict-failed' ? (
+            <button
+              type="button"
+              data-sync-status={syncStatus}
+              data-sync-refresh
+              onClick={onSyncRefresh}
+              title={sync.title}
+              className="flex cursor-pointer items-center gap-1.5 text-[11px] font-medium text-rose-500 underline underline-offset-2 transition-colors hover:text-rose-600"
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${sync.dot}`} />
+              {sync.text}
+            </button>
+          ) : sync ? (
             <span
               data-sync-status={syncStatus}
               title={sync.title}
@@ -85,7 +111,7 @@ export default function TopBar({
               <span className={`h-1.5 w-1.5 rounded-full ${sync.dot}`} />
               {sync.text}
             </span>
-          )}
+          ) : null}
           <div className="hidden items-center gap-3 text-xs text-slate-500 sm:flex">
             <span>
               共 <span className="font-semibold tabular-nums text-slate-700">{total}</span> 张卡片
