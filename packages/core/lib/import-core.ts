@@ -10,7 +10,7 @@
  *
  * 注意：本文件内只允许相对路径 import（Node 裸跑不认识 '@/‘ 别名）。
  */
-import type { ContentItem, ContentStatus, Member } from '../types/content'
+import type { ContentItem, ContentStatus, Link, Member } from '../types/content'
 
 export interface ProductInput {
   id: string
@@ -178,7 +178,7 @@ const ALIAS: Record<string, string> = {
 const FIELD_KEYS = [
   'id', 'title', 'type', 'publish_at', 'status', 'roi', 'comment',
   'product_id', 'product_name', 'content_owner', 'delivery_owner',
-  'propagation_4h', 'engagement_4h',
+  'propagation_4h', 'engagement_4h', 'links',
 ]
 
 // 产品文件表头别名 → id / name
@@ -336,6 +336,32 @@ export function normalizeMetric(raw: unknown, name: string): { value: number | n
   if (!Number.isFinite(n) || n < 0)
     return { value: null, error: `${name} 须为空或非负数字，得到 "${raw}"` }
   return { value: n }
+}
+
+/**
+ * 结构化 links 校验与归一化（协议 §8；patch-core / changeset-core / 导入归一化共用同一口径）：
+ * 须为数组（null / 空串 → 空数组，语义 = 清空）；元素须为含非空 id / rel / url 的对象，
+ * platform 可选（非空字符串才保留）。归一化仅 trim，不改写语义。
+ */
+export function normalizeLinks(raw: unknown): { value: Link[]; error?: string } {
+  if (raw === undefined || raw === null || (typeof raw === 'string' && raw.trim() === '')) return { value: [] }
+  if (!Array.isArray(raw)) return { value: [], error: `links 须为数组，得到 ${JSON.stringify(raw)}` }
+  const out: Link[] = []
+  for (const [i, el] of raw.entries()) {
+    if (!el || typeof el !== 'object' || Array.isArray(el)) {
+      return { value: [], error: `links[${i}] 须为对象（含 id / rel / url）` }
+    }
+    const rec = el as Record<string, unknown>
+    const id = String(rec.id ?? '').trim()
+    const rel = String(rec.rel ?? '').trim()
+    const url = String(rec.url ?? '').trim()
+    if (!id) return { value: [], error: `links[${i}].id 必填且非空` }
+    if (!rel) return { value: [], error: `links[${i}].rel 必填且非空` }
+    if (!url) return { value: [], error: `links[${i}].url 必填且非空` }
+    const platform = String(rec.platform ?? '').trim()
+    out.push(platform ? { id, rel, url, platform } : { id, rel, url })
+  }
+  return { value: out }
 }
 
 // ---------------------------------------------------------------------------
@@ -544,6 +570,14 @@ export function validateItems(
       continue
     }
 
+    // links：可缺省——携带时须为合法结构（协议 §8）；缺省不写字段，存量 doc 原样往返不丢
+    const links: { value: Link[] | undefined; error?: string } =
+      rec.links === undefined ? { value: undefined } : normalizeLinks(rec.links)
+    if (links.error) {
+      fail(links.error)
+      continue
+    }
+
     const metricsLocked = status !== '已发布'
     if (metricsLocked && (roi.value !== null || prop.value !== null || eng.value !== null)) {
       forcedNullCount++
@@ -573,6 +607,7 @@ export function validateItems(
       delivery_owner_id,
       propagation_4h: metricsLocked ? null : prop.value,
       engagement_4h: metricsLocked ? null : eng.value,
+      ...(links.value ? { links: links.value } : {}),
     })
   }
 

@@ -25,6 +25,21 @@ export interface Member {
   name: string
 }
 
+/**
+ * 结构化链接（协议 §8）：rel 表示用途（如 publish 发布地址），platform 为可扩展平台串。
+ * links 是数组（不设计单一 publish_url）；演进铁律：未来字段只能追加，不得改变已有字段语义。
+ */
+export interface Link {
+  /** 链接条目 id（卡片内唯一即可） */
+  id: string
+  /** 用途：publish / draft / material … 可扩展字符串 */
+  rel: string
+  /** 完整 URL */
+  url: string
+  /** 平台标识（如 xiaohongshu），可扩展字符串，可缺省 */
+  platform?: string
+}
+
 export interface ContentItem {
   /** 内容唯一键 */
   id: string
@@ -79,4 +94,78 @@ export interface ContentItem {
    * null 语义：status ≠ '已发布'，尚无 4h 数据。
    */
   engagement_4h: number | null
+
+  /**
+   * 结构化链接（协议 §8，可缺省）：发布地址 / 素材地址等。
+   * comment 只作人工备注，机器协议一律走本字段。
+   */
+  links?: Link[]
+}
+
+// ---------------------------------------------------------------------------
+// Change Set（变更集，协议 §4.2 / §6）：卡片读写的唯一自动化写入口径。
+// v1 仅 create / patch 两种 op；delete / reorder 不支持。
+// ---------------------------------------------------------------------------
+
+/** create op：服务端分配 id（客户端不可指定）；client_ref 用于追踪提交结果 */
+export interface ChangeSetCreateOp {
+  op: 'create'
+  client_ref?: string
+  /** 部分 Item 字段（不含 id）；title / publish_at 必填，其余缺省按新建卡片默认 */
+  item: Partial<Omit<ContentItem, 'id'>>
+}
+
+/** patch op：与单卡 PATCH 同一套白名单与校验规则 */
+export interface ChangeSetPatchOp {
+  op: 'patch'
+  item_id: string
+  changes: Record<string, unknown>
+}
+
+export type ChangeSetOp = ChangeSetCreateOp | ChangeSetPatchOp
+
+/** 变更集状态机（终态不可逆）：pending → committed / conflicted / rejected / expired */
+export type ChangeSetStatus = 'pending' | 'committed' | 'conflicted' | 'rejected' | 'expired'
+
+/** 来源标记：客户端自报，服务端原样透传记录（防君子不防小人） */
+export interface ChangeSetSource {
+  type: string
+  external_run_id?: string
+}
+
+/** 执行者身份：第一版客户端自报；未来可由 agent token 载荷派生 */
+export interface ChangeSetActor {
+  type: string
+  id: string
+}
+
+/** committed 结果中 create 的 client_ref → 服务端分配 id 的映射（按 operations 顺序） */
+export interface ChangeSetCreatedItem {
+  client_ref: string | null
+  id: string
+}
+
+/** 提交结果：committed 时含 version 与 items 映射；rejected 时含完整 errors */
+export interface ChangeSetResult {
+  /** committed：提交后的看板 version（+1） */
+  version?: number
+  /** committed：create 的 client_ref → id 映射 */
+  items?: ChangeSetCreatedItem[]
+  /** rejected：全量校验错误（全批拒绝，不产生部分结果） */
+  errors?: string[]
+}
+
+export interface ChangeSet {
+  change_set_id: string
+  board_id: string
+  status: ChangeSetStatus
+  /** 创建时的看板 version；真正的并发检查发生在 commit */
+  base_version: number
+  operations: ChangeSetOp[]
+  source?: ChangeSetSource
+  actor?: ChangeSetActor
+  created_at: string
+  /** 服务端创建时写入，默认有效期 24 小时；过期为惰性标记（查询/提交时判定） */
+  expires_at: string
+  result?: ChangeSetResult | null
 }
