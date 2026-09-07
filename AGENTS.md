@@ -11,7 +11,7 @@
 | 包 | 边界 | 不做什么 |
 |---|---|---|
 | `packages/core`（@timeline/core） | 唯一数据契约层：类型（types/content.ts）、导入校验/归一化/差分合并、orders 与日期派生（lib/）、格式化。**纯 TS 零依赖零构建**，三端（web/server/cli）经 workspaces 软链直引（strip-types） | 不碰 DOM/网络/DB；core 内部只用相对路径 |
-| `packages/server`（@timeline/server） | 单文件 `index.mjs`（571 行）：DB / 鉴权 / Agent API / 路由一体，Node ≥22.5 直跑。**拆模块是待做项，不要在功能任务里顺手拆** | 不含业务校验规则（引用 core） |
+| `packages/server`（@timeline/server） | 单文件 `index.mjs`（707 行，v19；行数随版本增长、不写死）：DB / 鉴权 / Agent API / change-sets / 路由一体，Node ≥22.5 直跑。**拆模块是待做项，不要在功能任务里顺手拆** | 不含业务校验规则（引用 core） |
 | `packages/cli`（@timeline/cli） | 批量导入 + 产品/成员差分更新，写出 `web/public/data/board.json` 种子。指南：[docs/cli-import-guide.md](docs/cli-import-guide.md) | 不在线改看板（v15 起只是建板种子） |
 | `web/`（@timeline/web） | 表现层：`src/pages/`（HomePage 列表 / BoardPage 看板）+ `src/components/board/`（业务组件）+ `src/components/ui/`（shadcn 基础组件）+ `src/lib/`（运行时数据适配） | 不自定义卡片字段（数据结构只能在 core 改） |
 

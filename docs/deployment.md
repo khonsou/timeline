@@ -68,7 +68,8 @@ curl http://127.0.0.1:8787/api/health   # → {"ok":true}
 | `BOARD_SECRET` | 随机（警告） | token HMAC 密钥，**生产必须设为固定值** |
 | `BOARD_TOKEN_HOURS` | `12` | token 有效期（小时） |
 | `BOARD_LOCK_SECONDS` | `60` | 同板连续 5 次密码失败后的锁定时长（秒） |
-| `BOARD_AGENT_RPM` | `120` | v18 item 级端点限速（每 board 每 IP 次/分钟） |
+| `BOARD_AGENT_RPM` | `120` | item 级与 change-set 端点限速（每 board 每 IP 次/分钟，同一限速桶） |
+| `BOARD_CS_TTL_HOURS` | `24` | change-set 有效期（小时；到期惰性标记 expired 不得提交，允许小数值便于测试） |
 
 ## 4. nginx 反代
 
