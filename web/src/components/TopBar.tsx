@@ -1,5 +1,5 @@
 import { useRef } from 'react'
-import { Boxes, Moon, Sun, Upload, Users } from 'lucide-react'
+import { Boxes, Moon, Search, Sun, Upload, Users } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { useTheme } from '@/hooks/useTheme'
 import { CAPACITY_WARN_AT, MAX_CARDS } from '@/lib/content-data'
@@ -23,6 +23,8 @@ interface TopBarProps {
   onOpenProducts: () => void
   onOpenMembers: () => void
   onImportFile: (file: File) => void
+  /** v2-M1 F5：打开看板内搜索面板（快捷键 ⌘K / Ctrl+K 由 BoardPage 挂载） */
+  onOpenSearch?: () => void
 }
 
 const SYNC_META: Record<SyncDot, { dot: string; text: string; title: string }> = {
@@ -56,6 +58,7 @@ export default function TopBar({
   onOpenProducts,
   onOpenMembers,
   onImportFile,
+  onOpenSearch,
 }: TopBarProps) {
   const fileRef = useRef<HTMLInputElement>(null)
   const { theme, toggleTheme } = useTheme()
@@ -156,6 +159,13 @@ export default function TopBar({
               e.target.value = '' // 允许重复选择同一文件（幂等由内容哈希 id 保证）
             }}
           />
+          <Button size="sm" variant="ghost" onClick={onOpenSearch} data-search-btn>
+            <Search className="size-3.5" />
+            搜索
+            <kbd className="rounded border border-slate-200 bg-slate-50 px-1 py-px text-[10px] leading-none text-slate-400">
+              ⌘K
+            </kbd>
+          </Button>
           <Button size="sm" variant="ghost" onClick={onOpenProducts} data-products-btn>
             <Boxes className="size-3.5" />
             产品管理

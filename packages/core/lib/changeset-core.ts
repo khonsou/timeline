@@ -21,6 +21,7 @@
  * - server / CLI（Node 22+ strip-types 直引 .ts）：
  *     import { validateChangeSet, applyChangeSet } from '@timeline/core/changeset-core'
  */
+import { normalizeBgColor } from '../types/content.ts'
 import type { ChangeSetCreatedItem, ChangeSetOp, ContentItem, Link, Member } from '../types/content'
 import type { Orders } from './board-view.ts'
 import { nextOrder, publishDateOf } from './board-view.ts'
@@ -148,6 +149,21 @@ function normalizeCreateItem(
     if (r.error) errors.push(`${label}: ${r.error}`)
     else item.links = r.value
   }
+  // bg_color / dimmed（v2-M1b）：与 patch-core 同口径——hex 归一化 + 旧 token 兼容；
+  // null/空串 = 未设置
+  if ('bg_color' in raw && raw.bg_color !== null && String(raw.bg_color ?? '').trim() !== '') {
+    const rawV = String(raw.bg_color).trim()
+    const v = normalizeBgColor(rawV)
+    if (!v) errors.push(`${label}: bg_color 非法: "${rawV}"，合法值: #rgb / #rrggbb 十六进制色值`)
+    else item.bg_color = v
+  }
+  if ('dimmed' in raw) {
+    if (typeof raw.dimmed !== 'boolean') {
+      errors.push(`${label}: dimmed 非法: 期望 boolean，实际 ${JSON.stringify(raw.dimmed)}`)
+    } else if (raw.dimmed) {
+      item.dimmed = true
+    }
+  }
 
   if (errors.length > 0) return { errors }
   return { errors, item }
@@ -186,8 +202,17 @@ function normalizePatchChanges(
   }
   const changes: Record<string, unknown> = {}
   for (const k of Object.keys(raw)) {
-    if ((OWNER_FIELDS as readonly string[]).includes(k)) changes[k] = String(raw[k] ?? '').trim()
-    else changes[k] = r.next[k as keyof ContentItem]
+    if ((OWNER_FIELDS as readonly string[]).includes(k)) {
+      changes[k] = String(raw[k] ?? '').trim()
+    } else if (k === 'bg_color' && (raw[k] === null || raw[k] === undefined || String(raw[k]).trim() === '')) {
+      // 移除语义必须显式保留：r.next 里字段已被 delete（undefined），
+      // 若直接取 r.next[k]，JSON 入库会丢键、二次应用还会误判为非法 boolean/枚举
+      changes[k] = null
+    } else if (k === 'dimmed' && raw[k] === false) {
+      changes[k] = false
+    } else {
+      changes[k] = r.next[k as keyof ContentItem]
+    }
   }
   return { errors: [], changes }
 }
@@ -341,6 +366,9 @@ export function applyChangeSet(
         propagation_4h: gate ? null : ((f.propagation_4h as number | null) ?? null),
         engagement_4h: gate ? null : ((f.engagement_4h as number | null) ?? null),
         ...(f.links ? { links: f.links as Link[] } : {}),
+        // v2-M1：create 支持 bg_color / dimmed（校验在 normalizeCreateItem；false/缺省不写字段）
+        ...(f.bg_color ? { bg_color: f.bg_color as ContentItem['bg_color'] } : {}),
+        ...(f.dimmed === true ? { dimmed: true } : {}),
       }
       // 同日多张新卡按 ops 顺序追加当日列尾（对运行态取 nextOrder）；已有卡片顺序不动
       orders[id] = nextOrder(items, orders, publishDateOf(item))

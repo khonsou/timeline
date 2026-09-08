@@ -31,6 +31,10 @@
  *   自动整板 GET + pending-patch 重放 + 带新版本重试，两端编辑都不丢；
  *   用离线门确定性制造版本落后，MutationObserver 记录状态轨迹断言经过「冲突恢复中」。
  *
+ * v2-M1（t59–t62）：F1 背景色（设置/默认移除/持久化）、F2 置灰·点亮 toggle、
+ *   F5 看板内搜索（Ctrl+K 唤起 / 窗口外卡定位高亮一次 / 空态 / Esc）、
+ *   F6 分享链接（复制 toast / #card= 打开定位高亮 / 已删卡降级提示）。
+ *
  * 运行：node verification/e2e-check.mjs
  *   - 自带 fixture：spawn API server（:5198，独立 tmp sqlite）+ vite（:5199，API_PORT=5198 反代）
  *   - 驱动本机 Chrome（headless）走真实 UI；跑完杀进程组 + 删 tmp sqlite + 删 CLI 产物 board.json
@@ -2550,6 +2554,221 @@ async function main() {
     await page.goto(`${WEB}/b/${prodId}`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => !!document.querySelector('[data-board-notfound]')), 10000, '看板不存在页')
     prodId = null // 已物理删除，清理段跳过
+  })
+
+  // ------------------------------------------------------------------
+  // v2-M1：F1 背景色 / F2 置灰·点亮 / F5 搜索 / F6 分享链接（共用定位机制）
+  // ------------------------------------------------------------------
+  await t('t59 F1 背景色：色板设置 sky → 落盘为 hex；选「默认」移除字段', async () => {
+    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, '主板渲染 61 列')
+    // 取窗口内第一张渲染卡作为操作对象（前序用例可能挪过日期，标题不变）
+    const title = await ev(
+      () => document.querySelector('.h-full.overflow-auto [data-card-title]')?.textContent ?? null,
+    )
+    ok(title, '窗口内有渲染卡')
+    const before = await storedItem(boardId, title)
+    ok(before && !('bg_color' in before), '旧数据无 bg_color 字段（默认白底）')
+    // v2-M1b：渲染 = .card-bg 类 + 行内 style 的 --card-bgc hex（不再走 Tailwind 色阶类）
+    const rootProbe = () =>
+      ev((t) => {
+        const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+          (p) => p.textContent === t,
+        )
+        const root = el?.closest('[data-card-id]')
+        return { cls: root?.className ?? '', style: root?.getAttribute('style') ?? '' }
+      }, title)
+
+    // 打开色板 → 选 sky（写入的是预设 hex，不是 token）
+    await ev((t) => {
+      const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+        (p) => p.textContent === t,
+      )
+      el?.closest('[data-card-id]')?.querySelector('[data-card-bg-btn]')?.click()
+    }, title)
+    await waitFor(() => ev(() => !!document.querySelector('[data-bg-palette]')), 4000, '色板浮层')
+    await ev(() => document.querySelector('[data-bg-swatch="sky"]')?.click())
+    await waitFor(
+      async () => {
+        const r = await rootProbe()
+        return r.cls.includes('card-bg') && r.style.includes('--card-bgc: #0ea5e9')
+      },
+      4000,
+      '卡面底色经 --card-bgc 切到 sky hex',
+    )
+    await waitFor(
+      async () => (await storedItem(boardId, title))?.bg_color === '#0ea5e9',
+      4000,
+      'bg_color 落盘为 hex（非 token）',
+    )
+    // 目标卡滚入视口再截图（直观核验 hex 淡底渲染）
+    await ev((t) => {
+      const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+        (p) => p.textContent === t,
+      )
+      el?.closest('[data-card-id]')?.scrollIntoView({ block: 'nearest', inline: 'center' })
+    }, title)
+    await sleep(300)
+    await page.screenshot({ path: path.join(VDIR, 'board-v2-m1b-bgcolor.png') })
+
+    // 选「默认」→ 字段移除，视觉回到默认白底
+    await ev((t) => {
+      const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+        (p) => p.textContent === t,
+      )
+      el?.closest('[data-card-id]')?.querySelector('[data-card-bg-btn]')?.click()
+    }, title)
+    await waitFor(() => ev(() => !!document.querySelector('[data-bg-palette]')), 4000, '色板浮层再开')
+    await ev(() => document.querySelector('[data-bg-swatch="default"]')?.click())
+    await waitFor(
+      async () => {
+        const r = await rootProbe()
+        return r.cls.includes('bg-white') && !r.cls.includes('card-bg')
+      },
+      4000,
+      '卡面恢复默认白底',
+    )
+    await waitFor(
+      async () => !('bg_color' in ((await storedItem(boardId, title)) ?? {})),
+      4000,
+      'bg_color 字段已移除（不写 null）',
+    )
+  })
+
+  await t('t60 F2 置灰/点亮：toggle 半透明 → 再 toggle 恢复；字段随缓存落盘', async () => {
+    const title = await ev(
+      () => document.querySelector('.h-full.overflow-auto [data-card-title]')?.textContent ?? null,
+    )
+    ok(title, '窗口内有渲染卡')
+    const rootCls = () =>
+      ev((t) => {
+        const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+          (p) => p.textContent === t,
+        )
+        return el?.closest('[data-card-id]')?.className ?? ''
+      }, title)
+    const clickDim = () =>
+      ev((t) => {
+        const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+          (p) => p.textContent === t,
+        )
+        el?.closest('[data-card-id]')?.querySelector('[data-card-dim-toggle]')?.click()
+      }, title)
+
+    await clickDim()
+    await waitFor(async () => (await rootCls()).includes('opacity-[0.45]'), 4000, '整卡 opacity 0.45')
+    ok((await rootCls()).includes('saturate-50'), '去饱和')
+    await waitFor(
+      async () => (await storedItem(boardId, title))?.dimmed === true,
+      4000,
+      'dimmed=true 持久化',
+    )
+
+    await clickDim() // 点亮：字段移除
+    await waitFor(async () => !(await rootCls()).includes('opacity-[0.45]'), 4000, '恢复不透明')
+    await waitFor(
+      async () => !('dimmed' in ((await storedItem(boardId, title)) ?? {})),
+      4000,
+      'dimmed 字段已移除',
+    )
+  })
+
+  await t('t61 F5 搜索：Ctrl+K 唤起 → 窗口外卡可搜到并定位高亮；空态；Esc 关闭', async () => {
+    // 窗口外离群卡（today-90，t02 已断言不渲染）
+    eq(await cardColumnDate('E2E 卡 01'), null, '前置：离群卡未渲染')
+    await page.keyboard.down('Control')
+    await page.keyboard.press('k')
+    await page.keyboard.up('Control')
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-palette]')), 4000, '搜索面板唤起')
+    await page.click('[data-search-input]')
+    await page.keyboard.type('E2E 卡 01', { delay: 10 })
+    await waitFor(
+      () =>
+        ev((d) => {
+          const rows = [...document.querySelectorAll('[data-search-result]')]
+          return rows.length === 1 && (rows[0].textContent?.includes(d) ?? false)
+        }, OUTLIER_PAST),
+      4000,
+      '结果含目标卡与所在日期',
+    )
+    await ev(() => document.querySelector('[data-search-result]')?.click())
+    await waitFor(() => ev(() => !document.querySelector('[data-search-palette]')), 4000, '面板关闭')
+    await waitFor(async () => (await cardColumnDate('E2E 卡 01')) === OUTLIER_PAST, 9000, '窗口滑动后离群卡渲染')
+    ok(await dateVisible(OUTLIER_PAST), '目标列已滚入视口')
+    await waitFor(
+      () => ev(() => !!document.querySelector('[data-card-highlight="true"]')),
+      4000,
+      '卡片一次性高亮',
+    )
+    await sleep(2300) // 高亮只播一次，自动撤除
+    ok(
+      await ev(() => !document.querySelector('[data-card-highlight="true"]')),
+      '高亮到时自动撤除（不循环闪）',
+    )
+
+    // 空态 + Esc 关闭
+    await page.keyboard.down('Control')
+    await page.keyboard.press('k')
+    await page.keyboard.up('Control')
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-palette]')), 4000, '面板再开')
+    await page.click('[data-search-input]')
+    await page.keyboard.type('绝不存在的关键词xyz', { delay: 10 })
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-empty]')), 4000, '空态提示')
+    await page.keyboard.press('Escape')
+    await waitFor(() => ev(() => !document.querySelector('[data-search-palette]')), 4000, 'Esc 关闭')
+
+    // v2-M1c：产品名参与匹配（归属产品「光轴」的卡都应命中；期望数从 API 实时取，
+    // 前序用例在主板上有增删卡，不能写死）
+    const docNow = await api('GET', `/boards/${boardId}`, undefined, token)
+    const dd = typeof docNow.body.doc === 'string' ? JSON.parse(docNow.body.doc) : docNow.body.doc
+    const expected = dd.items.filter((it) => it.product_id === 'P-1000').length
+    await page.keyboard.down('Control')
+    await page.keyboard.press('k')
+    await page.keyboard.up('Control')
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-palette]')), 4000, '面板三开')
+    await page.click('[data-search-input]')
+    await page.keyboard.type('光轴', { delay: 10 })
+    await waitFor(
+      () => ev((en) => document.querySelectorAll('[data-search-result]').length === en, expected),
+      4000,
+      `按产品名「光轴」搜到全部 ${expected} 张卡`,
+    )
+    await page.keyboard.press('Escape')
+    await waitFor(() => ev(() => !document.querySelector('[data-search-palette]')), 4000, 'Esc 再关')
+  })
+
+  await t('t62 F6 分享链接：复制 toast；#card= 打开定位高亮；已删卡优雅降级', async () => {
+    // 复制入口：卡片工具条「复制分享链接」→ toast 确认
+    await ev(() => document.querySelector('.h-full.overflow-auto [data-card-copy-link]')?.click())
+    await waitFor(
+      () => ev(() => document.querySelector('[data-toast]')?.textContent === '分享链接已复制'),
+      4000,
+      '复制 toast 确认',
+    )
+
+    // 带 #card= 打开（先回列表再进板，避免同 URL 仅 hash 变化不触发整页重载）：
+    // 目标是窗口外离群卡 e2e-c01（today-90）——窗口应自动平移过去并高亮
+    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200#card=e2e-c01`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, '看板正常打开（61 列）')
+    await waitFor(async () => (await cardColumnDate('E2E 卡 01')) === OUTLIER_PAST, 9000, '定位到离群卡列')
+    ok(await dateVisible(OUTLIER_PAST), '目标列滚入视口')
+    await waitFor(
+      () => ev(() => document.querySelector('[data-card-highlight="true"]')?.dataset.cardId === 'e2e-c01'),
+      4000,
+      '分享目标卡高亮',
+    )
+
+    // 已删除/不存在的卡片 → 正常开板 + toast「卡片不存在或已删除」
+    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200#card=e2e-c99`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, '看板正常打开（不白屏）')
+    await waitFor(
+      () => ev(() => document.querySelector('[data-toast]')?.textContent === '卡片不存在或已删除'),
+      6000,
+      '降级 toast 提示',
+    )
+    await page.screenshot({ path: path.join(VDIR, 'board-v2-m1-share.png') })
   })
 
   // 清掉全部测试板（不留测试数据；产品板已被 t53 删除）

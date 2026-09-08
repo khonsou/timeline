@@ -187,3 +187,17 @@
 .animate-shake {
   animation: shake-x 0.16s ease-in-out 2;
 }
+
+/* v2-M1b F1 卡片背景色（bg_color 为卡片自有 hex 属性，色板仅为写入预设）：
+ * 渲染 = 卡片根节点行内 style 设置 --card-bgc + 挂 .card-bg 类；
+ * 亮色 ≈10% 淡底 + ≈30% 边框（color-mix 混白，观感对齐原 Tailwind *-50/*-200 色阶），
+ * 暗色低透明度叠加（随 .dark 类自动切换，免 JS 解析 hex、免暗色媒体查询）。
+ * 非 @layer，确保压过卡片默认的 border/bg utilities */
+.card-bg {
+  background-color: color-mix(in srgb, var(--card-bgc) 10%, #ffffff);
+  border-color: color-mix(in srgb, var(--card-bgc) 30%, #ffffff);
+}
+.dark .card-bg {
+  background-color: color-mix(in srgb, var(--card-bgc) 16%, transparent);
+  border-color: color-mix(in srgb, var(--card-bgc) 40%, transparent);
+}

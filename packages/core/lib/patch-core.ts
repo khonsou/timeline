@@ -16,11 +16,12 @@
  * 不改写传入的 item / members / orders，也不做审计序列化（审计属 server 职责）。
  */
 import type { ContentItem, Member } from '../types/content'
+import { normalizeBgColor } from '../types/content.ts'
 import type { Orders } from './board-view.ts'
 import { nextOrder } from './board-view.ts'
 import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt } from './import-core.ts'
 
-/** PATCH 允许修改的字段白名单（v19+ 追加 links，协议 §8 结构化链接） */
+/** PATCH 允许修改的字段白名单（v19+ 追加 links；v2-M1 追加 bg_color / dimmed） */
 export const PATCH_FIELDS = [
   'title',
   'type',
@@ -34,6 +35,8 @@ export const PATCH_FIELDS = [
   'engagement_4h',
   'comment',
   'links',
+  'bg_color',
+  'dimmed',
 ] as const
 export type PatchField = (typeof PATCH_FIELDS)[number]
 
@@ -158,6 +161,30 @@ export function applyItemPatch(
       const r = normalizeLinks(body.links)
       if (r.error) errors.push(r.error)
       else next.links = r.value
+    }
+    // bg_color（v2-M1b F1）：卡片自有 hex 属性——#rgb/#rrggbb 归一化为小写 #rrggbb；
+    // 旧色板 token 归一化为对应 hex（向后兼容）；null / 空串 / undefined → 移除字段（恢复默认）
+    if ('bg_color' in body) {
+      const raw = body.bg_color
+      if (raw === null || raw === undefined || String(raw).trim() === '') {
+        delete next.bg_color
+      } else {
+        const v = normalizeBgColor(String(raw).trim())
+        if (!v) {
+          errors.push(`bg_color 非法: "${String(raw).trim()}"，合法值: #rgb / #rrggbb 十六进制色值`)
+        } else next.bg_color = v
+      }
+    }
+    // dimmed（v2-M1 F2）：严格 boolean；true → 置灰，false → 移除字段（点亮）
+    if ('dimmed' in body) {
+      const raw = body.dimmed
+      if (typeof raw !== 'boolean') {
+        errors.push(`dimmed 非法: 期望 boolean，实际 ${JSON.stringify(raw)}`)
+      } else if (raw) {
+        next.dimmed = true
+      } else {
+        delete next.dimmed
+      }
     }
   }
 

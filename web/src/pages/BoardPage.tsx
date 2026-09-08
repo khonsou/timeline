@@ -27,6 +27,7 @@ import DetailDialog from '@/components/board/DetailDialog'
 import ProductManagerDialog from '@/components/board/ProductManagerDialog'
 import MemberManagerDialog from '@/components/board/MemberManagerDialog'
 import ImportResultDialog, { type ImportReport } from '@/components/board/ImportResultDialog'
+import SearchPalette from '@/components/board/SearchPalette'
 import { Button } from '@/components/ui/button'
 import type { ContentItem, Member } from '@timeline/core/types'
 import {
@@ -68,7 +69,7 @@ import {
   putBoard,
   setToken,
 } from '@/lib/api'
-import { navigate } from '@/lib/router'
+import { buildBoardUrl, navigate, parseBoardHash } from '@/lib/router'
 
 // ---------------------------------------------------------------------------
 // 密码门
@@ -237,6 +238,61 @@ function SyncedBoard({
   const [importReport, setImportReport] = useState<ImportReport | null>(null)
   const boardApiRef = useRef<BoardApi | null>(null)
 
+  // v2-M1：F5 搜索面板开关 / F6 分享链接 toast / 分享定位目标
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /** 分享链接 #card= 目标（仅首次进板消费一次；hash 保留在地址栏，刷新可复现） */
+  const shareCardRef = useRef<string | null>(parseBoardHash(window.location.hash).card ?? null)
+  /** 首次全量 GET 已完成（成功失败皆算——失败时以缓存为准，避免离线白等） */
+  const [loaded, setLoaded] = useState(false)
+
+  const showToast = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    setToast(msg)
+    toastTimerRef.current = setTimeout(() => setToast(null), 2500)
+  }
+  useEffect(
+    () => () => {
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
+    },
+    [],
+  )
+
+  // F6：复制卡片分享链接（/b/:id#card=<contentId>，不绕过密码门）；剪贴板不可用时 execCommand 兜底
+  const copyShareLink = async (id: string) => {
+    const url = buildBoardUrl(boardId, { card: id })
+    try {
+      await navigator.clipboard.writeText(url)
+    } catch {
+      const ta = document.createElement('textarea')
+      ta.value = url
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      try {
+        document.execCommand('copy')
+      } catch {
+        // 两种写剪贴板方式都失败时仍提示（链接本身已生成，用户可手动复制地址栏）
+      }
+      ta.remove()
+    }
+    showToast('分享链接已复制')
+  }
+
+  // F5：⌘K / Ctrl+K 唤起/关闭搜索面板（输入框内同样生效，与 Board 的无修饰键导航不冲突）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+        e.preventDefault()
+        setSearchOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   // ------------------------------------------------------------------
   // 同步层：refs 镜像最新状态，供异步回调（防抖/轮询/flush）读取
   // M4：baseRef = 与服务端对齐的快照；pendingRef = diff(base, 本地 doc)，
@@ -363,6 +419,8 @@ function SyncedBoard({
       if (!dirtyRef.current) setSyncStatus('synced')
     } catch (e) {
       handleSyncError(e)
+    } finally {
+      setLoaded(true) // v2-M1 F6：首次全量 GET 落定后才消费 #card= 定位
     }
   }
 
@@ -524,8 +582,43 @@ function SyncedBoard({
     if (typeof patch.status === 'string' && patch.status !== '已发布') {
       patch = { ...patch, roi: null, propagation_4h: null, engagement_4h: null }
     }
-    setItems((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)))
+    setItems((prev) =>
+      prev.map((c) => {
+        if (c.id !== id) return c
+        const next = { ...c, ...patch }
+        // v2-M1：patch 值 undefined = 移除该可选字段（bg_color 恢复默认 / dimmed 点亮），
+        // 避免把 undefined 键写进 doc（JSON 序列化虽会丢弃，但内存态保持干净）
+        for (const [k, v] of Object.entries(patch)) {
+          if (v === undefined) delete (next as unknown as Record<string, unknown>)[k]
+        }
+        return next
+      }),
+    )
   }
+
+  // v2-M1 F2：置灰/点亮 toggle（undefined/false = 正常，置灰再点 = 移除字段点亮）
+  const toggleDimmed = (id: string) => {
+    const c = items.find((x) => x.id === id)
+    if (!c) return
+    updateCard(id, { dimmed: c.dimmed === true ? undefined : true })
+  }
+
+  // v2-M1b F1：设置背景色（写 hex 自有属性）；null = 选「默认」，移除字段
+  const setBgColor = (id: string, hex: string | null) => {
+    updateCard(id, { bg_color: hex ?? undefined })
+  }
+
+  // v2-M1 F6：消费分享链接 #card= 定位——首次全量 GET 落定后执行一次；
+  // 卡片已删除 → 正常开板 + toast 提示（不报错不白屏）
+  useEffect(() => {
+    const target = shareCardRef.current
+    if (!target || !loaded) return
+    const api = boardApiRef.current
+    if (!api) return
+    shareCardRef.current = null
+    if (items.some((c) => c.id === target)) api.revealCard(target)
+    else showToast('卡片不存在或已删除')
+  }, [items, syncStatus, loaded])
 
   const deleteCard = (id: string) => {
     if (id === detailCardId) {
@@ -677,6 +770,7 @@ function SyncedBoard({
         onOpenProducts={() => setProductsOpen(true)}
         onOpenMembers={() => setMembersOpen(true)}
         onImportFile={handleImportFile}
+        onOpenSearch={() => setSearchOpen(true)}
       />
       <Board
         items={items}
@@ -687,6 +781,9 @@ function SyncedBoard({
         onDelete={deleteCard}
         onAddCard={addCard}
         apiRef={boardApiRef}
+        onSetBgColor={setBgColor}
+        onToggleDimmed={toggleDimmed}
+        onCopyShareLink={(id) => void copyShareLink(id)}
         canAdd={items.length < MAX_CARDS}
       />
       <DetailDialog
@@ -711,6 +808,26 @@ function SyncedBoard({
         onApply={applyMembers}
       />
       <ImportResultDialog report={importReport} onClose={() => setImportReport(null)} />
+      {/* v2-M1 F5 看板内搜索（全量 items，含窗口外卡片；定位走 Board.revealCard） */}
+      <SearchPalette
+        open={searchOpen}
+        items={items}
+        orders={orders}
+        products={products}
+        members={members}
+        onClose={() => setSearchOpen(false)}
+        onLocate={(id) => boardApiRef.current?.revealCard(id)}
+        onCopyLink={(id) => void copyShareLink(id)}
+      />
+      {/* v2-M1 轻量 toast（分享链接复制确认 / 卡片已删除提示） */}
+      {toast && (
+        <div
+          data-toast
+          className="fixed bottom-20 left-1/2 z-[60] -translate-x-1/2 rounded-full bg-slate-800/90 px-4 py-2 text-[12px] text-white shadow-[0_10px_28px_-10px_rgba(15,23,42,0.45)]"
+        >
+          {toast}
+        </div>
+      )}
     </div>
   )
 }

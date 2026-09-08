@@ -30,6 +30,12 @@ export interface BoardApi {
   scrollToToday: (behavior?: ScrollBehavior) => void
   /** v16 B2：详情页把 publish_at 改出当前窗口时，视野跟随到新日期 */
   revealDate: (date: string) => void
+  /**
+   * v2-M1（F5/F6 共用定位机制）：定位并一次性高亮指定卡片。
+   * 卡片在窗口外时先滑动窗口 center 到卡片日期（复用滑动窗口 scrollLeft 补偿），
+   * 再滚动到列内卡片位置；高亮只播一次（约 1.8s 淡入淡出，不循环闪）。
+   */
+  revealCard: (id: string) => void
 }
 
 interface BoardProps {
@@ -41,6 +47,10 @@ interface BoardProps {
   onDelete: (id: string) => void
   onAddCard: (date: string) => void
   apiRef: React.MutableRefObject<BoardApi | null>
+  /** v2-M1：卡片动作（背景色写 hex；null = 恢复默认） */
+  onSetBgColor: (id: string, hex: string | null) => void
+  onToggleDimmed: (id: string) => void
+  onCopyShareLink: (id: string) => void
   /** v16 容量上限：false 时禁用各列「+ 空卡片」 */
   canAdd: boolean
 }
@@ -69,6 +79,9 @@ export default function Board({
   onDelete,
   onAddCard,
   apiRef,
+  onSetBgColor,
+  onToggleDimmed,
+  onCopyShareLink,
   canAdd,
 }: BoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
@@ -176,6 +189,48 @@ export default function Board({
     [jumpTo, TODAY],
   )
 
+  // ------------------------------------------------------------------
+  // v2-M1 卡片定位 + 一次性高亮（F5 搜索结果 / F6 分享链接共用）：
+  // revealCard 只负责「高亮谁 + 把窗口/视口挪到卡片日期」；消费 effect 在卡片
+  // 进入 DOM 后滚入视口并启动撤除计时。高亮只播一次（HIGHLIGHT_MS 后撤掉），
+  // 淡入淡出复用卡片根节点的 transition（F2 同一机制，reduced-motion 下直切）。
+  // ------------------------------------------------------------------
+  const HIGHLIGHT_MS = 1800
+  const [highlightId, setHighlightId] = useState<string | null>(null)
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const itemsRef = useRef(items)
+  useEffect(() => {
+    itemsRef.current = items
+  }, [items])
+
+  const revealCard = useCallback(
+    (id: string) => {
+      const card = itemsRef.current.find((c) => c.id === id)
+      if (!card) return
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
+      setHighlightId(id)
+      jumpTo(publishDateOf(card), 'smooth', 'center')
+    },
+    [jumpTo],
+  )
+
+  // 消费高亮：卡片可能因窗口滑动下一帧才渲染，故依赖 days 重试；
+  // 找到后纵向滚入视口（横向已由 pendingJump/scrollToDate 定位）并启动撤除计时
+  useEffect(() => {
+    if (!highlightId) return
+    const el = scrollerRef.current?.querySelector(`[data-card-id="${highlightId}"]`)
+    if (!el) return
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
+    if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
+    highlightTimerRef.current = setTimeout(() => setHighlightId(null), HIGHLIGHT_MS)
+  }, [highlightId, days])
+  useEffect(
+    () => () => {
+      if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
+    },
+    [],
+  )
+
   // 窗口滑动补偿 + 消费 pendingJump：每次渲染后、绘制前同步执行。
   // 补偿方向：center 向未来滑 slid 天 → 同一日期在新窗口的列位置左移 slid 列
   // → scrollLeft 减 slid × COLUMN_STEP，屏幕内容保持不动。
@@ -195,16 +250,17 @@ export default function Board({
     }
   })
 
-  // 暴露给顶栏「回到今天」与详情页 B2 跟随
+  // 暴露给顶栏「回到今天」、详情页 B2 跟随与 v2-M1 搜索/分享定位
   useEffect(() => {
     apiRef.current = {
       scrollToToday: (behavior = 'smooth') => scrollToToday(behavior, 'center'),
       revealDate: (date) => jumpTo(date, 'smooth'),
+      revealCard,
     }
     return () => {
       apiRef.current = null
     }
-  }, [apiRef, scrollToToday, jumpTo])
+  }, [apiRef, scrollToToday, jumpTo, revealCard])
 
   // ------------------------------------------------------------------
   // 滚动 → 视口中线日期 → 偏离中心 >10 天则滑动窗口（rAF 节流；拖拽中禁用）
@@ -490,6 +546,10 @@ export default function Board({
                 onOpenDetail={onOpenDetail}
                 onDelete={onDelete}
                 onAddCard={onAddCard}
+                onSetBgColor={onSetBgColor}
+                onToggleDimmed={onToggleDimmed}
+                onCopyShareLink={onCopyShareLink}
+                highlightId={highlightId}
                 canAdd={canAdd}
               />
             ))}

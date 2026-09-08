@@ -53,9 +53,11 @@ describe('字段白名单', () => {
     assert.deepEqual(r.changes, [])
     assert.equal(r.orderUpdate, null)
   })
-  it('PATCH_FIELDS 恰为 12 个字段且不含只读字段（v19+ 追加 links）', () => {
-    assert.equal(PATCH_FIELDS.length, 12)
+  it('PATCH_FIELDS 恰为 14 个字段且不含只读字段（v19+ 追加 links；v2-M1 追加 bg_color/dimmed）', () => {
+    assert.equal(PATCH_FIELDS.length, 14)
     assert.ok(PATCH_FIELDS.includes('links'))
+    assert.ok(PATCH_FIELDS.includes('bg_color'))
+    assert.ok(PATCH_FIELDS.includes('dimmed'))
     assert.ok(!PATCH_FIELDS.includes('id'))
     assert.ok(!PATCH_FIELDS.includes('orders'))
     assert.deepEqual([...METRIC_FIELDS], ['roi', 'propagation_4h', 'engagement_4h'])
@@ -222,5 +224,76 @@ describe('幂等与细节', () => {
     assert.equal(it0.roi, 1.5)
     assert.equal(JSON.stringify(c0.members), membersBefore)
     assert.equal(JSON.stringify(c0.orders), ordersBefore)
+  })
+})
+
+describe('bg_color（v2-M1b F1：卡片自有 hex 属性）', () => {
+  it('hex 写入并归一化为小写 #rrggbb（#rgb 展开、大写转小写）', () => {
+    const r = applyItemPatch({ bg_color: '#F59E0B' }, item(), ctx())
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.next.bg_color, '#f59e0b')
+    assert.deepEqual(r.changes, [{ field: 'bg_color', old_value: undefined, new_value: '#f59e0b' }])
+    const r2 = applyItemPatch({ bg_color: '#AbC' }, item(), ctx())
+    assert.equal(r2.next.bg_color, '#aabbcc')
+  })
+  it('旧色板 token 写入时归一化为对应 hex（向后兼容，数据收敛为 hex）', () => {
+    const r = applyItemPatch({ bg_color: 'sky' }, item(), ctx())
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.next.bg_color, '#0ea5e9')
+    const r2 = applyItemPatch({ bg_color: ' Amber ' }, item(), ctx())
+    assert.equal(r2.next.bg_color, '#f59e0b')
+  })
+  it('非法值报错且拒绝写入', () => {
+    for (const bad of ['pink', '#12345', '#gggggg', 'rgb(1,2,3)']) {
+      const r = applyItemPatch({ bg_color: bad }, item(), ctx())
+      assert.deepEqual(r.errors, [
+        `bg_color 非法: "${bad}"，合法值: #rgb / #rrggbb 十六进制色值`,
+      ])
+      assert.equal(r.next, undefined)
+    }
+  })
+  it('null / 空串 / undefined → 移除字段（恢复默认）', () => {
+    const colored = item({ bg_color: '#ef4444' })
+    for (const v of [null, '', '  ', undefined]) {
+      const r = applyItemPatch({ bg_color: v }, colored, ctx())
+      assert.deepEqual(r.errors, [])
+      assert.ok(!('bg_color' in r.next), `bg_color=${String(v)} 应移除字段`)
+      assert.deepEqual(r.changes, [
+        { field: 'bg_color', old_value: '#ef4444', new_value: undefined },
+      ])
+    }
+  })
+  it('同值补丁幂等（无 changes）；token 与已存 hex 同值也幂等；本来无色时清除无 changes', () => {
+    const r1 = applyItemPatch({ bg_color: '#0EA5E9' }, item({ bg_color: '#0ea5e9' }), ctx())
+    assert.deepEqual(r1.changes, [])
+    const r2 = applyItemPatch({ bg_color: 'sky' }, item({ bg_color: '#0ea5e9' }), ctx())
+    assert.deepEqual(r2.changes, [])
+    const r3 = applyItemPatch({ bg_color: null }, item(), ctx())
+    assert.deepEqual(r3.changes, [])
+  })
+})
+
+describe('dimmed（v2-M1 F2）', () => {
+  it('true 置灰并计入 changes', () => {
+    const r = applyItemPatch({ dimmed: true }, item(), ctx())
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.next.dimmed, true)
+    assert.deepEqual(r.changes, [{ field: 'dimmed', old_value: undefined, new_value: true }])
+  })
+  it('false → 移除字段（点亮）', () => {
+    const r = applyItemPatch({ dimmed: false }, item({ dimmed: true }), ctx())
+    assert.deepEqual(r.errors, [])
+    assert.ok(!('dimmed' in r.next))
+    assert.deepEqual(r.changes, [{ field: 'dimmed', old_value: true, new_value: undefined }])
+  })
+  it('非 boolean 报错且拒绝写入', () => {
+    const r = applyItemPatch({ dimmed: 'true' }, item(), ctx())
+    assert.equal(r.errors.length, 1)
+    assert.match(r.errors[0], /^dimmed 非法: 期望 boolean/)
+    assert.equal(r.next, undefined)
+  })
+  it('重复置灰 / 未置灰时点亮点灯幂等（无 changes）', () => {
+    assert.deepEqual(applyItemPatch({ dimmed: true }, item({ dimmed: true }), ctx()).changes, [])
+    assert.deepEqual(applyItemPatch({ dimmed: false }, item(), ctx()).changes, [])
   })
 })

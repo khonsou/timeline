@@ -8,6 +8,7 @@
  *     + CLI 生成的 public/data/board.json 种子（两制并存：CLI 数据经首页初始化进板）
  */
 import type { ContentItem, ContentType, Member } from '@timeline/core/types'
+import { normalizeBgColor } from '@timeline/core/types'
 import {
   MEMBERS,
   PRODUCTS,
@@ -83,12 +84,20 @@ export function validateItemsOrders(parsed: unknown): { items: ContentItem[]; or
             : '已发布'
       const co = (it as { content_owner_id?: unknown }).content_owner_id
       const dvo = (it as { delivery_owner_id?: unknown }).delivery_owner_id
-      return {
+      const next: ContentItem = {
         ...it,
         status,
         content_owner_id: typeof co === 'string' ? co : '',
         delivery_owner_id: typeof dvo === 'string' ? dvo : '',
       }
+      // v2-M1 兜底：bg_color 只保留可解析值（hex 或旧色板 token——token 原样保留，
+      // 渲染层经 normalizeBgColor 回退解析；旧卡无此字段 = 默认，无需补齐）；
+      // dimmed 只保留严格 true（false/非法值等同未置灰，字段移除保持 doc 干净）
+      if (typeof next.bg_color !== 'string' || !normalizeBgColor(next.bg_color)) {
+        delete next.bg_color
+      }
+      if (next.dimmed !== true) delete next.dimmed
+      return next
     })
     return { items: migrated, orders: patched }
   }

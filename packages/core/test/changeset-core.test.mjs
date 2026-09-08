@@ -342,3 +342,82 @@ describe('纯函数与审计形状', () => {
     ])
   })
 })
+
+describe('v2-M1b：bg_color(hex) / dimmed 经 change-set（agent 写入口）', () => {
+  it('patch 无 bg_color/dimmed 的旧卡：old_value 为 undefined（server 审计需容错），hex 生效', () => {
+    const r = applyChangeSet(doc(), [
+      { op: 'patch', item_id: 's-01', changes: { bg_color: '#8B5CF6', dimmed: true } },
+    ])
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.doc.items[0].bg_color, '#8b5cf6') // 大写归一化为小写
+    assert.equal(r.doc.items[0].dimmed, true)
+    const bgChange = r.changes.find((c) => c.field === 'bg_color')
+    assert.equal(bgChange.old_value, undefined)
+    assert.equal(bgChange.new_value, '#8b5cf6')
+  })
+  it('patch 旧色板 token 归一化为 hex 再存（向后兼容）', () => {
+    const r = applyChangeSet(doc(), [
+      { op: 'patch', item_id: 's-01', changes: { bg_color: 'violet' } },
+    ])
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.doc.items[0].bg_color, '#8b5cf6')
+  })
+  it('patch 非法色值 / 非 boolean 被拒绝（与 PATCH 同文案）', () => {
+    const r = validateChangeSet({
+      operations: [{ op: 'patch', item_id: 's-01', changes: { bg_color: 'pink' } }],
+    })
+    assert.equal(r.errors.length, 1)
+    assert.match(r.errors[0], /bg_color 非法/)
+    const r2 = validateChangeSet({
+      operations: [{ op: 'patch', item_id: 's-01', changes: { dimmed: 'yes' } }],
+    })
+    assert.equal(r2.errors.length, 1)
+    assert.match(r2.errors[0], /dimmed 非法: 期望 boolean/)
+  })
+  it('patch 清除：bg_color=null 移除字段，dimmed=false 移除字段', () => {
+    const d = doc({ items: [item({ bg_color: '#f59e0b', dimmed: true })], orders: { 's-01': 0 } })
+    const r = applyChangeSet(d, [
+      { op: 'patch', item_id: 's-01', changes: { bg_color: null, dimmed: false } },
+    ])
+    assert.deepEqual(r.errors, [])
+    assert.equal('bg_color' in r.doc.items[0], false)
+    assert.equal('dimmed' in r.doc.items[0], false)
+  })
+  it('create 带 bg_color(hex/token)/dimmed：归一化后保留入 doc（不再静默丢弃）', () => {
+    const r = applyChangeSet(doc(), [
+      {
+        op: 'create',
+        client_ref: 'm1-new',
+        item: { title: 'agent 新卡', publish_at: '2026-09-12T10:00', bg_color: '#22c55e', dimmed: true },
+      },
+      {
+        op: 'create',
+        client_ref: 'm1-token',
+        item: { title: '旧 token 卡', publish_at: '2026-09-12T11:00', bg_color: 'green' },
+      },
+    ])
+    assert.deepEqual(r.errors, [])
+    const created = r.doc.items.find((it) => it.id === r.created[0].id)
+    assert.equal(created.bg_color, '#22c55e')
+    assert.equal(created.dimmed, true)
+    const created2 = r.doc.items.find((it) => it.id === r.created[1].id)
+    assert.equal(created2.bg_color, '#22c55e') // token 'green' 收敛为 hex
+  })
+  it('create 非法 bg_color / dimmed 被拒绝；dimmed=false 不写字段', () => {
+    const bad = validateChangeSet({
+      operations: [{ op: 'create', item: { title: 'x', publish_at: '2026-09-12T10:00', bg_color: 'pink' } }],
+    })
+    assert.equal(bad.errors.length, 1)
+    assert.match(bad.errors[0], /bg_color 非法/)
+    const bad2 = validateChangeSet({
+      operations: [{ op: 'create', item: { title: 'x', publish_at: '2026-09-12T10:00', dimmed: 1 } }],
+    })
+    assert.equal(bad2.errors.length, 1)
+    assert.match(bad2.errors[0], /dimmed 非法: 期望 boolean/)
+    const r = applyChangeSet(doc(), [
+      { op: 'create', item: { title: 'x', publish_at: '2026-09-12T10:00', dimmed: false } },
+    ])
+    const created = r.doc.items.find((it) => it.id === r.created[0].id)
+    assert.equal('dimmed' in created, false)
+  })
+})

@@ -244,8 +244,8 @@ function agentRateLimited(boardId, ip) {
 // @timeline/core/patch-core（applyItemPatch），此处仅保留审计序列化（审计属 server 职责）
 // ---------------------------------------------------------------------------
 
-/** 审计值序列化：字符串原样，其余（null/number）JSON 序列化 */
-const auditVal = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
+/** 审计值序列化：字符串原样，其余（null/number）JSON 序列化；undefined（可选字段缺失）归一为 null 串 */
+const auditVal = (v) => (typeof v === 'string' ? v : JSON.stringify(v ?? null))
 
 // ---------------------------------------------------------------------------
 // v19 change-set 辅助（协议 §4.2 / §5.4–5.7）

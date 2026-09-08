@@ -11,6 +11,12 @@ interface DayColumnProps {
   onOpenDetail: (id: string) => void
   onDelete: (id: string) => void
   onAddCard: (date: string) => void
+  /** v2-M1：卡片动作（背景色写 hex；null = 恢复默认） */
+  onSetBgColor: (id: string, hex: string | null) => void
+  onToggleDimmed: (id: string) => void
+  onCopyShareLink: (id: string) => void
+  /** F5/F6 定位一次性高亮的卡片 id */
+  highlightId?: string | null
   /** v16 容量上限：false 时「+ 空卡片」禁用 */
   canAdd: boolean
 }
@@ -22,6 +28,10 @@ function DayColumn({
   onOpenDetail,
   onDelete,
   onAddCard,
+  onSetBgColor,
+  onToggleDimmed,
+  onCopyShareLink,
+  highlightId,
   canAdd,
 }: DayColumnProps) {
   // 列容器本身 droppable，空列也可落
@@ -82,6 +92,10 @@ function DayColumn({
                 card={card}
                 onOpenDetail={onOpenDetail}
                 onDelete={onDelete}
+                onSetBgColor={onSetBgColor}
+                onToggleDimmed={onToggleDimmed}
+                onCopyShareLink={onCopyShareLink}
+                highlighted={card.id === highlightId}
               />
             ))}
             {cards.length === 0 && (

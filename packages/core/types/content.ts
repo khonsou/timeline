@@ -10,6 +10,54 @@
 export type ContentType = '图文' | '视频' | '音频' | '直播' | '数据'
 
 /**
+ * 卡片背景色预设色板（v2-M1 F1；v2-M1b 起降级为「写入快捷预设」）：
+ * bg_color 是卡片自有属性，直接存具体 hex 色值（小写 #rrggbb）；UI 色板仍提供
+ * 8 预设 + 默认，选中后写入数据的是该预设的 hex。hex 选取与 Tailwind 500 色阶一致。
+ */
+export interface BgColorPreset {
+  /** 预设 token（仅 UI 标识与旧数据兼容用，不再写入数据） */
+  token: string
+  /** 色板里的中文名 */
+  label: string
+  /** 预设 hex（小写 #rrggbb） */
+  hex: string
+}
+export const BG_COLOR_PRESETS: BgColorPreset[] = [
+  { token: 'red', label: '红', hex: '#ef4444' },
+  { token: 'orange', label: '橙', hex: '#f97316' },
+  { token: 'amber', label: '琥珀', hex: '#f59e0b' },
+  { token: 'green', label: '绿', hex: '#22c55e' },
+  { token: 'sky', label: '天蓝', hex: '#0ea5e9' },
+  { token: 'violet', label: '紫', hex: '#8b5cf6' },
+  { token: 'rose', label: '玫瑰', hex: '#f43f5e' },
+  { token: 'slate', label: '石灰', hex: '#64748b' },
+]
+
+/** 旧色板 token → hex（向后兼容：v2-M1b 前数据/调用可能还带 token） */
+export const BG_TOKEN_HEX: Record<string, string> = Object.fromEntries(
+  BG_COLOR_PRESETS.map((p) => [p.token, p.hex]),
+)
+
+const BG_HEX_RE = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/
+
+/**
+ * 背景色值归一化（写入口径与读取容错共用）：
+ * - '#rgb' / '#rrggbb'（大小写不敏感）→ 小写 #rrggbb
+ * - 旧色板 token（'amber' 等，大小写不敏感）→ 对应 hex（数据逐步收敛为 hex）
+ * - 其余 → null（非法）
+ */
+export function normalizeBgColor(raw: string): string | null {
+  const v = raw.trim()
+  if (!v) return null
+  const tokenHex = BG_TOKEN_HEX[v.toLowerCase()]
+  if (tokenHex) return tokenHex
+  const m = BG_HEX_RE.exec(v)
+  if (!m) return null
+  const h = m[1].toLowerCase()
+  return h.length === 3 ? `#${h[0]}${h[0]}${h[1]}${h[1]}${h[2]}${h[2]}` : `#${h}`
+}
+
+/**
  * 内容状态（3 态，存中文字符串）：
  * - 待执行：刚创建、尚未进入发布流程（新建空卡片的默认状态）
  * - 待发布：已排期、等待发布（导入时 publish_at 在未来的默认推导）
@@ -100,6 +148,19 @@ export interface ContentItem {
    * comment 只作人工备注，机器协议一律走本字段。
    */
   links?: Link[]
+
+  /**
+   * 卡片背景色（v2-M1 F1，可缺省）：卡片自有属性，存具体 hex 色值（小写 #rrggbb；
+   * 写入时 #rgb 与大写归一化）。v2-M1b 前的存量数据可能是色板 token（'amber' 等），
+   * 读取方经 normalizeBgColor 容错解析。缺省 = 默认白底；「默认」= 移除字段。
+   */
+  bg_color?: string
+
+  /**
+   * 置灰标记（v2-M1 F2，可缺省）：true = 卡片半透明退到背景（仍可读可拖拽可编辑）；
+   * undefined/false = 正常点亮。点亮 = 解除置灰（透明度 0.45 → 1 过渡，表现层负责）。
+   */
+  dimmed?: boolean
 }
 
 // ---------------------------------------------------------------------------
