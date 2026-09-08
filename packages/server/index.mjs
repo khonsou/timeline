@@ -28,9 +28,21 @@
  *   GET   /api/boards/:id/audit?limit=50 PATCH 审计（倒序，limit ≤200）
  *   限速：以上端点每 board 每 IP 120 次/分钟（BOARD_AGENT_RPM 可调），超限 429 { error, retry_after }
  *
+ * v19 change-set 端点（协议 §5.4–5.7，与 item 级端点同限速桶、同鉴权顺序）：
+ *   POST  /api/boards/:id/change-sets                 创建变更集（预校验 → pending，201）
+ *   GET   /api/boards/:id/change-sets/:csid           查询（惰性过期判定）
+ *   POST  /api/boards/:id/change-sets/:csid/commit    原子提交（版本检查 → core 全量校验 → 整体写入 + 审计；
+ *                                                     支持 Idempotency-Key：同键重试返回首次结果，同键不同内容 409）
+ *   POST  /api/boards/:id/change-sets/:csid/cancel    人工取消（pending → rejected；已终态 409）
+ *   PATCH /items 与整板 PUT 支持可选 If-Match（不符 → 409 VERSION_CONFLICT）；
+ *   无 If-Match 的 PUT 为兼容模式：响应头 Deprecation: true + 日志警告一次。
+ *   audit_log 扩列 actor / source / change_set_id / request_id（历史行允许 null）；
+ *   直接 PATCH 的审计三者记 null，change-set 提交逐条复制 change-set 的 actor/source。
+ *
  * 环境变量：API_PORT（默认 8787）/ BOARD_DB（默认 packages/server/boards.sqlite）/
  *   BOARD_SECRET（token 签名密钥；缺省生成随机并警告，重启后 token 全失效）/
- *   BOARD_TOKEN_HOURS（默认 12）/ BOARD_LOCK_SECONDS（默认 60）/ BOARD_AGENT_RPM（默认 120）
+ *   BOARD_TOKEN_HOURS（默认 12）/ BOARD_LOCK_SECONDS（默认 60）/ BOARD_AGENT_RPM（默认 120）/
+ *   BOARD_CS_TTL_HOURS（默认 24，change-set 有效期；允许小数值便于测试）
  */
 import http from 'node:http'
 import crypto from 'node:crypto'
@@ -41,6 +53,8 @@ import { DatabaseSync } from 'node:sqlite'
 // v18+：PATCH 校验/合并规则下沉 @timeline/core/patch-core（Node 24 strip-types 经
 // workspaces 软链直引包内 .ts——realpath 不在 node_modules 内，类型擦除生效，零构建）
 import { applyItemPatch } from '@timeline/core/patch-core'
+// v19：change-set 预校验与按序应用（协议 §5.4–5.7 的 core 全量校验一步）同方式引用
+import { applyChangeSet, validateChangeSet } from '@timeline/core/changeset-core'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.API_PORT || 8787)
@@ -53,6 +67,8 @@ const MAX_FAILS = 5
 const MAX_BODY = 8 * 1024 * 1024 // 单板几百卡片，8MB 绰绰有余
 // v18：item 级端点限速（每 board 每 IP 每分钟；内存滑动窗口，与 auth 限速同风格）
 const AGENT_RPM = Number(process.env.BOARD_AGENT_RPM || 120)
+// v19：change-set 有效期（协议 §4.2 默认 24 小时；允许小数值便于测试短 TTL）
+const CS_TTL_MS = Number(process.env.BOARD_CS_TTL_HOURS || 24) * 3600_000
 
 let SECRET = process.env.BOARD_SECRET
 if (!SECRET) {
@@ -90,6 +106,37 @@ db.exec(`
     new_value  TEXT
   )
 `)
+// v19：audit_log 扩列（actor / source / change_set_id / request_id，协议 §4.3）。
+// 迁移走 ALTER 吞错（老库加列、新库 duplicate 报错忽略）；历史行允许 null。
+for (const col of ['actor TEXT', 'source TEXT', 'change_set_id TEXT', 'request_id TEXT']) {
+  try {
+    db.exec(`ALTER TABLE audit_log ADD COLUMN ${col}`)
+  } catch {
+    // 列已存在（新库或重复启动）
+  }
+}
+// v19：change_sets 表（协议 §4.2）。operations/result/source/actor 为 JSON 文本；
+// idempotency_key 与 change_set_id 联合唯一（NULL 不冲突：无键提交可多次）；
+// commit_request_hash 用于同键不同内容的 409 IDEMPOTENCY_KEY_REUSE 检测。
+db.exec(`
+  CREATE TABLE IF NOT EXISTS change_sets (
+    change_set_id       TEXT PRIMARY KEY,
+    board_id            TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    base_version        INTEGER NOT NULL,
+    operations          TEXT NOT NULL,
+    source              TEXT,
+    actor               TEXT,
+    created_at          TEXT NOT NULL,
+    expires_at          TEXT NOT NULL,
+    result              TEXT,
+    idempotency_key     TEXT,
+    commit_request_hash TEXT
+  )
+`)
+db.exec(
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_change_sets_idem ON change_sets(change_set_id, idempotency_key)',
+)
 db.exec('PRAGMA journal_mode = WAL')
 
 const qList = db.prepare('SELECT board_id, name, version, doc, updated_at FROM boards ORDER BY updated_at DESC')
@@ -100,9 +147,18 @@ const qInsert = db.prepare(
 const qUpdate = db.prepare('UPDATE boards SET doc = ?, version = version + 1, updated_at = ? WHERE board_id = ?')
 const qDelete = db.prepare('DELETE FROM boards WHERE board_id = ?')
 const qAuditInsert = db.prepare(
-  'INSERT INTO audit_log (ts, board_id, item_id, field, old_value, new_value) VALUES (?, ?, ?, ?, ?, ?)',
+  'INSERT INTO audit_log (ts, board_id, item_id, field, old_value, new_value, actor, source, change_set_id, request_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
 )
 const qAuditList = db.prepare('SELECT * FROM audit_log WHERE board_id = ? ORDER BY id DESC LIMIT ?')
+// v19 change_sets
+const qCsInsert = db.prepare(
+  'INSERT INTO change_sets (change_set_id, board_id, status, base_version, operations, source, actor, created_at, expires_at, result) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+)
+const qCsGet = db.prepare('SELECT * FROM change_sets WHERE change_set_id = ? AND board_id = ?')
+const qCsSetStatus = db.prepare('UPDATE change_sets SET status = ? WHERE change_set_id = ?')
+const qCsSetResult = db.prepare(
+  'UPDATE change_sets SET status = ?, result = ?, idempotency_key = ?, commit_request_hash = ? WHERE change_set_id = ?',
+)
 
 // ---------------------------------------------------------------------------
 // 密码哈希（scrypt:<saltHex>:<hashHex>）与 token（base64url(payload).base64url(hmac)）
@@ -193,6 +249,43 @@ function agentRateLimited(boardId, ip) {
 const auditVal = (v) => (typeof v === 'string' ? v : JSON.stringify(v))
 
 // ---------------------------------------------------------------------------
+// v19 change-set 辅助（协议 §4.2 / §5.4–5.7）
+// ---------------------------------------------------------------------------
+
+/** change_set_id：cs- 前缀 + 16 位 hex（与 board_id 同风格，加前缀便于辨认） */
+const newChangeSetId = () => `cs-${crypto.randomBytes(8).toString('hex')}`
+/** request_id：每次写请求生成，审计溯源用 */
+const newRequestId = () => `req-${crypto.randomBytes(8).toString('hex')}`
+
+/** change_sets 行 → 协议 §4.2 响应对象（JSON 列反序列化，可空列为 null） */
+function csRowToJson(r) {
+  return {
+    change_set_id: r.change_set_id,
+    board_id: r.board_id,
+    status: r.status,
+    base_version: r.base_version,
+    operations: JSON.parse(r.operations),
+    source: r.source ? JSON.parse(r.source) : null,
+    actor: r.actor ? JSON.parse(r.actor) : null,
+    created_at: r.created_at,
+    expires_at: r.expires_at,
+    result: r.result ? JSON.parse(r.result) : null,
+  }
+}
+
+/**
+ * 惰性过期（协议 §4.2：服务端无后台 worker，查询/提交时判定）：
+ * pending 且过 expires_at → 置 expired 落库并返回更新后的行；否则原样返回。
+ */
+function lazyExpireCs(r) {
+  if (r.status === 'pending' && r.expires_at <= new Date().toISOString()) {
+    qCsSetStatus.run('expired', r.change_set_id)
+    return { ...r, status: 'expired' }
+  }
+  return r
+}
+
+// ---------------------------------------------------------------------------
 // HTTP 辅助
 // ---------------------------------------------------------------------------
 function send(res, status, body, headers = {}) {
@@ -252,6 +345,9 @@ const emptyDoc = (name) => ({
   members: [],
   meta: { name, created_at: new Date().toISOString() },
 })
+
+// v19：无 If-Match 整板 PUT 的兼容模式警告（每进程只警告一次）
+let putCompatWarned = false
 
 // ---------------------------------------------------------------------------
 // 路由
@@ -336,13 +432,23 @@ const server = http.createServer(async (req, res) => {
       }
 
       // PUT /api/boards/:id —— 带 token 整板覆盖（LWW，version+1）
+      // v19：可选 If-Match（不符 → 409）；不携带 → 兼容模式放行 + Deprecation 头 + 日志警告一次
       if (req.method === 'PUT') {
         if (!verifyToken(req.headers.authorization, id)) return send(res, 401, { error: 'token 缺失或已过期' })
+        const ifMatch = req.headers['if-match']
+        if (ifMatch !== undefined && Number(ifMatch) !== row.version) {
+          return send(res, 409, { error: 'VERSION_CONFLICT', current_version: row.version })
+        }
+        const compatMode = ifMatch === undefined
+        if (compatMode && !putCompatWarned) {
+          putCompatWarned = true
+          console.warn('[boards] ⚠ 收到不带 If-Match 的整板 PUT（兼容模式，将废弃）：请迁移到 change-sets 写路径')
+        }
         const body = await readBody(req)
         if (!validDoc(body.doc)) return send(res, 400, { error: 'doc 结构非法：需要 { items[], orders{}, products[], members[] }' })
         if (body.doc.items.length > MAX_CARDS) return send(res, 400, { error: MAX_CARDS_MSG }) // v16 硬上限
         qUpdate.run(JSON.stringify(body.doc), new Date().toISOString(), id)
-        return send(res, 200, { version: qGet.get(id).version })
+        return send(res, 200, { version: qGet.get(id).version }, compatMode ? { deprecation: 'true' } : {})
       }
 
       // DELETE /api/boards/:id —— 必须重新输密码（不认 token），物理删除
@@ -422,7 +528,12 @@ const server = http.createServer(async (req, res) => {
       }
 
       // PATCH /api/boards/:id/items/:itemId —— 白名单字段补丁（读出 doc、改单条、写回，不整板覆盖）
+      // v19：可选 If-Match（不符 → 409 VERSION_CONFLICT；不携带维持 LWW 兼容模式）
       if (scope === 'items' && itemId && req.method === 'PATCH') {
+        const ifMatch = req.headers['if-match']
+        if (ifMatch !== undefined && Number(ifMatch) !== row.version) {
+          return send(res, 409, { error: 'VERSION_CONFLICT', current_version: row.version })
+        }
         const body = await readBody(req)
         if (!body || typeof body !== 'object' || Array.isArray(body)) {
           return send(res, 400, { error: '请求体须为字段补丁对象' })
@@ -449,8 +560,138 @@ const server = http.createServer(async (req, res) => {
         if (r.pendingMembers.length) doc.members = [...doc.members, ...r.pendingMembers]
         const now = new Date().toISOString()
         qUpdate.run(JSON.stringify(doc), now, id) // 与 PUT 同一持久化路径（version+1、updated_at 刷新）
-        for (const c of r.changes) qAuditInsert.run(now, id, itemId, c.field, auditVal(c.old_value), auditVal(c.new_value))
+        // 直接 PATCH 的审计：change_set_id / actor / source 记 null（协议 §3：自报机制只走 change-set 创建入参），request_id 每次请求生成
+        const requestId = newRequestId()
+        for (const c of r.changes) qAuditInsert.run(now, id, itemId, c.field, auditVal(c.old_value), auditVal(c.new_value), null, null, null, requestId)
         return send(res, 200, { changed: true, version: qGet.get(id).version, item: r.next })
+      }
+
+      return send(res, 405, { error: 'method not allowed' })
+    }
+
+    // ------------------------------------------------------------------
+    // v19 change-set 端点（协议 §5.4–5.7）：提案 / review / 原子提交 / 人工取消
+    // 鉴权与检查顺序同 item 级端点：404 板 → 401 token → 429 限速（与 /items 同桶）
+    // ------------------------------------------------------------------
+    const m3 = /^\/api\/boards\/([0-9a-f]{16})\/change-sets(?:\/(cs-[0-9a-f]{16})(\/commit|\/cancel)?)?$/.exec(p)
+    if (m3) {
+      const id = m3[1]
+      const csId = m3[2] ?? null
+      const action = m3[3] ?? null // '/commit' | '/cancel' | null
+      const row = qGet.get(id)
+      if (!row) return send(res, 404, { error: '看板不存在' })
+      if (!verifyToken(req.headers.authorization, id)) return send(res, 401, { error: 'token 缺失或已过期' })
+      const retry = agentRateLimited(id, req.socket.remoteAddress ?? '?')
+      if (retry > 0) return send(res, 429, { error: `请求过于频繁，请 ${retry} 秒后重试`, retry_after: retry })
+
+      // POST /api/boards/:id/change-sets —— 创建变更集（提案）：预校验 → 存 pending
+      if (!csId && req.method === 'POST') {
+        const body = await readBody(req)
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return send(res, 400, { error: '请求体须为对象' })
+        }
+        if (!Number.isInteger(body.base_version)) {
+          return send(res, 400, { error: 'base_version 须为整数（取创建时的看板 version）' })
+        }
+        // 格式类错误尽早暴露：operations 白名单/逐字段校验全部在 core changeset-core
+        const v = validateChangeSet(body)
+        if (v.errors.length) return send(res, 400, { error: v.errors.join('；'), errors: v.errors })
+        const csid = newChangeSetId()
+        const now = new Date()
+        qCsInsert.run(
+          csid,
+          id,
+          'pending',
+          body.base_version,
+          JSON.stringify(v.normalized),
+          body.source === undefined ? null : JSON.stringify(body.source),
+          body.actor === undefined ? null : JSON.stringify(body.actor),
+          now.toISOString(),
+          new Date(now.getTime() + CS_TTL_MS).toISOString(),
+        )
+        return send(res, 201, csRowToJson(qCsGet.get(csid, id)))
+      }
+
+      // 以下均需 change-set 存在
+      const csRow = csId ? qCsGet.get(csId, id) : null
+      if (csId && !csRow) return send(res, 404, { error: '变更集不存在' })
+
+      // GET /api/boards/:id/change-sets/:csid —— 查询（惰性过期判定）
+      if (csId && !action && req.method === 'GET') {
+        return send(res, 200, csRowToJson(lazyExpireCs(csRow)))
+      }
+
+      // POST .../cancel —— 人工取消：pending → rejected（终态）；已终态 409
+      if (csId && action === '/cancel' && req.method === 'POST') {
+        const cs = lazyExpireCs(csRow)
+        if (cs.status !== 'pending') {
+          return send(res, 409, { error: `变更集已是终态: ${cs.status}`, status: cs.status })
+        }
+        qCsSetStatus.run('rejected', csId)
+        return send(res, 200, csRowToJson(qCsGet.get(csId, id)))
+      }
+
+      // POST .../commit —— 原子提交（协议 §5.6 事务内顺序 + 幂等规则）
+      if (csId && action === '/commit' && req.method === 'POST') {
+        const body = await readBody(req)
+        const idemKey = req.headers['idempotency-key']
+        const reqHash = crypto.createHash('sha256').update(JSON.stringify(body ?? {})).digest('hex')
+
+        // 幂等：同 change_set_id + 同键重试 → 返回首次提交结果（不重复写入、不 409）；
+        // 同键不同请求内容 → 409 IDEMPOTENCY_KEY_REUSE
+        if (idemKey !== undefined && csRow.idempotency_key === idemKey) {
+          if (csRow.commit_request_hash !== reqHash) {
+            return send(res, 409, { error: 'IDEMPOTENCY_KEY_REUSE' })
+          }
+          const result = csRow.result ? JSON.parse(csRow.result) : {}
+          return send(res, 200, { status: csRow.status, ...result })
+        }
+
+        // 事务：状态/过期/版本检查 → 应用 operations（core 全量校验）→ 整体写入 + 审计
+        db.exec('BEGIN IMMEDIATE')
+        try {
+          const cs = lazyExpireCs(csRow)
+          if (cs.status === 'expired' && csRow.status === 'pending') {
+            // 本次惰性判定为 expired：已落库，拒绝提交
+            db.exec('COMMIT')
+            return send(res, 409, { error: '变更集已过期', status: 'expired' })
+          }
+          if (cs.status !== 'pending') {
+            db.exec('COMMIT')
+            return send(res, 409, { error: `变更集已是终态: ${cs.status}`, status: cs.status })
+          }
+          const fresh = qGet.get(id) // 事务内重读 version
+          if (fresh.version !== cs.base_version) {
+            qCsSetStatus.run('conflicted', csId)
+            db.exec('COMMIT')
+            return send(res, 409, { error: 'VERSION_CONFLICT', current_version: fresh.version })
+          }
+          const applied = applyChangeSet(JSON.parse(fresh.doc), JSON.parse(cs.operations))
+          if (applied.errors.length) {
+            qCsSetResult.run('rejected', JSON.stringify({ errors: applied.errors }), null, null, csId)
+            db.exec('COMMIT')
+            return send(res, 400, { error: applied.errors.join('；'), errors: applied.errors })
+          }
+          const now = new Date().toISOString()
+          qUpdate.run(JSON.stringify(applied.doc), now, id) // 整体写入，version+1
+          const version = qGet.get(id).version
+          // 逐字段审计：同一 ts；actor / source 从 change-set 逐条复制；change_set_id 必填
+          const requestId = newRequestId()
+          for (const c of applied.changes) {
+            qAuditInsert.run(now, id, c.item_id, c.field, auditVal(c.old_value), auditVal(c.new_value), cs.actor, cs.source, csId, requestId)
+          }
+          const result = { version, items: applied.created }
+          qCsSetResult.run('committed', JSON.stringify(result), idemKey ?? null, idemKey !== undefined ? reqHash : null, csId)
+          db.exec('COMMIT')
+          return send(res, 200, { status: 'committed', ...result })
+        } catch (e) {
+          try {
+            db.exec('ROLLBACK')
+          } catch {
+            // 已回滚/未开启
+          }
+          throw e
+        }
       }
 
       return send(res, 405, { error: 'method not allowed' })

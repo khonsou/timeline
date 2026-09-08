@@ -19,11 +19,17 @@
  *   目录差分登记/状态联动与旧档迁移/负责人与成员管理/导入按姓名登记成员/密码门 5 次锁定/
  *   双端同步/LWW/离线补推/同步状态点/CLI 空归属导入/删除看板全链路。
  *   v16 窗口化适配：卡片计数一律按「窗口 [首列,末列] 内应渲染数」校验，不再假设全量渲染；
- *   固定日期锚点（examples/import-sample.json）与旧套件一致，要求运行日落在样例数据 ±30 天窗口内。
+ *   样例锚点（examples/import-sample.json）不再直接使用：灌库前按 SAMPLE_SHIFT 平移全部
+ *   publish_at（锚点 imp-0006 → 今天+2），任何运行日都落在 ±30 天窗口内且语义不变；
+ *   规约：日期断言一律走 fmt/addDays/fmtTipDate 与 shiftDate/shiftAt，禁止字面量日期。
  *
  * v19 碰撞判定修复（t57）：全局 closestCorners 下拖拽卡自身 rect 长期赢下判定、
  *   相邻日落点无高亮成功率低；修复为 pointerWithin 锁列 + 列内 closestCorners。
  *   t57 断言「甩进邻列 30% 深处」时 over=目标列、isOver 高亮、落定切日且时分保留。
+ *
+ * M4 版本保护写路径（t58）：整板 PUT 带 If-Match；双端并发写 → 一端 409 →
+ *   自动整板 GET + pending-patch 重放 + 带新版本重试，两端编辑都不丢；
+ *   用离线门确定性制造版本落后，MutationObserver 记录状态轨迹断言经过「冲突恢复中」。
  *
  * 运行：node verification/e2e-check.mjs
  *   - 自带 fixture：spawn API server（:5198，独立 tmp sqlite）+ vite（:5199，API_PORT=5198 反代）
@@ -55,7 +61,8 @@ const GATE_PASS = 'e2e-gate-pass'
 const SMALL_NAME = 'E2E 小跨度板'
 const SMALL_PASS = 'e2e-small-pass'
 
-// v15 移植用例的固定锚点（与旧套件一致：examples/import-sample.json 内容固定）
+// v15 移植用例的锚点：样例静态文件 examples/import-sample.json 不动，
+// 灌库用 writeShiftedSample() 平移副本（见上方 SAMPLE_SHIFT 节）
 const BOARD_JSON = path.join(ROOT, 'public', 'data', 'board.json')
 const GUIDE_NAME = 'E2E 引导板'
 const GUIDE_PASS = 'e2e-guide-pass'
@@ -65,8 +72,8 @@ const PROD_NAME = 'E2E 产品板'
 const PROD_PASS = 'e2e-prod-pass'
 const GUIDE_TITLE_1 = '欢迎使用拾光轴 · 5 分钟上手'
 const GUIDE_TITLE_2 = 'CLI 批量导入真实数据'
-const EDIT_TARGET_TITLE = '数据日报 · 8 月合集' // imp-0005 @ 2026-09-01（历史已发布）
-const DELETE_TARGET_TITLE = '台灯新品图文首发' // imp-0006 @ 2026-09-04（待发布）
+const EDIT_TARGET_TITLE = '数据日报 · 8 月合集' // imp-0005（平移后 = 今天-1，历史已发布）
+const DELETE_TARGET_TITLE = '台灯新品图文首发' // imp-0006（平移后 = 今天+2，待发布）
 
 // ---------------------------------------------------------------------------
 // 日期工具（与 src/lib/content-data.ts 同口径：本地时区）
@@ -82,6 +89,34 @@ const dayDiff = (a, b) => {
   const [y1, m1, d1] = a.split('-').map(Number)
   const [y2, m2, d2] = b.split('-').map(Number)
   return Math.round((new Date(y1, m1 - 1, d1) - new Date(y2, m2 - 1, d2)) / 86400000)
+}
+
+// ---------------------------------------------------------------------------
+// 样例夹具日期平移（免疫运行日漂移）：examples/import-sample.json 保持静态不动
+// （仍是 CLI 文档示例），e2e 灌库前把全部 publish_at 按 SAMPLE_SHIFT 平移。
+// 锚点：imp-0006 @ 2026-09-04 → 今天+2。选 +2 而非今天本身：
+//   ① imp-0006 必须恒为「待发布」——锚到今天的 11:00 会被运行时刻污染（午后跑 → 已发布）；
+//   ② 最早卡 imp-0001 @08-05 平移后落 今天-28，距窗口左缘（-30）留 2 天余量；
+//   ③ imp-0005 @09-01 → 今天-1（恒为历史已发布，任意运行时刻安全）；
+//   ④ imp-0007 @09-10 → 今天+8（恒为未来 → 推导待发布），imp-0008 @09-20 → 今天+18（窗口内）。
+// 规约：日期断言一律走 fmt/addDays/fmtTipDate 与本节 shiftDate/shiftAt，禁止字面量日期。
+// ---------------------------------------------------------------------------
+const SAMPLE_ANCHOR_DATE = '2026-09-04' // imp-0006 原始 publish 日期
+const SAMPLE_SHIFT = dayDiff(addDays(TODAY, 2), SAMPLE_ANCHOR_DATE)
+/** 样例日期平移：'YYYY-MM-DD' → 平移后 */
+const shiftDate = (d) => addDays(d, SAMPLE_SHIFT)
+/** 样例日期时间平移：'YYYY-MM-DDTHH:mm'（保留时分） */
+const shiftAt = (at) => `${shiftDate(at.slice(0, 10))}${at.slice(10)}`
+
+/** 读静态样例 → 全部 publish_at 平移 → 写 VDIR 临时副本，返回路径（t24 灌库用） */
+function writeShiftedSample() {
+  const src = JSON.parse(readFileSync(path.join(REPO_ROOT, 'examples', 'import-sample.json'), 'utf8'))
+  for (const it of src.items ?? []) {
+    if (typeof it.publish_at === 'string') it.publish_at = shiftAt(it.publish_at)
+  }
+  const out = path.join(VDIR, 'tmp-import-sample.shifted.json')
+  writeFileSync(out, JSON.stringify(src, null, 2))
+  return out
 }
 
 const COLUMN_STEP = 248 // 236 列宽 + 12 间距
@@ -335,7 +370,7 @@ async function teardown() {
   } catch {
     // 非空则保留
   }
-  for (const f of ['tmp-v12-ui-import.json', 'tmp-v13-diff-import.json', 'tmp-v14-member-import.json', 'tmp-v11-empty-product.csv']) {
+  for (const f of ['tmp-v12-ui-import.json', 'tmp-v13-diff-import.json', 'tmp-v14-member-import.json', 'tmp-v11-empty-product.csv', 'tmp-import-sample.shifted.json']) {
     try {
       rmSync(path.join(VDIR, f), { force: true })
     } catch {
@@ -1246,7 +1281,7 @@ async function main() {
 
   // ==================================================================
   // v15 旧套件移植（t20–t53）
-  //   数据基础与旧套件同构：CLI 导入 examples/import-sample.json 写 public/data/board.json
+  //   数据基础与旧套件同构：CLI 导入样例（writeShiftedSample() 平移副本）写 public/data/board.json
   //   → 首页勾「从本机现有数据初始化」建数据板（9 卡/7 产品/3 成员）→ 交互用例跑在数据板上。
   //   v16 适配：计数断言按「窗口 [首列,末列] 内应渲染数」校验；用例间共享数据板状态（与旧套件一致）。
   // ==================================================================
@@ -1336,7 +1371,8 @@ async function main() {
   })
 
   await t('t24 CLI 导入 → 首页初始化建数据板（旧 importTakesOver）', async () => {
-    execSync('npm run import:data -- examples/import-sample.json', { cwd: REPO_ROOT, stdio: 'pipe' })
+    const shifted = writeShiftedSample() // 静态样例平移到运行日窗口（见 SAMPLE_SHIFT 节）
+    execSync(`npm run import:data -- "${shifted}"`, { cwd: REPO_ROOT, stdio: 'pipe' })
     const { importedAt } = JSON.parse(readFileSync(BOARD_JSON, 'utf8'))
     await waitViteServes(importedAt)
 
@@ -1362,10 +1398,10 @@ async function main() {
     await waitFor(async () => (await colCount()) === 61, 9000, '数据板渲染 61 列')
     const doc = await waitFor(() => storedDoc(dataId), 9000, '缓存 doc 落盘')
     eq(doc.items.length, 9, '初始化合并 9 卡（数据层）')
-    // v16 窗口断言：渲染数 = 窗口内应渲染数（样例全在窗口时即 9）
+    // v16 窗口断言：渲染数 = 窗口内应渲染数（平移后样例全在窗口内，即 9）
     const inWin = inWindowCount(doc, await firstDate(), await lastDate())
     eq(await renderedCount(), inWin, '窗口内卡片全渲染')
-    ok(await cardColumnDate('星轨键盘 SE 开箱视频'), '锚点卡渲染（窗口覆盖 2026-08-05）')
+    ok(await cardColumnDate('星轨键盘 SE 开箱视频'), `锚点卡渲染（窗口覆盖 ${shiftDate('2026-08-05')}）`)
     const membersOk =
       Array.isArray(doc.members) &&
       doc.members.length === 3 &&
@@ -1384,11 +1420,27 @@ async function main() {
     await waitFor(() => ev(() => !!document.querySelector('input[placeholder="输入卡片标题…"]')), 4000, '标题输入框')
     await clearAndType('input[placeholder="输入卡片标题…"]', 'E2E 修改标题')
     await page.keyboard.press('Enter')
-    await waitFor(
-      () => ev(() => document.querySelector('[data-detail-title]')?.textContent === 'E2E 修改标题'),
-      5000,
-      '标题提交',
-    )
+    try {
+      await waitFor(
+        () => ev(() => document.querySelector('[data-detail-title]')?.textContent === 'E2E 修改标题'),
+        5000,
+        '标题提交',
+      )
+    } catch (e) {
+      // flake 现场：输入框残值 / 标题元素 / 同步状态 / 缓存中该卡标题
+      const dump = await ev(() => ({
+        input: document.querySelector('input[placeholder="输入卡片标题…"]')?.value ?? null,
+        detailTitle: document.querySelector('[data-detail-title]')?.textContent ?? null,
+        dialogOpen: !!document.querySelector('[data-slot="dialog-content"]'),
+        sync: document.querySelector('[data-sync-status]')?.dataset.syncStatus ?? null,
+        active: document.activeElement?.tagName ?? null,
+      }))
+      const cached = await storedItem(dataId, 'E2E 修改标题')
+      const cachedOld = await storedItem(dataId, EDIT_TARGET_TITLE)
+      await page.screenshot({ path: path.join(VDIR, 't25-fail.png') }).catch(() => {})
+      console.error(`    [t25 现场] ${JSON.stringify(dump)} 缓存新标题=${!!cached} 缓存旧标题=${!!cachedOld}`)
+      throw e
+    }
     await closeDialog()
     const after = await ev(
       (d) => document.querySelector(`.h-full.overflow-auto [data-date="${d}"] [data-card-title]`)?.textContent ?? null,
@@ -1879,9 +1931,9 @@ async function main() {
   await t('t42 UI 导入报告 + 幂等再导（旧 v12UiImport）', async () => {
     const tmp = path.join(VDIR, 'tmp-v12-ui-import.json')
     writeFileSync(tmp, JSON.stringify({ items: [
-      { id: 'ui-0001', type: '图文', title: 'UI导入图文', product_id: 'P-2003', status: '已发布', publish_at: '2026-08-25T10:00', metrics: { views: 1, likes: 2, comments: 3, favorites: 4, shares: 5, follows: 6, conversions: 7 } },
-      { id: 'ui-0002', type: '视频', title: 'UI导入无产品', product_id: '', status: '待发布', publish_at: '2026-08-26T11:00' },
-      { id: 'ui-0003', type: '图文', title: '', product_id: 'P-2003', status: '已发布', publish_at: '2026-08-25T10:00' },
+      { id: 'ui-0001', type: '图文', title: 'UI导入图文', product_id: 'P-2003', status: '已发布', publish_at: shiftAt('2026-08-25T10:00'), metrics: { views: 1, likes: 2, comments: 3, favorites: 4, shares: 5, follows: 6, conversions: 7 } },
+      { id: 'ui-0002', type: '视频', title: 'UI导入无产品', product_id: '', status: '待发布', publish_at: shiftAt('2026-08-26T11:00') },
+      { id: 'ui-0003', type: '图文', title: '', product_id: 'P-2003', status: '已发布', publish_at: shiftAt('2026-08-25T10:00') },
     ] }))
     try {
       const reportOf = () =>
@@ -1923,8 +1975,8 @@ async function main() {
     writeFileSync(tmp, JSON.stringify({
       products: [{ id: 'P-2004', name: '磐石移动电源 30000mAh' }],
       items: [
-        { id: 'ui-1001', type: '图文', title: 'v13自动登记演示', publish_at: '2026-08-27T10:00', product_id: 'P-3100', product_name: '幻影 mini 主机', roi: 1.5, propagation_4h: 100, engagement_4h: 10 },
-        { id: 'ui-1002', type: '视频', title: 'v13占位名演示', publish_at: '2026-08-27T12:00', product_id: 'P-3200' },
+        { id: 'ui-1001', type: '图文', title: 'v13自动登记演示', publish_at: shiftAt('2026-08-27T10:00'), product_id: 'P-3100', product_name: '幻影 mini 主机', roi: 1.5, propagation_4h: 100, engagement_4h: 10 },
+        { id: 'ui-1002', type: '视频', title: 'v13占位名演示', publish_at: shiftAt('2026-08-27T12:00'), product_id: 'P-3200' },
       ],
     }))
     try {
@@ -2026,7 +2078,7 @@ async function main() {
     ok(mig.roiEditable, '迁移后指标可编辑')
     eq(migStored, '已发布', '迁移落库 status=已发布')
 
-    // B. 状态联动：imp-0007（2026-09-10 未来 → 推导待发布，指标锁定占位）
+    // B. 状态联动：imp-0007（平移后 = 今天+8，未来 → 推导待发布，指标锁定占位）
     await openCard('数据线快充横评')
     const before = await ev(() => {
       const dlg = document.querySelector('[data-slot="dialog-content"]')
@@ -2178,7 +2230,7 @@ async function main() {
   await t('t46 UI 导入按姓名登记成员（旧 v14ImportMemberHint）', async () => {
     const tmp = path.join(VDIR, 'tmp-v14-member-import.json')
     writeFileSync(tmp, JSON.stringify({ items: [
-      { id: 'ui-2001', type: '图文', title: 'v14成员登记演示', publish_at: '2026-08-29T10:00', product_id: 'P-2003', 内容负责人: '周舟', 投放负责人: '陈远', roi: 1.1, propagation_4h: 100, engagement_4h: 10 },
+      { id: 'ui-2001', type: '图文', title: 'v14成员登记演示', publish_at: shiftAt('2026-08-29T10:00'), product_id: 'P-2003', 内容负责人: '周舟', 投放负责人: '陈远', roi: 1.1, propagation_4h: 100, engagement_4h: 10 },
     ] }))
     try {
       await (await page.$('[data-import-input]')).uploadFile(tmp)
@@ -2321,6 +2373,106 @@ async function main() {
     ok(docAfter.items.some((i) => i.title === 'E2E 离线标题'), '服务端 doc 含离线改动')
   })
 
+  await t('t58 双端并发写：一端 409 → 冲突自动恢复且两端编辑都不丢（M4 If-Match + pending-patch 重放）', async () => {
+    ok(dataId, '前置 t24 就绪')
+    const ctxB = await browser.createBrowserContext()
+    const pageB = await ctxB.newPage()
+    await pageB.setViewport(VIEW)
+    let step = 'init'
+    try {
+      step = 'B 进板'
+      await pageB.goto(dataUrl(), { waitUntil: 'domcontentloaded' })
+      await pageB.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
+      await clearAndTypeOn(pageB, '[data-gate-password]', DATA_PASS)
+      await pageB.click('[data-gate-submit]')
+      await pageB.waitForFunction(() => document.querySelectorAll('.h-full.overflow-auto [data-date]').length === 61, { timeout: 15000 })
+      await sleep(1000)
+      step = 'A 同步就绪'
+      await waitFor(
+        () => ev(() => document.querySelector('[data-sync-status]')?.dataset.syncStatus === 'synced'),
+        8000,
+        'A 同步就绪',
+      )
+      // MutationObserver 记录 A 的同步状态轨迹（捕获「冲突恢复中」中间态，rapid 跳变不丢）
+      await ev(() => {
+        const w = window
+        w.__syncTrail = [document.querySelector('[data-sync-status]')?.dataset.syncStatus ?? '?']
+        w.__syncObs = new MutationObserver((ms) => {
+          for (const m of ms) {
+            const s = m.target?.dataset?.syncStatus
+            if (s && w.__syncTrail[w.__syncTrail.length - 1] !== s) w.__syncTrail.push(s)
+          }
+        })
+        w.__syncObs.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['data-sync-status'] })
+      })
+      // A 离线改卡 Y：编辑进本地 pending，推送失败 → offline（确定性制造 A 版本落后）
+      step = 'A 离线'
+      await page.setOfflineMode(true)
+      await sleep(300)
+      step = 'A 离线编辑卡Y'
+      await editCardTitleOn(page, 'E2E 离线标题', 'E2E 并发标题A')
+      step = 'A 离线状态点'
+      await waitFor(
+        () => ev(() => document.querySelector('[data-sync-status]')?.dataset.syncStatus === 'offline'),
+        8000,
+        'A 离线状态点',
+      )
+      // B 在线改卡 X 并推送（version+1），等它确实落到服务端
+      step = 'B 改卡X'
+      await editCardTitleOn(pageB, 'E2E 修改标题', 'E2E 并发标题B')
+      step = 'B 落服务端'
+      const authB = await api('POST', `/boards/${dataId}/auth`, { password: DATA_PASS })
+      await waitFor(async () => {
+        const d = (await api('GET', `/boards/${dataId}`, undefined, authB.body.token)).body?.doc
+        return d?.items?.some((i) => i.title === 'E2E 并发标题B')
+      }, 8000, 'B 的并发写入已落服务端')
+      // A 恢复在线 → tick 补推带旧版本 → 409 → 自动整板 GET + pending 重放 + 重试 → synced
+      step = 'A 恢复在线'
+      await page.setOfflineMode(false)
+      step = 'A 自动恢复'
+      await waitFor(
+        () => ev(() => document.querySelector('[data-sync-status]')?.dataset.syncStatus === 'synced'),
+        15000,
+        'A 409 自动恢复 synced',
+      )
+      step = 'A 双编辑断言'
+      // 不丢编辑：A 端既保留自己的离线编辑，也采纳 B 的并发改动
+      ok(await cardColumnDate('E2E 并发标题A'), 'A 的离线编辑保留（未被覆盖）')
+      await waitFor(async () => (await cardColumnDate('E2E 并发标题B')) !== null, 8000, 'A 采纳 B 的并发改动')
+      // 状态轨迹经过「冲突恢复中」中间态
+      step = '轨迹断言'
+      const trail = await ev(() => window.__syncTrail)
+      ok(Array.isArray(trail) && trail.includes('conflict'), `经过冲突恢复中（${(trail ?? []).join('→')}）`)
+      // 服务端真态：两端编辑都在
+      const authC = await api('POST', `/boards/${dataId}/auth`, { password: DATA_PASS })
+      const docC = (await api('GET', `/boards/${dataId}`, undefined, authC.body.token)).body.doc
+      ok(docC.items.some((i) => i.title === 'E2E 并发标题A'), '服务端含 A 编辑')
+      ok(docC.items.some((i) => i.title === 'E2E 并发标题B'), '服务端含 B 编辑')
+      // B 端轮询看到 A 恢复的编辑
+      step = 'B 看到 A'
+      await pageB.waitForFunction(
+        (t0) => [...document.querySelectorAll('[data-card-title]')].some((p) => p.textContent === t0),
+        { timeout: 10000 },
+        'E2E 并发标题A',
+      )
+    } catch (e) {
+      // 失败现场：步骤 + 两端卡面标题 + A 状态轨迹 + 截图（flake 排查用）
+      const aTitles = await ev(() => [...document.querySelectorAll('[data-card-title]')].map((p) => p.textContent).slice(0, 20)).catch(() => null)
+      const bTitles = await pageB.evaluate(() => [...document.querySelectorAll('[data-card-title]')].map((p) => p.textContent).slice(0, 20)).catch(() => null)
+      const trail = await ev(() => window.__syncTrail ?? null).catch(() => null)
+      const aStatus = await ev(() => document.querySelector('[data-sync-status]')?.dataset.syncStatus ?? null).catch(() => null)
+      await page.screenshot({ path: path.join(VDIR, 't58-fail-a.png') }).catch(() => {})
+      await pageB.screenshot({ path: path.join(VDIR, 't58-fail-b.png') }).catch(() => {})
+      await page.setOfflineMode(false).catch(() => {})
+      console.error(`    [t58 现场] step=${step} A状态=${aStatus} 轨迹=${JSON.stringify(trail)}`)
+      console.error(`    [t58 现场] A卡面=${JSON.stringify(aTitles)}`)
+      console.error(`    [t58 现场] B卡面=${JSON.stringify(bTitles)}`)
+      throw new Error(`${e instanceof Error ? e.message : String(e)}（step=${step}）`)
+    } finally {
+      await ctxB.close()
+    }
+  })
+
   await t('t51 同步状态点 synced（旧 v15SyncDot）', async () => {
     const dot = await ev(() => {
       const el = document.querySelector('[data-sync-status]')
@@ -2334,7 +2486,7 @@ async function main() {
     const tmpCsv = path.join(VDIR, 'tmp-v11-empty-product.csv')
     writeFileSync(
       tmpCsv,
-      '标题,类型,计划发布时间,产品ID\n临时无归属卡,图文,2026-08-20 10:00,\n临时正常卡,图文,2026-08-21 10:00,P-2003\n',
+      `标题,类型,计划发布时间,产品ID\n临时无归属卡,图文,${shiftDate('2026-08-20')} 10:00,\n临时正常卡,图文,${shiftDate('2026-08-21')} 10:00,P-2003\n`,
       'utf8',
     )
     let out = ''

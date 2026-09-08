@@ -8,12 +8,17 @@
  *
  * 同步层状态机（syncStatus）：
  *   loading →（缓存首帧 + 首次全量 GET）→ synced
- *   本地变更 → 写缓存 + 置 dirty → 防抖 500ms PUT → synced（syncing 过渡）
+ *   本地变更 → 写缓存 + 记 pending-patch → 防抖 500ms 带 If-Match PUT → synced（syncing 过渡）
  *   每 5s（?poll=ms 可覆盖）轮询：dirty 则先补推，否则带 version GET；
- *     changed → 整板替换本地 state（含 products/members 目录，LWW 后写覆盖先写）
- *   网络失败 → offline（继续编辑，缓存兜底；恢复后 tick 补推，接受被覆盖）
+ *     changed → 远端快照成为新 base，本地 pending-patch 重放其上（item 字段级合并，
+ *     不再整板覆盖本地未推送编辑）
+ *   PUT 409 VERSION_CONFLICT → conflict（冲突恢复中）：整板 GET → pending 重放到最新快照
+ *     → 带新 version 重试；连续 409 退避后再试一次；最终失败 → conflict-failed
+ *     （顶栏「冲突需刷新」手动入口，编辑保留在 localStorage 不丢）
+ *   网络失败 → offline（继续编辑，缓存兜底；恢复后 tick 补推，走同一 pending 重放路径）
  *   401（token 过期）→ 清 token 回密码门；404 → 看板不存在页
- * 本地缓存：localStorage `timeline-board-v4:b:<boardId>` 存整份 doc（离线可编辑）。
+ * 本地缓存：localStorage `timeline-board-v4:b:<boardId>` 存整份 doc + `_sync`
+ * （对齐版本 version + 未推送 pending-patch），刷新后未推送编辑仍可重放。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import TopBar from '@/components/TopBar'
@@ -45,6 +50,14 @@ import {
   validateItems,
 } from '@timeline/core/import-core'
 import { validateDoc, type BoardDoc } from '@/lib/board-doc'
+import {
+  applyPatch,
+  diffDocs,
+  emptyPatch,
+  patchIsEmpty,
+  sanitizePatch,
+  type DocPatch,
+} from '@/lib/pending-patch'
 import {
   ApiError,
   authBoard,
@@ -152,7 +165,7 @@ function PasswordGate({ boardId, onAuthed }: { boardId: string; onAuthed: () => 
 // ---------------------------------------------------------------------------
 // 同步看板（v14 单板 App + 同步层）
 // ---------------------------------------------------------------------------
-type SyncStatus = 'loading' | 'synced' | 'syncing' | 'offline'
+type SyncStatus = 'loading' | 'synced' | 'syncing' | 'offline' | 'conflict' | 'conflict-failed'
 
 interface PersistedState {
   items: ContentItem[]
@@ -161,15 +174,31 @@ interface PersistedState {
 
 const cacheKey = (boardId: string) => `timeline-board-v4:b:${boardId}`
 
-function readCache(boardId: string): BoardDoc | null {
+/** M4：缓存 = 整份 doc（顶层键不变，兼容既有读取）+ `_sync`（对齐版本 + 未推送 pending-patch） */
+interface CachedBoard {
+  doc: BoardDoc
+  /** 缓存 doc 对齐到的服务端版本；-1 = 未知（旧格式缓存） */
+  version: number
+  /** 缓存中尚未推送的本地变更（相对对齐版本的差分） */
+  pending: DocPatch
+}
+
+function readCache(boardId: string): CachedBoard | null {
   try {
     const raw = localStorage.getItem(cacheKey(boardId))
     if (!raw) return null
-    return validateDoc(JSON.parse(raw))
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const doc = validateDoc(parsed)
+    if (!doc) return null
+    const sync = (parsed._sync ?? null) as { version?: unknown; pending?: unknown } | null
+    const version = typeof sync?.version === 'number' ? sync.version : -1
+    return { doc, version, pending: sanitizePatch(sync?.pending) }
   } catch {
     return null
   }
 }
+
+const sleepMs = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 
 const WEEKDAYS = ['日', '一', '二', '三', '四', '五', '六']
 
@@ -181,25 +210,25 @@ function SyncedBoard({
   onUnauthorized: () => void
 }) {
   // 首帧同步读缓存（离线/慢网也能立即看到内容），随后全量 GET 接管
-  const [initialCache] = useState<BoardDoc | null>(() => readCache(boardId))
+  const [initialCache] = useState<CachedBoard | null>(() => readCache(boardId))
   const [state, setState] = useState<PersistedState>(() => ({
-    items: initialCache?.items ?? [],
-    orders: initialCache?.orders ?? {},
+    items: initialCache?.doc.items ?? [],
+    orders: initialCache?.doc.orders ?? {},
   }))
   const { items, orders } = state
   const [products, setProducts] = useState<Product[]>(() => {
-    const p = initialCache?.products ?? PRODUCTS
+    const p = initialCache?.doc.products ?? PRODUCTS
     setRuntimeProducts(p)
     return p
   })
   const [members, setMembers] = useState<Member[]>(() => {
-    const m = initialCache?.members ?? MEMBERS
+    const m = initialCache?.doc.members ?? MEMBERS
     setRuntimeMembers(m)
     return m
   })
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(initialCache ? 'syncing' : 'loading')
   const [notFound, setNotFound] = useState(false)
-  const [boardName, setBoardName] = useState(initialCache?.meta.name ?? '')
+  const [boardName, setBoardName] = useState(initialCache?.doc.meta.name ?? '')
 
   // 详情弹窗等 UI 态（与 v14 一致）
   const [detailCardId, setDetailCardId] = useState<string | null>(null)
@@ -211,8 +240,10 @@ function SyncedBoard({
 
   // ------------------------------------------------------------------
   // 同步层：refs 镜像最新状态，供异步回调（防抖/轮询/flush）读取
+  // M4：baseRef = 与服务端对齐的快照；pendingRef = diff(base, 本地 doc)，
+  // 推送/轮询/409 恢复都把它重放到最新快照之上（组件层无感，仍读写同一个 doc state）
   // ------------------------------------------------------------------
-  const metaRef = useRef(initialCache?.meta ?? { name: '', created_at: '' })
+  const metaRef = useRef(initialCache?.doc.meta ?? { name: '', created_at: '' })
   const docRef = useRef<BoardDoc>({
     items: state.items,
     orders: state.orders,
@@ -220,10 +251,11 @@ function SyncedBoard({
     members,
     meta: metaRef.current,
   })
-  const versionRef = useRef<number>(-1) // -1 = 尚未与远端对齐（首次必须全量拉）
-  const dirtyRef = useRef(false)
+  const versionRef = useRef<number>(initialCache?.version ?? -1) // -1 = 尚未与远端对齐（首次必须全量拉）
+  const baseRef = useRef<BoardDoc | null>(null) // versionRef 所指版本的内容；首次拉取/推送成功后建立
+  const pendingRef = useRef<DocPatch>(initialCache?.pending ?? emptyPatch())
+  const dirtyRef = useRef(!patchIsEmpty(pendingRef.current))
   const pushingRef = useRef(false)
-  const suppressDirtyRef = useRef(false) // 应用远端 doc 时不回标 dirty（防 ping-pong）
   const pushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const statusRef = useRef<SyncStatus>(syncStatus)
   statusRef.current = syncStatus
@@ -239,8 +271,36 @@ function SyncedBoard({
     }
   }, [])
 
+  /** 重算 pending = diff(base, 本地 doc) 并派生 dirty（base 未建立时保留缓存带来的 pending） */
+  const refreshPending = () => {
+    if (baseRef.current) {
+      pendingRef.current = diffDocs(baseRef.current, docRef.current)
+      dirtyRef.current = !patchIsEmpty(pendingRef.current)
+    } else {
+      dirtyRef.current = !patchIsEmpty(pendingRef.current)
+    }
+  }
+
+  const persistCache = () => {
+    try {
+      localStorage.setItem(
+        cacheKey(boardId),
+        JSON.stringify({
+          ...docRef.current,
+          _sync: { version: versionRef.current, pending: pendingRef.current },
+        }),
+      )
+    } catch {
+      // 存储不可用时仅内存生效
+    }
+  }
+
+  const schedulePush = (delay = timings.push) => {
+    if (pushTimerRef.current) clearTimeout(pushTimerRef.current)
+    pushTimerRef.current = setTimeout(() => void push(), delay)
+  }
+
   const applyRemoteDoc = (doc: BoardDoc) => {
-    suppressDirtyRef.current = true
     setRuntimeProducts(doc.products)
     setRuntimeMembers(doc.members)
     setProducts(doc.products)
@@ -248,6 +308,29 @@ function SyncedBoard({
     setState({ items: doc.items, orders: doc.orders })
     metaRef.current = doc.meta
     setBoardName(doc.meta.name)
+  }
+
+  /**
+   * 远端快照落本地（M4 统一入口）：
+   *   merged = 远端快照 + pending0（拉取开始时的本地未推送变更）
+   *   finalDoc = merged + late（拉取/推送 await 窗口内用户的新编辑，diff(l0, live) 捕获）
+   * 仅在 finalDoc 与用户当前所见不一致时才动 React state（避免打断正在进行的输入）。
+   */
+  const adoptRemote = (remote: BoardDoc, version: number, l0: BoardDoc, pending0: DocPatch) => {
+    const merged = patchIsEmpty(pending0) ? remote : applyPatch(remote, pending0)
+    const live = docRef.current
+    const late = diffDocs(l0, live)
+    const finalDoc = patchIsEmpty(late) ? merged : applyPatch(merged, late)
+    baseRef.current = merged
+    versionRef.current = version
+    pendingRef.current = diffDocs(merged, finalDoc)
+    dirtyRef.current = !patchIsEmpty(pendingRef.current)
+    if (!patchIsEmpty(diffDocs(live, finalDoc))) {
+      applyRemoteDoc(finalDoc) // state 变更 → 镜像 effect 重算 pending 并落缓存
+    } else {
+      persistCache()
+    }
+    if (dirtyRef.current) schedulePush()
   }
 
   const handleSyncError = (e: unknown): boolean => {
@@ -265,30 +348,78 @@ function SyncedBoard({
   }
 
   const pull = async (withVersion: boolean) => {
+    const l0 = docRef.current
+    const pending0 = pendingRef.current
     try {
       const r = await getBoard(boardId, withVersion && versionRef.current >= 0 ? versionRef.current : undefined)
       if (r.changed && r.doc) {
         const doc = validateDoc(r.doc)
-        if (doc) applyRemoteDoc(doc)
+        if (doc) {
+          adoptRemote(doc, r.version, l0, pending0)
+          if (!dirtyRef.current) setSyncStatus('synced')
+          return
+        }
       }
       versionRef.current = r.version
-      setSyncStatus('synced')
+      if (!dirtyRef.current) setSyncStatus('synced')
     } catch (e) {
       handleSyncError(e)
+    }
+  }
+
+  /**
+   * 409 恢复：整板 GET 拉最新快照 → pending 重放 → 带新 version 重试 PUT。
+   * 连续 409（罕见，第三方并发写）退避后再试一次；最终失败 → conflict-failed，
+   * 编辑保留在 pending + localStorage，顶栏提供手动刷新入口。
+   */
+  const recoverFromConflict = async (attempt: number): Promise<void> => {
+    setSyncStatus('conflict')
+    const l0 = docRef.current
+    const pending0 = pendingRef.current
+    try {
+      const r = await getBoard(boardId) // 全量拉最新
+      const serverDoc = validateDoc(r.doc)
+      if (!serverDoc) throw new Error('远端 doc 校验失败')
+      const merged = applyPatch(serverDoc, pending0)
+      const r2 = await putBoard(boardId, merged, r.version)
+      adoptRemote(merged, r2.version, l0, emptyPatch())
+      setSyncStatus(dirtyRef.current ? 'syncing' : 'synced')
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        if (attempt < 2) {
+          await sleepMs(700 + Math.floor(Math.random() * 400)) // 退避后再试一次
+          return recoverFromConflict(attempt + 1)
+        }
+        setSyncStatus('conflict-failed') // 连续冲突：手动刷新入口，不静默丢编辑
+        return
+      }
+      if (e instanceof ApiError && (e.status === 401 || e.status === 404)) {
+        handleSyncError(e)
+        return
+      }
+      if (e instanceof ApiError && e.status === 0) {
+        setSyncStatus('offline') // 恢复中途断网：dirty 保留，online/tick 再走补推
+        return
+      }
+      setSyncStatus('conflict-failed')
     }
   }
 
   const push = async () => {
     if (pushingRef.current || !dirtyRef.current) return
     pushingRef.current = true
-    setSyncStatus((s) => (s === 'offline' ? s : 'syncing'))
+    const sent = docRef.current
+    setSyncStatus((s) => (s === 'offline' || s === 'conflict' || s === 'conflict-failed' ? s : 'syncing'))
     try {
-      const r = await putBoard(boardId, docRef.current)
-      versionRef.current = r.version
-      dirtyRef.current = false
-      setSyncStatus('synced')
+      const r = await putBoard(boardId, sent, versionRef.current)
+      adoptRemote(sent, r.version, sent, emptyPatch()) // base = 已推送快照；await 窗口内的新编辑留作 pending
+      if (!dirtyRef.current) setSyncStatus('synced')
     } catch (e) {
-      handleSyncError(e) // dirty 保持 true，下个 tick 补推
+      if (e instanceof ApiError && e.status === 409) {
+        await recoverFromConflict(1)
+      } else {
+        handleSyncError(e) // dirty 保持 true，下个 tick 补推
+      }
     } finally {
       pushingRef.current = false
     }
@@ -296,6 +427,7 @@ function SyncedBoard({
 
   const tick = () => {
     if (pushingRef.current) return
+    if (statusRef.current === 'conflict-failed') return // 等手动刷新入口，不自动风暴重试
     if (dirtyRef.current) void push()
     else void pull(true)
   }
@@ -304,15 +436,21 @@ function SyncedBoard({
   useEffect(() => {
     void pull(false)
     const timer = setInterval(tick, timings.poll)
-    const onOnline = () => tick()
+    const onOnline = () => {
+      if (statusRef.current !== 'conflict-failed') tick()
+    }
     const flush = () => {
       if (!dirtyRef.current) return
       const token = getToken(boardId)
       if (!token) return
-      // pagehide 时用 keepalive 尽力补推（页面即将关闭，不等响应）
+      // pagehide 时用 keepalive 尽力补推（页面即将关闭，不等响应；409 由下次打开时 pending 重放兜底）
       void fetch(apiPath(`/api/boards/${boardId}`), {
         method: 'PUT',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${token}`,
+          ...(versionRef.current >= 0 ? { 'if-match': String(versionRef.current) } : {}),
+        },
         body: JSON.stringify({ doc: docRef.current }),
         keepalive: true,
       }).catch(() => {})
@@ -327,22 +465,16 @@ function SyncedBoard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boardId])
 
-  // 状态镜像 → docRef；本地变更 → 写缓存 + 标 dirty + 防抖推送
+  // 状态镜像 → docRef；重算 pending → 写缓存（doc + _sync）；有未推送变更 → 防抖推送
   useEffect(() => {
     docRef.current = { items, orders, products, members, meta: metaRef.current }
-    try {
-      localStorage.setItem(cacheKey(boardId), JSON.stringify(docRef.current))
-    } catch {
-      // 存储不可用时仅内存生效
-    }
-    if (suppressDirtyRef.current) {
-      suppressDirtyRef.current = false // 远端应用落盘后不标 dirty
-      return
-    }
-    dirtyRef.current = true
-    setSyncStatus((s) => (s === 'offline' || s === 'loading' ? s : 'syncing'))
-    if (pushTimerRef.current) clearTimeout(pushTimerRef.current)
-    pushTimerRef.current = setTimeout(() => void push(), timings.push)
+    refreshPending()
+    persistCache()
+    if (!dirtyRef.current) return
+    setSyncStatus((s) =>
+      s === 'offline' || s === 'loading' || s === 'conflict' || s === 'conflict-failed' ? s : 'syncing',
+    )
+    schedulePush()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, orders, products, members])
 
@@ -539,6 +671,7 @@ function SyncedBoard({
         dateStr={dateStr}
         boardName={boardName}
         syncStatus={syncStatus}
+        onSyncRefresh={() => void recoverFromConflict(1)}
         onBackHome={() => navigate('/')}
         onBackToToday={() => boardApiRef.current?.scrollToToday('smooth')}
         onAddToToday={addToToday}

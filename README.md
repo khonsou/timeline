@@ -57,7 +57,7 @@ timeline-board/
 - **服务端**（`packages/server/index.mjs`，Node ≥ 22.5 直跑）：单表 `boards`（board_id 16 位 hex / name / doc JSON / version / password_hash / 时间戳）；doc = `{ items, orders, products, members, meta }`，前端四份状态原样打包。密码 scrypt 加盐哈希（`scrypt:<salt>:<hash>` + timingSafeEqual 校验），token = `base64url(payload).base64url(HMAC-SHA256)`（密钥 `BOARD_SECRET`，**生产必须设固定值**，缺省随机则重启后 token 全失效）。
 - **本机缓存**：localStorage `timeline-board-v4:b:<boardId>` 存整份 doc——离线/慢网也能先看到内容，全量 GET 随后接管。
 - **部署**：nginx 静态托管 `web/dist/` + 反代 `/api` → `packages/server/index.mjs`（pm2 托管），见 [docs/deployment.md](docs/deployment.md) 与 `deploy/`（nginx.conf / ecosystem.config.cjs）；备份 = 拷贝 SQLite 文件。
-- **Agent API（v18）**：第三方 agent 的 item 级读写端点（items 过滤查询 / 单卡 GET / 白名单 PATCH / products / members 目录），逐字段审计（`audit_log` 表 + GET `/audit`）+ 每板每 IP 120 次/分钟限速；鉴权与人同一套密码换 token，完整说明见 [docs/agent-api.md](docs/agent-api.md)。
+- **Agent API（v19 change-set 协议）**：看板数据自动化的唯一写入口径——change-set 四端点（创建提案 / GET review / 原子 commit / cancel）+ item 级读写（items 过滤查询 / 单卡 GET / 白名单 PATCH，PATCH 与整板 PUT 支持可选 `If-Match` 版本保护）+ products / members 目录 + 逐字段审计（`audit_log` 含 actor / source / change_set_id / request_id + GET `/audit`）；每板每 IP 120 次/分钟限速；鉴权与人同一套密码换 token。完整说明见 [docs/agent-api.md](docs/agent-api.md)，可运行参考实现见 [examples/agent-quickstart.mjs](examples/agent-quickstart.mjs)。
 
 ## 时间轴窗口与容量（v16）
 
@@ -89,6 +89,7 @@ npm run import:data -- --products <产品文件.json|产品文件.csv> [--dry-ru
 - **卡片行自动登记新产品**：items 中 `product_id` 不在目录时不再警告，而是按随行 `product_name`（中文别名 `产品名`/`产品名称`，缺省用 id 占位）自动登记进目录并合并进写出的 products——卡片导入后直接显示产品名；占位名永远不覆盖已有真实名称。
 - **负责人按姓名自动登记新成员**：`内容负责人`/`投放负责人` 两列按**姓名**填写——姓名在成员目录（初始内置 `M-1001 林晓` / `M-1002 陈远`）命中 → 复用既有 id；未知名 → 自动登记为新成员（id 自动取 `M-<最大编号+1>`），并与已有 `board.json` 的 members 按**姓名**差分合并后累积全量写出（同名复用既有 id，**永不删除**——删成员走页面「成员管理」；删除被引用成员后引用卡片显示「未分配」）。
 - `--dry-run`：只校验 + 打印报告，不写文件。
+- **远端模式（v19，`--board <board_id>`）**：不写本地种子，直接经 change-set 协议写入已有在线看板——本地校验照旧 → 组装 create operations（原始 id 作 `client_ref`，卡片 id 服务端分配；负责人按姓名传送）→ 创建并提交 change-set（内容签名去重 + `Idempotency-Key` 双保险，重复执行不重复建卡）；`--no-commit` 只建 pending 待人工 review，`--dry-run` 完全本地不发请求，`--password` 或环境变量 `TIMELINE_BOARD_PASSWORD` 供密码，`--api` 缺省 `http://localhost:8787`。详见 [docs/cli-import-guide.md](docs/cli-import-guide.md) 第 12 节。
 - `--merge`：合并进已有 `board.json`（同 id 覆盖、新 id 追加，orders 全量重算）；默认全量替换。
 - `--strict`：遇第一个无效行即非零退出；默认跳过无效行并在报告汇总（有跳过 exit 1，全有效 exit 0）。
 

@@ -1,7 +1,7 @@
 /**
  * Agent PATCH 规则（纯函数，core 唯一定义，三端复用）
  *
- * 由 packages/server 的 PATCH /api/items/:id 校验/合并逻辑下沉而来，
+ * 由 packages/server 的 PATCH /api/boards/:id/items/:itemId 校验/合并逻辑下沉而来，
  * 语义与原 server 内联实现逐字一致（2026-09 迁移）。覆盖：
  * 字段白名单、逐字段校验（错误文案、收集顺序、拼接方式）、负责人解析与登记、
  * 指标-状态联动（gate）、变更检测与跨日 orders 更新。
@@ -18,9 +18,9 @@
 import type { ContentItem, Member } from '../types/content'
 import type { Orders } from './board-view.ts'
 import { nextOrder } from './board-view.ts'
-import { STATUSES, TYPES, normalizeMetric, normalizePublishAt } from './import-core.ts'
+import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt } from './import-core.ts'
 
-/** PATCH 允许修改的字段白名单 */
+/** PATCH 允许修改的字段白名单（v19+ 追加 links，协议 §8 结构化链接） */
 export const PATCH_FIELDS = [
   'title',
   'type',
@@ -33,6 +33,7 @@ export const PATCH_FIELDS = [
   'propagation_4h',
   'engagement_4h',
   'comment',
+  'links',
 ] as const
 export type PatchField = (typeof PATCH_FIELDS)[number]
 
@@ -152,6 +153,12 @@ export function applyItemPatch(
       }
     }
     if ('comment' in body) next.comment = String(body.comment ?? '')
+    // links：结构化链接（协议 §8）；null / 空串 → 清空（空数组）
+    if ('links' in body) {
+      const r = normalizeLinks(body.links)
+      if (r.error) errors.push(r.error)
+      else next.links = r.value
+    }
   }
 
   if (unknownFields.length > 0 || errors.length > 0) {
@@ -165,7 +172,12 @@ export function applyItemPatch(
 
   const changes: ItemPatchChange[] = []
   for (const f of PATCH_FIELDS) {
-    if (next[f] !== item[f]) changes.push({ field: f, old_value: item[f], new_value: next[f] })
+    // links 是数组，引用比较恒不等 → 按内容（JSON 序）比较，保证同值补丁幂等无审计
+    const changed =
+      f === 'links'
+        ? JSON.stringify(next.links ?? null) !== JSON.stringify(item.links ?? null)
+        : next[f] !== item[f]
+    if (changed) changes.push({ field: f, old_value: item[f], new_value: next[f] })
   }
 
   let orderUpdate: { id: string; order: number } | null = null

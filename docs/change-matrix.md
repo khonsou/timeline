@@ -5,10 +5,14 @@
 | 修改范围 | 必跑验证 |
 |---|---|
 | `packages/core`（类型/校验/合并/派生） | `npm run test:core` |
+| `packages/core` changeset-core（变更集预校验/按序应用/id 分配/上限） | `npm run test:core`（changeset-core.test.mjs） |
 | `packages/server`（路由/鉴权/存储） | `npm run test:server` |
+| `packages/server` change-sets 端点 / If-Match / 审计扩列 / 幂等键 | `npm run test:server`（smoke.mjs 的 change-set 全流程段） |
+| `packages/cli`（解析/校验参数/远端模式组装） | `npm run test:core` + 真实 server 联调（CLI 本身无单测） |
 | `web/` 纯样式、文案微调 | `npm run build` |
 | `web/` 交互（拖拽 / 编辑 / minimap / 同步 / 鉴权门） | `npm run build` + `npm run test:e2e` |
-| Agent API（item 级端点/审计/限速） | `npm run test:server` + Agent 相关 e2e |
+| `web/` 同步层（pending-patch / If-Match / 409 恢复） | `npm run build` + `npm run test:e2e`（含 t58 冲突恢复用例） |
+| Agent API（item 级端点/change-sets/审计/限速） | `npm run test:server` + Agent 相关 e2e |
 | 跨层契约（core 字段、doc 结构、端点签名） | `test:core` + `test:server` + `test:e2e` |
 
 ## 为什么交互改动必须跑 e2e

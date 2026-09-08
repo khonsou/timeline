@@ -5,6 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🗓️</text></svg>" />
     <title>时间轴卡片画布</title>
+    <script>
+      // v20 暗色主题：首帧渲染前按 localStorage 预置 dark 类（防亮暗闪烁）；键名与 useTheme 一致
+      try {
+        if (localStorage.getItem('timeline-theme') === 'dark') document.documentElement.classList.add('dark')
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

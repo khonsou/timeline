@@ -53,8 +53,9 @@ describe('字段白名单', () => {
     assert.deepEqual(r.changes, [])
     assert.equal(r.orderUpdate, null)
   })
-  it('PATCH_FIELDS 恰为 11 个字段且不含只读字段', () => {
-    assert.equal(PATCH_FIELDS.length, 11)
+  it('PATCH_FIELDS 恰为 12 个字段且不含只读字段（v19+ 追加 links）', () => {
+    assert.equal(PATCH_FIELDS.length, 12)
+    assert.ok(PATCH_FIELDS.includes('links'))
     assert.ok(!PATCH_FIELDS.includes('id'))
     assert.ok(!PATCH_FIELDS.includes('orders'))
     assert.deepEqual([...METRIC_FIELDS], ['roi', 'propagation_4h', 'engagement_4h'])
