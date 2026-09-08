@@ -29,7 +29,8 @@ import MemberManagerDialog from '@/components/board/MemberManagerDialog'
 import ImportResultDialog, { type ImportReport } from '@/components/board/ImportResultDialog'
 import SearchPalette from '@/components/board/SearchPalette'
 import { Button } from '@/components/ui/button'
-import type { ContentItem, Member } from '@timeline/core/types'
+import type { ContentItem, Group, Member } from '@timeline/core/types'
+import { MAX_GROUPS } from '@timeline/core/types'
 import {
   MAX_CARDS,
   MEMBERS,
@@ -42,7 +43,8 @@ import {
   uid,
   type Product,
 } from '@/lib/content-data'
-import { nextOrder, publishDateOf, type Orders } from '@timeline/core/board-view'
+import { nextOrderInGroup, publishDateOf, type Orders } from '@timeline/core/board-view'
+import { resolveWriteTimeGroup } from '@timeline/core/group-core'
 import {
   computeOrders,
   mergeMembers,
@@ -50,7 +52,7 @@ import {
   readItemsInput,
   validateItems,
 } from '@timeline/core/import-core'
-import { validateDoc, type BoardDoc } from '@/lib/board-doc'
+import { validateDoc, validCatalog, type BoardDoc } from '@/lib/board-doc'
 import {
   applyPatch,
   diffDocs,
@@ -226,6 +228,8 @@ function SyncedBoard({
     setRuntimeMembers(m)
     return m
   })
+  // v2-M2 F3 统一分组模型：分组集合（数组序 = 列顺序）；存量板经 validateDoc 自动迁移
+  const [groups, setGroups] = useState<Group[]>(() => initialCache?.doc.groups ?? [])
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(initialCache ? 'syncing' : 'loading')
   const [notFound, setNotFound] = useState(false)
   const [boardName, setBoardName] = useState(initialCache?.doc.meta.name ?? '')
@@ -304,6 +308,7 @@ function SyncedBoard({
     orders: state.orders,
     products,
     members,
+    groups: initialCache?.doc.groups ?? [], // 恒为数组：避免与镜像 effect 的 [] 产生 undefined↔[] 伪差分
     meta: metaRef.current,
   })
   const versionRef = useRef<number>(initialCache?.version ?? -1) // -1 = 尚未与远端对齐（首次必须全量拉）
@@ -361,6 +366,7 @@ function SyncedBoard({
     setProducts(doc.products)
     setMembers(doc.members)
     setState({ items: doc.items, orders: doc.orders })
+    setGroups(doc.groups ?? [])
     metaRef.current = doc.meta
     setBoardName(doc.meta.name)
   }
@@ -408,9 +414,31 @@ function SyncedBoard({
     try {
       const r = await getBoard(boardId, withVersion && versionRef.current >= 0 ? versionRef.current : undefined)
       if (r.changed && r.doc) {
+        // v2-M2：原始 doc 无合法 groups = 本次 validateDoc 触发了存量迁移
+        const migrated = !validCatalog((r.doc as { groups?: unknown }).groups)
         const doc = validateDoc(r.doc)
         if (doc) {
           adoptRemote(doc, r.version, l0, pending0)
+          if (migrated) {
+            // 迁移产物必须回推服务端：adoptRemote 把 base 设为「已迁移」快照会让
+            // diff(base, local) 为空 → 永不推送 → 服务端学不到 groups（多端不一致）。
+            // 把 base 回退成「未迁移」版本（去 groups 键、去回填 group_id），pending 即出现
+            // 迁移差分 → dirty → 防抖推送；推送成功后 base=含 groups 快照，幂等收敛。
+            // 双端同时迁移会 409 → recoverFromConflict 重放兜底（迁移确定性，差分幂等）。
+            const pre: BoardDoc = {
+              ...doc,
+              items: doc.items.map((it) => {
+                if (it.group_id === undefined) return it
+                const n = { ...it }
+                delete n.group_id
+                return n
+              }),
+            }
+            delete (pre as Partial<BoardDoc>).groups
+            baseRef.current = pre
+            refreshPending()
+            if (dirtyRef.current) schedulePush()
+          }
           if (!dirtyRef.current) setSyncStatus('synced')
           return
         }
@@ -524,7 +552,15 @@ function SyncedBoard({
 
   // 状态镜像 → docRef；重算 pending → 写缓存（doc + _sync）；有未推送变更 → 防抖推送
   useEffect(() => {
-    docRef.current = { items, orders, products, members, meta: metaRef.current }
+    // v2-M2 统一分组模型：groups 恒落盘（含用户删光分组后的空数组，删除语义需持久化）
+    docRef.current = {
+      items,
+      orders,
+      products,
+      members,
+      groups,
+      meta: metaRef.current,
+    }
     refreshPending()
     persistCache()
     if (!dirtyRef.current) return
@@ -533,7 +569,7 @@ function SyncedBoard({
     )
     schedulePush()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, orders, products, members])
+  }, [items, orders, products, members, groups])
 
   // ------------------------------------------------------------------
   // 以下为 v14 单板逻辑（updateCard/deleteCard/addCard/handleImportFile），原样保留
@@ -566,15 +602,22 @@ function SyncedBoard({
 
   const updateCard = (id: string, patch: Partial<ContentItem>) => {
     const newPublishAt = patch.publish_at
-    if (typeof newPublishAt === 'string') {
+    if (typeof newPublishAt === 'string' && !('group_id' in patch)) {
       const item = items.find((c) => c.id === id)
       if (item) {
         const newDate = newPublishAt.slice(0, 10)
+        // v2-M2 统一分组模型：仅在日期部分实际变化时做写入时归属解析
+        // （同名日期组 → 挂入；无同名组 → 归未分组，绝不自动建组；显式 group_id 优先）
         if (newDate !== publishDateOf(item)) {
-          const order = nextOrder(items, orders, newDate)
-          setOrders((prev) => ({ ...prev, [id]: order }))
-          // v16 B2：日期改出当前窗口时视野跟随到新日期（窗口内则平滑滚动过去）
-          boardApiRef.current?.revealDate(newDate)
+          const gid = resolveWriteTimeGroup(groups, newPublishAt)
+          patch = { ...patch, group_id: gid } // undefined → 下方删除字段逻辑归未分组
+          if ((gid ?? '') !== (item.group_id ?? '')) {
+            // 列归属变化 → 重取目标列列尾 order；视野跟随到目标列（此时 setItems 尚未生效，
+            // 不能用 revealCard 按卡片当前归属找列）
+            const order = nextOrderInGroup(items, orders, gid)
+            setOrders((prev) => ({ ...prev, [id]: order }))
+            boardApiRef.current?.revealColumn(gid ?? '')
+          }
         }
       }
     }
@@ -606,6 +649,43 @@ function SyncedBoard({
   // v2-M1b F1：设置背景色（写 hex 自有属性）；null = 选「默认」，移除字段
   const setBgColor = (id: string, hex: string | null) => {
     updateCard(id, { bg_color: hex ?? undefined })
+  }
+
+  // ------------------------------------------------------------------
+  // v2-M2 F3 统一分组模型：分组管理（groups 数组序 = 列顺序；
+  // 「未分组」是虚拟列：group_id 缺省 = 未分组，不占 groups[] 数据）
+  // ------------------------------------------------------------------
+  const addGroup = () => {
+    if (groups.length >= MAX_GROUPS) return // 61 上限（UI 已禁用，这里兜底）
+    const g: Group = { id: `grp-u-${uid().slice(0, 8)}`, name: '未命名分组' }
+    setGroups((prev) => [...prev, g])
+  }
+  const renameGroup = (id: string, name: string) => {
+    setGroups((prev) => prev.map((g) => (g.id === id ? { ...g, name } : g)))
+  }
+  /** 调列序：把 id 移到 beforeId 之前；beforeId = null → 移到末尾 */
+  const moveGroup = (id: string, beforeId: string | null) => {
+    setGroups((prev) => {
+      const from = prev.findIndex((g) => g.id === id)
+      if (from < 0) return prev
+      const next = prev.filter((g) => g.id !== id)
+      const to = beforeId === null ? next.length : next.findIndex((g) => g.id === beforeId)
+      if (to < 0) return prev
+      next.splice(to, 0, prev[from])
+      return next
+    })
+  }
+  /** 删组：组内卡片归「未分组」（group_id 字段移除） */
+  const deleteGroup = (id: string) => {
+    setItems((prev) =>
+      prev.map((c) => {
+        if (c.group_id !== id) return c
+        const next = { ...c }
+        delete next.group_id
+        return next
+      }),
+    )
+    setGroups((prev) => prev.filter((g) => g.id !== id))
   }
 
   // v2-M1 F6：消费分享链接 #card= 定位——首次全量 GET 落定后执行一次；
@@ -642,20 +722,21 @@ function SyncedBoard({
     setDetailAutoEdit(false)
   }
 
-  const addCard = (date: string) => {
+  const addCard = (groupId?: string) => {
     if (items.length >= MAX_CARDS) return // v16 容量上限（UI 已禁用，这里兜底）
     const id = uid()
     const type = TYPE_KEYS[Math.floor(Math.random() * TYPE_KEYS.length)]
     const product_id = PRODUCTS[Math.floor(Math.random() * PRODUCTS.length)].id
     const now = new Date()
-    const hhmm =
-      date === todayStr() ? `${pad2(now.getHours())}:${pad2(now.getMinutes())}` : '09:00'
-    const order = nextOrder(items, orders, date)
+    // v2-M2 统一分组模型：新卡 publish_at 恒为今天（PRD 明确，不再取列日期）；
+    // 列归属 = 目标列分组（未分组列新建 = 无 group_id）；order 取目标列列尾
+    const publish_at = `${todayStr()}T${pad2(now.getHours())}:${pad2(now.getMinutes())}`
+    const order = nextOrderInGroup(items, orders, groupId)
     const item: ContentItem = {
       id,
       title: '',
       type,
-      publish_at: `${date}T${hhmm}`,
+      publish_at,
       roi: null,
       comment: '',
       product_id,
@@ -664,6 +745,7 @@ function SyncedBoard({
       status: '待执行',
       content_owner_id: '',
       delivery_owner_id: '',
+      ...(groupId ? { group_id: groupId } : {}),
     }
     setItems((prev) => [...prev, item])
     setOrders((prev) => ({ ...prev, [id]: order }))
@@ -671,7 +753,8 @@ function SyncedBoard({
     setDetailCardId(id)
   }
 
-  const addToToday = () => addCard(todayStr())
+  // 顶栏「+ 空卡片」：写入时归属解析——今天同名日期组存在则挂入（迁移后恒存在）
+  const addToToday = () => addCard(resolveWriteTimeGroup(groups, `${todayStr()}T00:00`))
 
   const handleImportFile = async (file: File) => {
     const filename = file.name
@@ -785,6 +868,11 @@ function SyncedBoard({
         onToggleDimmed={toggleDimmed}
         onCopyShareLink={(id) => void copyShareLink(id)}
         canAdd={items.length < MAX_CARDS}
+        groups={groups}
+        onRenameGroup={renameGroup}
+        onMoveGroup={moveGroup}
+        onDeleteGroup={deleteGroup}
+        onAddGroup={addGroup}
       />
       <DetailDialog
         card={detailCard}
@@ -808,13 +896,14 @@ function SyncedBoard({
         onApply={applyMembers}
       />
       <ImportResultDialog report={importReport} onClose={() => setImportReport(null)} />
-      {/* v2-M1 F5 看板内搜索（全量 items，含窗口外卡片；定位走 Board.revealCard） */}
+      {/* v2-M1 F5 看板内搜索（全量 items；定位走 Board.revealCard） */}
       <SearchPalette
         open={searchOpen}
         items={items}
         orders={orders}
         products={products}
         members={members}
+        groups={groups}
         onClose={() => setSearchOpen(false)}
         onLocate={(id) => boardApiRef.current?.revealCard(id)}
         onCopyLink={(id) => void copyShareLink(id)}

@@ -16,7 +16,7 @@
  * 持久化：pending 随缓存落盘（localStorage `timeline-board-v4:b:<boardId>` 的 `_sync` 键），
  * 刷新/重开页面后首次拉取仍可把未推送编辑重放到最新快照，不静默丢编辑。
  */
-import type { ContentItem, Member } from '@timeline/core/types'
+import type { ContentItem, Group, Member } from '@timeline/core/types'
 import type { Orders } from '@timeline/core/board-view'
 import type { BoardDoc } from '@/lib/board-doc'
 import type { Product } from '@/lib/content-data'
@@ -38,6 +38,8 @@ export interface DocPatch {
   productsRemoved: string[]
   membersUpsert: Member[]
   membersRemoved: string[]
+  /** v2-M2：groups 整体替换（数组序 = 列顺序，顺序敏感不做 upsert 差分）；null = 移除；undefined = 未变化 */
+  groups?: Group[] | null
 }
 
 export const emptyPatch = (): DocPatch => ({
@@ -111,6 +113,9 @@ export function diffDocs(base: BoardDoc, local: BoardDoc): DocPatch {
   const md = diffCatalog(base.members, local.members)
   p.membersUpsert = md.upsert
   p.membersRemoved = md.removed
+
+  // v2-M2：groups 顺序敏感（数组序 = 列顺序）→ 整体替换差分
+  if (!sameValue(base.groups ?? null, local.groups ?? null)) p.groups = local.groups ?? null
   return p
 }
 
@@ -124,7 +129,8 @@ export function patchIsEmpty(p: DocPatch): boolean {
     p.productsUpsert.length === 0 &&
     p.productsRemoved.length === 0 &&
     p.membersUpsert.length === 0 &&
-    p.membersRemoved.length === 0
+    p.membersRemoved.length === 0 &&
+    p.groups === undefined
   )
 }
 
@@ -177,6 +183,14 @@ export function applyPatch(base: BoardDoc, patch: DocPatch): BoardDoc {
     orders,
     products: applyCatalog(base.products, patch.productsUpsert, patch.productsRemoved),
     members: applyCatalog(base.members, patch.membersUpsert, patch.membersRemoved),
+    // v2-M2：groups 整体替换（undefined = 沿用 base；null = 移除）
+    ...(patch.groups === undefined
+      ? base.groups
+        ? { groups: base.groups }
+        : {}
+      : patch.groups
+        ? { groups: patch.groups }
+        : {}),
     meta: base.meta,
   }
 }
@@ -205,5 +219,8 @@ export function sanitizePatch(raw: unknown): DocPatch {
   if (Array.isArray(r.membersRemoved)) {
     p.membersRemoved = (r.membersRemoved as unknown[]).filter((x) => typeof x === 'string')
   }
+  // v2-M2：groups（数组 / null 移除）最低限度形状检查
+  if (Array.isArray(r.groups)) p.groups = r.groups as Group[]
+  else if (r.groups === null) p.groups = null
   return p
 }

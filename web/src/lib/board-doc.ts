@@ -7,16 +7,18 @@
  *  2. 「从本机现有数据初始化」的 legacy 读取：v14 及之前的单板 localStorage 四键
  *     + CLI 生成的 public/data/board.json 种子（两制并存：CLI 数据经首页初始化进板）
  */
-import type { ContentItem, ContentType, Member } from '@timeline/core/types'
+import type { ContentItem, ContentType, Group, Member } from '@timeline/core/types'
 import { normalizeBgColor } from '@timeline/core/types'
 import {
   MEMBERS,
   PRODUCTS,
   TYPE_KEYS,
   guideCards,
+  todayStr,
   type Product,
 } from '@/lib/content-data'
 import { nextOrder, publishDateOf, type Orders } from '@timeline/core/board-view'
+import { migrateLegacyGroups } from '@timeline/core/group-core'
 import { STATUSES, mergeMembers, mergeProducts } from '@timeline/core/import-core'
 
 export interface BoardDoc {
@@ -24,6 +26,8 @@ export interface BoardDoc {
   orders: Orders
   products: Product[]
   members: Member[]
+  /** v2-M2 F3 统一分组模型：分组集合（数组序 = 列顺序）；存量板加载时自动迁移派生 */
+  groups?: Group[]
   meta: { name: string; created_at: string }
 }
 
@@ -33,7 +37,7 @@ export interface BoardDoc {
 // ---------------------------------------------------------------------------
 const PUBLISH_AT_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/
 
-function validCatalog(arr: unknown): arr is { id: string; name: string }[] {
+export function validCatalog(arr: unknown): arr is { id: string; name: string }[] {
   return (
     Array.isArray(arr) &&
     arr.every((x) => x && typeof x.id === 'string' && typeof x.name === 'string')
@@ -110,15 +114,45 @@ export function validateDoc(raw: unknown): BoardDoc | null {
   const io = validateItemsOrders(raw)
   if (!io) return null
   const d = raw as Partial<BoardDoc>
-  const meta =
-    d.meta && typeof d.meta === 'object' && typeof d.meta.name === 'string'
-      ? { name: d.meta.name, created_at: String(d.meta.created_at ?? '') }
+  const rawMeta = d.meta as Partial<BoardDoc['meta']> | undefined
+  const meta: BoardDoc['meta'] =
+    rawMeta && typeof rawMeta === 'object' && typeof rawMeta.name === 'string'
+      ? { name: rawMeta.name, created_at: String(rawMeta.created_at ?? '') }
       : { name: '', created_at: '' }
+  // v2-M2 F3 统一分组模型：无 groups 字段 = 存量板 → 自动迁移派生「今天 ±30 天」
+  // 共 61 个同名日期组（含空日期列，首屏与 v1 完全一致），窗口内卡片按 publish_at
+  // 回填 group_id，窗口外卡片归「未分组」；迁移确定性（同日重跑/多端结果一致）。
+  // 有 groups 则只做悬空重置（group_id 指向不存在分组 → 删字段归未分组）。
+  let groups: Group[]
+  let items: ContentItem[]
+  if (validCatalog(d.groups)) {
+    groups = d.groups as Group[]
+    const groupIds = new Set(groups.map((g) => g.id))
+    items = io.items.map((it) => {
+      if (it.group_id === undefined) return it
+      if (typeof it.group_id === 'string' && groupIds.has(it.group_id)) return it
+      const next = { ...it }
+      delete next.group_id
+      return next
+    })
+  } else {
+    const mig = migrateLegacyGroups(io.items, todayStr())
+    groups = mig.groups
+    items = io.items.map((it) => {
+      const gid = mig.assignments[it.id]
+      if (gid) return it.group_id === gid ? it : { ...it, group_id: gid }
+      if (it.group_id === undefined) return it
+      const next = { ...it }
+      delete next.group_id
+      return next
+    })
+  }
   return {
-    items: io.items,
+    items,
     orders: io.orders,
     products: validCatalog(d.products) ? (d.products as Product[]) : [],
     members: validCatalog(d.members) ? (d.members as Member[]) : [],
+    groups,
     meta,
   }
 }

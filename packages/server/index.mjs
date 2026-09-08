@@ -538,7 +538,8 @@ const server = http.createServer(async (req, res) => {
         if (!item) return send(res, 404, { error: '卡片不存在' })
 
         // 白名单 + 逐字段校验 + 负责人解析 + 指标联动 + 跨日 orders：全部在 core patch-core
-        const r = applyItemPatch(body, item, { members: doc.members, items: doc.items, orders: doc.orders })
+        // v2-M2：groups 传入 ctx → group_id 存在性校验（写入严格）
+        const r = applyItemPatch(body, item, { members: doc.members, items: doc.items, orders: doc.orders, groups: doc.groups ?? [] })
         if (r.unknownFields.length) {
           return send(res, 400, { error: `不支持修改的字段: ${r.unknownFields.join(', ')}` })
         }
@@ -676,7 +677,7 @@ const server = http.createServer(async (req, res) => {
           for (const c of applied.changes) {
             qAuditInsert.run(now, id, c.item_id, c.field, auditVal(c.old_value), auditVal(c.new_value), cs.actor, cs.source, csId, requestId)
           }
-          const result = { version, items: applied.created }
+          const result = { version, items: applied.created, ...(applied.createdGroups?.length ? { groups: applied.createdGroups } : {}) }
           qCsSetResult.run('committed', JSON.stringify(result), idemKey ?? null, idemKey !== undefined ? reqHash : null, csId)
           db.exec('COMMIT')
           return send(res, 200, { status: 'committed', ...result })

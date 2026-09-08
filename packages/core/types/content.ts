@@ -88,6 +88,20 @@ export interface Link {
   platform?: string
 }
 
+/**
+ * 分组（v2-M2 F3 统一分组模型，2026-09-08 终稿）：{ id, name }，数组序 = 列顺序，≤ 61 个。
+ * 不分模式：日期只不过是组名恰巧是 YYYY-MM-DD 的组。
+ * 「未分组」是虚拟系统列：不占 groups[] 数据、不可删/改名/排序，恒为第一列；
+ * 卡片 group_id 缺省/悬空（加载兜底重置）= 未分组。
+ */
+export interface Group {
+  id: string
+  name: string
+}
+
+/** 分组总数上限（虚拟「未分组」列不占名额；group_create 超限 → 400） */
+export const MAX_GROUPS = 61
+
 export interface ContentItem {
   /** 内容唯一键 */
   id: string
@@ -161,6 +175,13 @@ export interface ContentItem {
    * undefined/false = 正常点亮。点亮 = 解除置灰（透明度 0.45 → 1 过渡，表现层负责）。
    */
   dimmed?: boolean
+
+  /**
+   * 分组 id（v2-M2 F3 统一分组模型，可缺省）：引用 BoardDoc.groups 的分组 id，
+   * 决定列归属（publish_at 与分组彻底脱钩，纯信息字段）。
+   * 缺省 / 悬空（加载时重置）= 虚拟「未分组」列；写入 null/空串 = 归未分组（移除语义）。
+   */
+  group_id?: string
 }
 
 // ---------------------------------------------------------------------------
@@ -183,7 +204,42 @@ export interface ChangeSetPatchOp {
   changes: Record<string, unknown>
 }
 
-export type ChangeSetOp = ChangeSetCreateOp | ChangeSetPatchOp
+// ---------------------------------------------------------------------------
+// v2-M2 F3：分组管理 3 个 doc 级 op（统一分组模型，2026-09-08 终稿，无 group_mode）
+// set 内先建后引用：group_create 的 client_ref 可被同 set 后续 op 的
+// group_id / move_to / before_group_id 直接引用（复用 pending「set 内前序可见」模式）
+// ---------------------------------------------------------------------------
+
+/** group_create：服务端分配确定性内容哈希 id（同 newChangeSetItemId 风格，重试幂等）；分组满 61 → 400 */
+export interface ChangeSetGroupCreateOp {
+  op: 'group_create'
+  client_ref?: string
+  group: { name: string }
+}
+
+/** group_patch：重命名 / 调列序（before_group_id = 移到该分组之前；null = 移到末尾） */
+export interface ChangeSetGroupPatchOp {
+  op: 'group_patch'
+  group_id: string
+  changes: { name?: string; before_group_id?: string | null }
+}
+
+/**
+ * group_delete：删组。move_to 可缺省 = 组内卡片归「未分组」虚拟列；
+ * 显式给出时须指向已存在分组（不能是被删分组自身；同 set 新建分组的 client_ref 可引用）。
+ */
+export interface ChangeSetGroupDeleteOp {
+  op: 'group_delete'
+  group_id: string
+  move_to?: string
+}
+
+export type ChangeSetOp =
+  | ChangeSetCreateOp
+  | ChangeSetPatchOp
+  | ChangeSetGroupCreateOp
+  | ChangeSetGroupPatchOp
+  | ChangeSetGroupDeleteOp
 
 /** 变更集状态机（终态不可逆）：pending → committed / conflicted / rejected / expired */
 export type ChangeSetStatus = 'pending' | 'committed' | 'conflicted' | 'rejected' | 'expired'
@@ -206,12 +262,20 @@ export interface ChangeSetCreatedItem {
   id: string
 }
 
-/** 提交结果：committed 时含 version 与 items 映射；rejected 时含完整 errors */
+/** committed 结果中 group_create 的 client_ref → 服务端分配分组 id 的映射（v2-M2） */
+export interface ChangeSetCreatedGroup {
+  client_ref: string | null
+  id: string
+}
+
+/** 提交结果：committed 时含 version 与 items/groups 映射；rejected 时含完整 errors */
 export interface ChangeSetResult {
   /** committed：提交后的看板 version（+1） */
   version?: number
   /** committed：create 的 client_ref → id 映射 */
   items?: ChangeSetCreatedItem[]
+  /** committed：group_create 的 client_ref → id 映射（v2-M2） */
+  groups?: ChangeSetCreatedGroup[]
   /** rejected：全量校验错误（全批拒绝，不产生部分结果） */
   errors?: string[]
 }

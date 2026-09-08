@@ -12,30 +12,29 @@ import {
   type DragOverEvent,
   type DragStartEvent,
 } from '@dnd-kit/core'
-import type { ContentItem } from '@timeline/core/types'
+import { SortableContext, horizontalListSortingStrategy } from '@dnd-kit/sortable'
+import type { ContentItem, Group } from '@timeline/core/types'
+import { MAX_GROUPS } from '@timeline/core/types'
+import { addDays, todayStr } from '@/lib/content-data'
 import {
-  WINDOW_DAYS,
-  WINDOW_RADIUS,
-  addDays,
-  buildWindowDays,
-  dayDiff,
-  todayStr,
-} from '@/lib/content-data'
-import { cardsInDay, publishDateOf, publishTimeOf, type Orders } from '@timeline/core/board-view'
-import DayColumn from './DayColumn'
+  cardsInColumn,
+  columnKeyOf,
+  type Orders,
+} from '@timeline/core/board-view'
+import GroupColumn from './GroupColumn'
 import BoardMinimap from './BoardMinimap'
 import { OverlayCard } from './BoardCard'
 
 export interface BoardApi {
   scrollToToday: (behavior?: ScrollBehavior) => void
-  /** v16 B2：详情页把 publish_at 改出当前窗口时，视野跟随到新日期 */
-  revealDate: (date: string) => void
   /**
    * v2-M1（F5/F6 共用定位机制）：定位并一次性高亮指定卡片。
-   * 卡片在窗口外时先滑动窗口 center 到卡片日期（复用滑动窗口 scrollLeft 补偿），
-   * 再滚动到列内卡片位置；高亮只播一次（约 1.8s 淡入淡出，不循环闪）。
+   * 全列常驻渲染（无滑动窗口），直接滚动到卡片所在分组列（'' = 未分组列）；
+   * 高亮只播一次（约 1.8s 淡入淡出，不循环闪）。
    */
   revealCard: (id: string) => void
+  /** 详情页改期跟随：直接滚到指定列（key = 分组 id / '' 未分组），不依赖卡片当前归属 */
+  revealColumn: (key: string) => void
 }
 
 interface BoardProps {
@@ -45,7 +44,8 @@ interface BoardProps {
   setOrders: React.Dispatch<React.SetStateAction<Orders>>
   onOpenDetail: (id: string) => void
   onDelete: (id: string) => void
-  onAddCard: (date: string) => void
+  /** 新卡 publish_at 恒为今天；groupId 省略 = 未分组列新建 */
+  onAddCard: (groupId?: string) => void
   apiRef: React.MutableRefObject<BoardApi | null>
   /** v2-M1：卡片动作（背景色写 hex；null = 恢复默认） */
   onSetBgColor: (id: string, hex: string | null) => void
@@ -53,22 +53,32 @@ interface BoardProps {
   onCopyShareLink: (id: string) => void
   /** v16 容量上限：false 时禁用各列「+ 空卡片」 */
   canAdd: boolean
+  /** v2-M2 F3 统一分组模型：分组集合（数组序 = 列顺序）与管理动作 */
+  groups?: Group[]
+  onRenameGroup?: (id: string, name: string) => void
+  /** 整列拖拽排序：把 id 移到 beforeId 之前（beforeId = null → 末尾） */
+  onMoveGroup?: (id: string, beforeId: string | null) => void
+  /** 删除分组（组内卡片归未分组） */
+  onDeleteGroup?: (id: string) => void
+  /** 末尾「+ 新建分组」（满 61 禁用） */
+  onAddGroup?: () => void
 }
 
 const COLUMN_STEP = 236 + 12 // 列宽 + 间距
 const SIDE_PADDING = 16 // 内层容器 px-4
 const HALF_COL = 236 / 2
-/** 视口中线日期偏离窗口中心超过该天数 → 窗口整体滑动重建 */
-const SLIDE_THRESHOLD = 10
-/** 空列共享的空数组（稳定引用，配合 DayColumn memo） */
+/** 空列共享的空数组（稳定引用，配合 GroupColumn memo） */
 const EMPTY_CARDS: ContentItem[] = []
 
 /**
- * v16 滑动窗口看板：恒定渲染 centerDate ±30 天共 61 列（不再随数据扩列）。
- * - 滚动时实时计算视口中线日期；偏离中心 >10 天 → setCenter 滑动窗口；
- *   useLayoutEffect 按滑动天数 × COLUMN_STEP 补偿 scrollLeft，内容视觉无跳。
- * - 日期跳转统一走 pendingJump：窗口外目标先 setCenter 重建，布局阶段再定位。
- * - 拖拽期间禁用窗口滑动（落点天然限于窗口内，A2 稳方案）。
+ * v2-M2 F3 统一分组模型看板：
+ * - 列 = [虚拟「未分组」列（恒第一）] + groups[]（≤61，全量常驻渲染）；
+ *   滑动窗口机制退役（无 center 滑动 / scrollLeft 补偿）。
+ * - 组名为 YYYY-MM-DD 的列带 data-date=组名：回到今天 / 键盘 ±7 天 / minimap
+ *   scrub 定位自然退化为「组名可解析为日期则工作，否则无操作」。
+ * - 单一 DndContext 承载两类拖拽：卡片（跨列移动 = 改 group_id；同列 = orders 排序）
+ *   与组列排序（列头 grip 手柄，horizontalListSortingStrategy）。
+ * - minimap 代码零改动，center 恒传 TODAY（dim 遮罩 = 今天 ±30 天外，与迁移窗口对齐）。
  */
 export default function Board({
   items,
@@ -83,56 +93,52 @@ export default function Board({
   onToggleDimmed,
   onCopyShareLink,
   canAdd,
+  groups = [],
+  onRenameGroup,
+  onMoveGroup,
+  onDeleteGroup,
+  onAddGroup,
 }: BoardProps) {
   const [activeId, setActiveId] = useState<string | null>(null)
+  /** 列拖拽中的分组 id（DragOverlay 预览用；与 activeId 互斥） */
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null)
   const [fab, setFab] = useState<{ dir: 'left' | 'right' } | null>(null)
   const snapshotRef = useRef<{ items: ContentItem[]; orders: Orders } | null>(null)
   const scrollerRef = useRef<HTMLDivElement>(null)
+  const rowRef = useRef<HTMLDivElement>(null)
   // 拖拽结束后抑制紧随其后的 click，避免误开详情弹窗
   const suppressClickRef = useRef(false)
 
   const TODAY = todayStr()
-  const [center, setCenter] = useState(TODAY)
-  const centerRef = useRef(center)
-  const prevCenterRef = useRef(center)
-  const activeIdRef = useRef<string | null>(null)
-  /** 拖拽源列日期（碰撞判定用：非源列时排除拖拽卡自身，保住目标列高亮） */
-  const dragSourceDateRef = useRef<string | null>(null)
-  // 窗口外跳转：setCenter 后由布局效应消费（先补偿，再定位到目标列）
-  const pendingJumpRef = useRef<{
-    date: string
-    mode: 'edge' | 'center'
-    behavior: ScrollBehavior
-  } | null>({ date: TODAY, mode: 'edge', behavior: 'auto' }) // 初始值兼作首屏定位
+  // 列定义：虚拟「未分组」列恒第一 + groups 数组序
+  const columns = useMemo(
+    () => [{ key: '', name: '未分组' }, ...groups.map((g) => ({ key: g.id, name: g.name }))],
+    [groups],
+  )
 
-  const days = useMemo(() => buildWindowDays(center), [center])
-  // ref 镜像统一在 effect 里同步（react-hooks/refs：render 期不写 ref）；
-  // 读取方（jumpTo/滚动回调/键盘）都是事件处理器，一定发生在 effect 之后
-  useEffect(() => {
-    centerRef.current = center
-  }, [center])
+  /** 拖拽源列 key（碰撞判定用：非源列时排除拖拽卡自身，保住目标列高亮） */
+  const dragSourceKeyRef = useRef<string | null>(null)
+  const activeIdRef = useRef<string | null>(null)
 
   // 全列预分组：O(N) 一次扫描 + 列内稳定排序（orders 升序，同序按原数组索引）
   const grouped = useMemo(() => {
-    const inWindow = new Set(days.map((d) => d.date))
     const buckets = new Map<string, { c: ContentItem; i: number }[]>()
     items.forEach((c, i) => {
-      const d = publishDateOf(c)
-      if (!inWindow.has(d)) return
-      const arr = buckets.get(d)
+      const key = columnKeyOf(c)
+      const arr = buckets.get(key)
       if (arr) arr.push({ c, i })
-      else buckets.set(d, [{ c, i }])
+      else buckets.set(key, [{ c, i }])
     })
     const out = new Map<string, ContentItem[]>()
-    for (const [d, arr] of buckets) {
+    for (const [key, arr] of buckets) {
       arr.sort((a, b) => (orders[a.c.id] ?? 0) - (orders[b.c.id] ?? 0) || a.i - b.i)
       out.set(
-        d,
+        key,
         arr.map((x) => x.c),
       )
     }
     return out
-  }, [items, orders, days])
+  }, [items, orders])
 
   // 与 inline 编辑共存：移动 8px 才触发拖拽，点击不触发
   const sensors = useSensors(
@@ -140,15 +146,18 @@ export default function Board({
   )
 
   const activeCard = activeId ? items.find((c) => c.id === activeId) : undefined
+  const activeGroup = activeGroupId ? groups.find((g) => g.id === activeGroupId) : undefined
 
   // ------------------------------------------------------------------
-  // 定位：edge = 左侧留一列余量；center = 居中偏左（-60px）
+  // 定位：按选择器找列元素滚动到位。
+  // scrollToDate 用 data-date（仅日期组列有）；scrollToColumn 用 data-group-key（全列有）。
+  // edge = 左侧留一列余量；center = 居中偏左（-60px）
   // ------------------------------------------------------------------
-  const scrollToDate = useCallback(
-    (date: string, behavior: ScrollBehavior = 'smooth', mode: 'edge' | 'center' = 'center') => {
+  const scrollToSelector = useCallback(
+    (selector: string, behavior: ScrollBehavior = 'smooth', mode: 'edge' | 'center' = 'center') => {
       const scroller = scrollerRef.current
       if (!scroller) return
-      const col = scroller.querySelector<HTMLElement>(`[data-date="${date}"]`)
+      const col = scroller.querySelector<HTMLElement>(selector)
       if (!col) return
       const sRect = scroller.getBoundingClientRect()
       const cRect = col.getBoundingClientRect()
@@ -162,38 +171,38 @@ export default function Board({
     },
     [],
   )
-
-  /**
-   * 日期跳转统一入口。偏离 ≤SLIDE_THRESHOLD 直接平滑滚动（全程中线不越阈值，不会触发滑动）；
-   * 超过阈值一律 pendingJump + setCenter 重建窗口，布局阶段瞬时定位（auto）——
-   * 跨窗口不做平滑滚动：动画途中中线偏离超阈值会被滑动补偿截断（永远滚不到）。
-   */
-  const jumpTo = useCallback(
-    (date: string, behavior: ScrollBehavior = 'smooth', mode: 'edge' | 'center' = 'center') => {
-      const c = centerRef.current
-      if (Math.abs(dayDiff(date, c)) <= SLIDE_THRESHOLD) {
-        scrollToDate(date, behavior, mode)
-        return
-      }
-      if (date === c) return
-      pendingJumpRef.current = { date, mode, behavior: 'auto' }
-      setCenter(date)
-    },
-    [scrollToDate],
+  const scrollToDate = useCallback(
+    (date: string, behavior: ScrollBehavior = 'smooth', mode: 'edge' | 'center' = 'center') =>
+      scrollToSelector(`[data-date="${date}"]`, behavior, mode),
+    [scrollToSelector],
+  )
+  const scrollToColumn = useCallback(
+    (key: string, behavior: ScrollBehavior = 'smooth', mode: 'edge' | 'center' = 'center') =>
+      scrollToSelector(`[data-group-key="${key}"]`, behavior, mode),
+    [scrollToSelector],
   )
 
   const scrollToToday = useCallback(
     (behavior: ScrollBehavior = 'smooth', mode: 'edge' | 'center' = 'center') => {
-      jumpTo(TODAY, behavior, mode)
+      scrollToDate(TODAY, behavior, mode)
     },
-    [jumpTo, TODAY],
+    [scrollToDate, TODAY],
   )
+
+  // 首屏定位：今天列（无同名日期组时留在最左）。
+  // groups 经同步层异步到达——闸门以「今天列真实出现在 DOM」为准，而非挂载即消费
+  const didInitRef = useRef(false)
+  useLayoutEffect(() => {
+    if (didInitRef.current) return
+    if (!scrollerRef.current?.querySelector(`[data-date="${TODAY}"]`)) return
+    didInitRef.current = true
+    scrollToDate(TODAY, 'auto', 'edge')
+  }, [scrollToDate, TODAY, groups])
 
   // ------------------------------------------------------------------
   // v2-M1 卡片定位 + 一次性高亮（F5 搜索结果 / F6 分享链接共用）：
-  // revealCard 只负责「高亮谁 + 把窗口/视口挪到卡片日期」；消费 effect 在卡片
-  // 进入 DOM 后滚入视口并启动撤除计时。高亮只播一次（HIGHLIGHT_MS 后撤掉），
-  // 淡入淡出复用卡片根节点的 transition（F2 同一机制，reduced-motion 下直切）。
+  // revealCard 只负责「高亮谁 + 把视口挪到卡片所在列」；消费 effect 在卡片
+  // 进入 DOM 后滚入视口并启动撤除计时。高亮只播一次（HIGHLIGHT_MS 后撤掉）。
   // ------------------------------------------------------------------
   const HIGHLIGHT_MS = 1800
   const [highlightId, setHighlightId] = useState<string | null>(null)
@@ -209,13 +218,12 @@ export default function Board({
       if (!card) return
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
       setHighlightId(id)
-      jumpTo(publishDateOf(card), 'smooth', 'center')
+      scrollToColumn(card.group_id ?? '', 'smooth', 'center')
     },
-    [jumpTo],
+    [scrollToColumn],
   )
 
-  // 消费高亮：卡片可能因窗口滑动下一帧才渲染，故依赖 days 重试；
-  // 找到后纵向滚入视口（横向已由 pendingJump/scrollToDate 定位）并启动撤除计时
+  // 消费高亮：找到后纵向滚入视口（横向已由 scrollToColumn 定位）并启动撤除计时
   useEffect(() => {
     if (!highlightId) return
     const el = scrollerRef.current?.querySelector(`[data-card-id="${highlightId}"]`)
@@ -223,7 +231,7 @@ export default function Board({
     el.scrollIntoView({ block: 'nearest', inline: 'nearest' })
     if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
     highlightTimerRef.current = setTimeout(() => setHighlightId(null), HIGHLIGHT_MS)
-  }, [highlightId, days])
+  }, [highlightId, columns])
   useEffect(
     () => () => {
       if (highlightTimerRef.current) clearTimeout(highlightTimerRef.current)
@@ -231,72 +239,24 @@ export default function Board({
     [],
   )
 
-  // 窗口滑动补偿 + 消费 pendingJump：每次渲染后、绘制前同步执行。
-  // 补偿方向：center 向未来滑 slid 天 → 同一日期在新窗口的列位置左移 slid 列
-  // → scrollLeft 减 slid × COLUMN_STEP，屏幕内容保持不动。
-  useLayoutEffect(() => {
-    const scroller = scrollerRef.current
-    if (!scroller) return
-    const prev = prevCenterRef.current
-    if (prev !== center) {
-      const slid = dayDiff(center, prev)
-      scroller.scrollLeft -= slid * COLUMN_STEP
-      prevCenterRef.current = center
-    }
-    const jump = pendingJumpRef.current
-    if (jump) {
-      pendingJumpRef.current = null
-      scrollToDate(jump.date, jump.behavior, jump.mode)
-    }
-  })
-
-  // 暴露给顶栏「回到今天」、详情页 B2 跟随与 v2-M1 搜索/分享定位
+  // 暴露给顶栏「回到今天」与 v2-M1 搜索/分享定位、详情页改期跟随
   useEffect(() => {
     apiRef.current = {
       scrollToToday: (behavior = 'smooth') => scrollToToday(behavior, 'center'),
-      revealDate: (date) => jumpTo(date, 'smooth'),
       revealCard,
+      revealColumn: (key) => scrollToColumn(key, 'smooth', 'center'),
     }
     return () => {
       apiRef.current = null
     }
-  }, [apiRef, scrollToToday, jumpTo, revealCard])
+  }, [apiRef, scrollToToday, revealCard, scrollToColumn])
 
-  // ------------------------------------------------------------------
-  // 滚动 → 视口中线日期 → 偏离中心 >10 天则滑动窗口（rAF 节流；拖拽中禁用）
-  // ------------------------------------------------------------------
-  const scrollRafRef = useRef(0)
-  const handleScroll = useCallback(() => {
-    if (scrollRafRef.current) return
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = 0
-      if (activeIdRef.current) return // A2：拖拽期间禁用窗口滑动
-      const scroller = scrollerRef.current
-      if (!scroller) return
-      const idx = Math.round(
-        (scroller.scrollLeft + scroller.clientWidth / 2 - SIDE_PADDING - HALF_COL) / COLUMN_STEP,
-      )
-      const clamped = Math.max(0, Math.min(WINDOW_DAYS - 1, idx))
-      const midDate = days[clamped]?.date
-      if (!midDate) return
-      if (Math.abs(dayDiff(midDate, centerRef.current)) > SLIDE_THRESHOLD) {
-        setCenter(midDate)
-      }
-    })
-  }, [days])
-  useEffect(
-    () => () => {
-      if (scrollRafRef.current) cancelAnimationFrame(scrollRafRef.current)
-    },
-    [],
-  )
-
-  // IntersectionObserver：今天列不在视口内时显示 FAB，并给出方向提示；
-  // 今天不在窗口内（无 DOM 列）时不挂 observer，FAB 在渲染期按相对方向派生
-  const todayInWindow = Math.abs(dayDiff(TODAY, center)) <= WINDOW_RADIUS
+  // IntersectionObserver：今天同名日期组列不在视口内时显示 FAB，并给出方向提示；
+  // 无该列（组被改名/删除）时不挂 observer、不出 FAB（hasTodayCol 渲染期派生，effect 不置 state）
+  const hasTodayCol = useMemo(() => groups.some((g) => g.name === TODAY), [groups, TODAY])
   useEffect(() => {
     const scroller = scrollerRef.current
-    if (!scroller || !todayInWindow) return
+    if (!scroller || !hasTodayCol) return
     const col = scroller.querySelector<HTMLElement>(`[data-date="${TODAY}"]`)
     if (!col) return
     const observer = new IntersectionObserver(
@@ -312,28 +272,22 @@ export default function Board({
     )
     observer.observe(col)
     return () => observer.disconnect()
-  }, [TODAY, days, todayInWindow])
-  const fabShown = todayInWindow
-    ? fab
-    : ({ dir: dayDiff(TODAY, center) < 0 ? 'left' : 'right' } as const)
+  }, [TODAY, groups, hasTodayCol])
 
   // ------------------------------------------------------------------
-  // 键盘导航：T 回今天；←/→ ±7 天；Shift+←/→ ±30 天；输入框聚焦不触发
-  // 步进基准 = 视口中线日期（用户视角位置），不是 center——未触发滑动时两者会偏离
+  // 键盘导航：T 回今天；←/→ ±7 天；Shift+←/→ ±30 天；输入框聚焦不触发。
+  // 步进基准 = 视口中线列的 data-date（组名可解析为日期才工作，否则无操作）。
   // ------------------------------------------------------------------
-  const daysRef = useRef(days)
   useEffect(() => {
-    daysRef.current = days
-  }, [days])
-  useEffect(() => {
-    const midlineDate = (): string => {
+    const midlineDate = (): string | null => {
       const scroller = scrollerRef.current
-      const ds = daysRef.current
-      if (!scroller || !ds.length) return centerRef.current
+      const row = rowRef.current
+      if (!scroller || !row || row.children.length === 0) return null
       const idx = Math.round(
         (scroller.scrollLeft + scroller.clientWidth / 2 - SIDE_PADDING - HALF_COL) / COLUMN_STEP,
       )
-      return ds[Math.max(0, Math.min(ds.length - 1, idx))]?.date ?? centerRef.current
+      const el = row.children[Math.max(0, Math.min(row.children.length - 1, idx))]
+      return el?.getAttribute('data-date') // 未分组列/自定义名列无 data-date → null
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
@@ -347,57 +301,60 @@ export default function Board({
       )
         return
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+        const base = midlineDate()
+        if (!base) return // 中线列非日期组：±7 天无操作
         e.preventDefault()
         const step = e.shiftKey ? 30 : 7
-        jumpTo(addDays(midlineDate(), e.key === 'ArrowRight' ? step : -step), 'smooth')
+        scrollToDate(addDays(base, e.key === 'ArrowRight' ? step : -step), 'smooth')
       } else if (e.key === 't' || e.key === 'T') {
-        jumpTo(TODAY, 'smooth')
+        scrollToDate(TODAY, 'smooth')
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [jumpTo, TODAY])
+  }, [scrollToDate, TODAY])
 
   // ------------------------------------------------------------------
-  // 拖拽（autoScroll 保持 dnd-kit 默认开启，拖到左右边缘自动横滚；
-  // 滚动处理器在拖拽中不滑动窗口，落点天然限于当前窗口内）
-  // 跨日拖拽：更新 publish_at 的日期部分、保留时分（数据层语义变更）
-  // 同列排序：只动 orders（不碰实体）
+  // 拖拽（autoScroll 保持 dnd-kit 默认开启，拖到左右边缘自动横滚）。
+  // 单一 DndContext 两类拖拽：
+  //  - 卡片：跨列 = 改 group_id（'' = 移除字段归未分组）；同列 = orders 排序
+  //  - 组列：列头 grip 拖动整列排序（horizontalListSortingStrategy）
   // ------------------------------------------------------------------
   /**
-   * 碰撞判定（v19 修复「相邻日拖拽成功率低」）：
-   * 旧版全局 closestCorners 按「拖拽物四角 ↔ 各 droppable 四角」距离取最近，
-   * 拖拽卡自身的 droppable rect（钉在原列）与全高列 rect 的纵向距离惩罚，
-   * 使指针深入邻列 30% 时胜出者仍是拖拽卡自身（实测 82/86 次判定），
-   * 目标列从不高亮，落点只靠划过瞬时的几次判定碰巧续命 → 邻日成功率低。
-   * 组合判定：
+   * 碰撞判定（v19 修复「相邻日拖拽成功率低」，统一分组模型沿用）：
    * 1) pointerWithin 先锁定指针所在的「列」（横向看板直觉：指针在哪列就落哪列）；
    * 2) 列内仍用 closestCorners 选具体 over（卡片/列本身）——同列排序与
    *    卡片间中点插入语义与旧版一致；
-   * 3) 指针在「非源列」时把拖拽卡自身移出候选：乐观插入后自身 rect 恰好
-   *    落在指针旁，若参选会把 over 吸成自身、目标列高亮随即丢失；排除后
-   *    over 恒为目标列/其卡片，isOver 落点反馈在列内全程保持。回到源列时
-   *    自身恢复候选（原位松手 = no-op，与旧版一致）；
-   * 4) 指针不在任何列内（列缝/表头/列外空白）→ 回落全局 closestCorners。
+   * 3) 指针在「非源列」时把拖拽卡自身移出候选，保住目标列 isOver 落点反馈；
+   * 4) 指针不在任何列内 → 回落全局 closestCorners；
+   * 5) 组列排序拖拽：候选限定为其它组列（pointerWithin → closestCorners）。
    * __dndOver 仅在 dev（含 e2e）下暴露最近一次判定胜出者，供验证脚本断言。
    */
   const boardCollisionDetection: CollisionDetection = (args) => {
+    if (args.active.data.current?.type === 'group-column') {
+      const scoped = {
+        ...args,
+        droppableContainers: args.droppableContainers.filter(
+          (c) => c.data.current?.type === 'group-column',
+        ),
+      }
+      const within = pointerWithin(scoped)
+      return within.length > 0 ? within : closestCorners(scoped)
+    }
     const within = pointerWithin(args)
     let collisions = within
     if (within.length > 0) {
       const columnHit =
         within.find((c) => c.data?.droppableContainer?.data?.current?.type === 'column') ??
         within[0]
-      const date = columnHit.data?.droppableContainer?.data?.current?.date as
-        | string
-        | undefined
-      if (date !== undefined) {
+      const key = columnHit.data?.droppableContainer?.data?.current?.date as string | undefined
+      if (key !== undefined) {
         const scoped = closestCorners({
           ...args,
           droppableContainers: args.droppableContainers.filter(
             (c) =>
-              c.data.current?.date === date &&
-              (date === dragSourceDateRef.current || c.id !== args.active.id),
+              c.data.current?.date === key &&
+              (key === dragSourceKeyRef.current || c.id !== args.active.id),
           ),
         })
         if (scoped.length > 0) collisions = scoped
@@ -421,39 +378,54 @@ export default function Board({
   }
 
   const handleDragStart = (e: DragStartEvent) => {
-    snapshotRef.current = { items, orders }
     suppressClickRef.current = true // 拖拽期间发生的 click 一律抑制
     const id = String(e.active.id)
+    if (e.active.data.current?.type === 'group-column') {
+      setActiveGroupId(String(e.active.data.current.groupId))
+      return
+    }
+    snapshotRef.current = { items, orders }
     activeIdRef.current = id
     const dragging = items.find((c) => c.id === id)
-    dragSourceDateRef.current = dragging ? publishDateOf(dragging) : null
+    dragSourceKeyRef.current = dragging ? columnKeyOf(dragging) : null
     setActiveId(id)
+  }
+
+  /** 跨列数据层落写（乐观插入）：改 group_id（'' = 移除字段归未分组）；publish_at 不变 */
+  const moveToColumn = (id: string | number, key: string) => {
+    setItems((prev) =>
+      prev.map((c) => {
+        if (c.id !== id) return c
+        const next = { ...c }
+        if (key === '') delete next.group_id
+        else next.group_id = key
+        return next
+      }),
+    )
   }
 
   // 跨列乐观插入：给拖拽卡片一个位于邻居之间的 order，间隙不足时先归一化
   const handleDragOver = (e: DragOverEvent) => {
     const { active, over } = e
     if (!over) return
-    const overDate = over.data.current?.date as string | undefined
-    if (overDate === undefined) return
+    if (active.data.current?.type === 'group-column') return // 列排序由 sortable 动画表达
+    // data.date 承载列 key（分组 id / '' 未分组）
+    const overKey = over.data.current?.date as string | undefined
+    if (overKey === undefined) return
 
     const dragging = items.find((c) => c.id === active.id)
     if (!dragging) return
-    if (publishDateOf(dragging) === overDate) return // 同列由 sortable 动画表达
+    if (columnKeyOf(dragging) === overKey) return // 同列由 sortable 动画表达
 
-    const col = cardsInDay(items, orders, overDate)
+    const col = cardsInColumn(items, orders, overKey)
     let index = col.length
     if (over.data.current?.type === 'card') {
       const i = col.findIndex((c) => c.id === over.id)
       if (i >= 0) index = i
     }
 
-    // 数据层：publish_at 只改日期部分，保留时分
-    setItems((prev) =>
-      prev.map((c) =>
-        c.id === active.id ? { ...c, publish_at: `${overDate}T${publishTimeOf(c)}` } : c,
-      ),
-    )
+    // 数据层：落写列归属（group_id）
+    moveToColumn(active.id, overKey)
 
     // 视图层：orders 中点插入；间隙不足时连同插入位置对目标列归一化
     const lo = index > 0 ? (orders[col[index - 1].id] ?? 0) : null
@@ -468,30 +440,42 @@ export default function Board({
     }
   }
 
-  // 落定：计算插入索引，对受影响列做 orders 归一化（order = 0,1,2…）
+  // 落定：组列排序 → onMoveGroup；卡片 → 计算插入索引，对受影响列做 orders 归一化
   const handleDragEnd = (e: DragEndEvent) => {
     const { active, over } = e
+    const isColumnDrag = active.data.current?.type === 'group-column'
     activeIdRef.current = null
     setActiveId(null)
+    setActiveGroupId(null)
     snapshotRef.current = null
     scheduleSuppressReset()
     if (!over || over.id === active.id) return
-    const overDate = over.data.current?.date as string | undefined
-    if (overDate === undefined) return
+
+    if (isColumnDrag) {
+      const fromId = String(active.data.current?.groupId ?? '')
+      const overId = String(over.data.current?.groupId ?? over.id)
+      // arrayMove 等价语义：后移 = 插到 over 之后；前移 = 插到 over 之前
+      const ids = groups.map((g) => g.id)
+      const from = ids.indexOf(fromId)
+      const to = ids.indexOf(overId)
+      if (from >= 0 && to >= 0 && from !== to) {
+        onMoveGroup?.(fromId, from < to ? (ids[to + 1] ?? null) : overId)
+      }
+      return
+    }
+
+    const overKey = over.data.current?.date as string | undefined
+    if (overKey === undefined) return
 
     const dragging = items.find((c) => c.id === active.id)
     if (!dragging) return
 
-    // 跨日拖拽但 dragOver 未覆盖到的兜底：落定前确保日期部分已切换
-    if (publishDateOf(dragging) !== overDate) {
-      setItems((prev) =>
-        prev.map((c) =>
-          c.id === active.id ? { ...c, publish_at: `${overDate}T${publishTimeOf(c)}` } : c,
-        ),
-      )
+    // 跨列拖拽但 dragOver 未覆盖到的兜底：落定前确保列归属已切换
+    if (columnKeyOf(dragging) !== overKey) {
+      moveToColumn(active.id, overKey)
     }
 
-    const col = cardsInDay(items, orders, overDate).filter((c) => c.id !== active.id)
+    const col = cardsInColumn(items, orders, overKey).filter((c) => c.id !== active.id)
     let index = col.length
     if (over.data.current?.type === 'card') {
       const i = col.findIndex((c) => c.id === over.id)
@@ -510,8 +494,11 @@ export default function Board({
     snapshotRef.current = null
     activeIdRef.current = null
     setActiveId(null)
+    setActiveGroupId(null)
     scheduleSuppressReset()
   }
+
+  const groupFull = groups.length >= MAX_GROUPS
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -528,7 +515,6 @@ export default function Board({
         <div
           ref={scrollerRef}
           className="h-full overflow-auto"
-          onScroll={handleScroll}
           onClickCapture={(e) => {
             if (suppressClickRef.current) {
               suppressClickRef.current = false
@@ -537,46 +523,78 @@ export default function Board({
             }
           }}
         >
-          <div className="flex w-max items-stretch gap-3 px-4 pb-20">
-            {days.map((day) => (
-              <DayColumn
-                key={day.date}
-                day={day}
-                cards={grouped.get(day.date) ?? EMPTY_CARDS}
-                onOpenDetail={onOpenDetail}
-                onDelete={onDelete}
-                onAddCard={onAddCard}
-                onSetBgColor={onSetBgColor}
-                onToggleDimmed={onToggleDimmed}
-                onCopyShareLink={onCopyShareLink}
-                highlightId={highlightId}
-                canAdd={canAdd}
-              />
-            ))}
-          </div>
+          <SortableContext
+            items={groups.map((g) => `gcol:${g.id}`)}
+            strategy={horizontalListSortingStrategy}
+          >
+            <div ref={rowRef} className="flex w-max items-stretch gap-3 px-4 pb-20">
+              {/* 未分组虚拟列恒第一 + groups 数组序；空组照常显示 */}
+              {columns.map((col) => (
+                <GroupColumn
+                  key={col.key || 'ungrouped'}
+                  colKey={col.key}
+                  name={col.name}
+                  cards={grouped.get(col.key) ?? EMPTY_CARDS}
+                  onOpenDetail={onOpenDetail}
+                  onDelete={onDelete}
+                  onAddCard={onAddCard}
+                  onSetBgColor={onSetBgColor}
+                  onToggleDimmed={onToggleDimmed}
+                  onCopyShareLink={onCopyShareLink}
+                  highlightId={highlightId}
+                  canAdd={canAdd}
+                  onRenameGroup={col.key ? onRenameGroup : undefined}
+                  onDeleteGroup={col.key ? onDeleteGroup : undefined}
+                />
+              ))}
+              {/* 末尾「+ 新建分组」虚线柱（满 61 禁用） */}
+              <button
+                type="button"
+                data-add-group
+                disabled={groupFull}
+                title={groupFull ? `分组已达上限 ${MAX_GROUPS} 个` : '新建分组'}
+                onClick={() => onAddGroup?.()}
+                className={
+                  groupFull
+                    ? 'flex w-[120px] shrink-0 cursor-not-allowed items-center justify-center self-stretch rounded-2xl border border-dashed border-slate-200 text-xs text-slate-300'
+                    : 'flex w-[120px] shrink-0 items-center justify-center self-stretch rounded-2xl border border-dashed border-slate-300 text-xs text-slate-400 transition-colors duration-150 hover:border-indigo-300 hover:bg-white/70 hover:text-indigo-500'
+                }
+              >
+                + 新建分组
+              </button>
+            </div>
+          </SortableContext>
         </div>
 
         <DragOverlay dropAnimation={{ duration: 180 }}>
-          {activeCard ? <OverlayCard card={activeCard} /> : null}
+          {activeCard ? (
+            <OverlayCard card={activeCard} />
+          ) : activeGroup ? (
+            <div className="w-[236px] rounded-2xl border border-indigo-300 bg-white/95 px-4 py-3 text-sm font-semibold text-slate-700 shadow-[0_16px_40px_-12px_rgba(15,23,42,0.35)]">
+              {activeGroup.name}
+            </div>
+          ) : null}
         </DragOverlay>
       </DndContext>
 
-      {/* v16 minimap：全跨度密度热力 + 月刻度 + 今天线 + 窗口框（可拖/可点） */}
+      {/* v17 minimap：全跨度密度热力 + 月刻度 + 今天线 + 窗口框（可拖/可点）。
+          v2-M2：代码零改动，center 恒传 TODAY —— dim 遮罩 = 今天 ±30 天外，
+          与迁移窗口（61 个日期组）天然对齐 */}
       <BoardMinimap
         items={items}
-        center={center}
+        center={TODAY}
         scrollerRef={scrollerRef}
-        onScrub={(date) => jumpTo(date, 'auto')}
+        onScrub={(date) => scrollToDate(date, 'auto')}
       />
 
       {/* 回到今天 FAB：今天列不在视口内时才显示，箭头指向今天列方向 */}
-      {fabShown && (
+      {fab && hasTodayCol && (
         <button
           type="button"
           onClick={() => scrollToToday('smooth', 'center')}
           className="absolute bottom-16 right-5 z-30 flex items-center gap-1.5 rounded-full border border-slate-200 bg-white/95 px-4 py-2 text-sm font-medium text-slate-700 shadow-[0_10px_28px_-10px_rgba(15,23,42,0.35)] backdrop-blur transition-all duration-150 hover:-translate-y-px hover:border-indigo-300 hover:text-indigo-600"
         >
-          <span className="text-indigo-500">{fabShown.dir === 'left' ? '←' : '→'}</span>
+          <span className="text-indigo-500">{fab.dir === 'left' ? '←' : '→'}</span>
           回到今天
         </button>
       )}

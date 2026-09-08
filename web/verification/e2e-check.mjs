@@ -398,7 +398,25 @@ async function waitFor(fn, timeout = 9000, label = '') {
       v = null
     }
     if (v) return v
-    if (Date.now() - t0 > timeout) throw new Error(`waitFor 超时${label ? `：${label}` : ''}`)
+    if (Date.now() - t0 > timeout) {
+      // 超时诊断：把页面实况（URL/列数/门/同步态/正文头部）带进错误信息
+      let diag = ''
+      try {
+        const d = await ev(() => ({
+          url: location.pathname + location.search,
+          gate: !!document.querySelector('[data-gate]'),
+          sync: document.querySelector('[data-sync-status]')?.dataset.syncStatus ?? null,
+          cols: document.querySelectorAll('.h-full.overflow-auto [data-date]').length,
+          gcols: document.querySelectorAll('.h-full.overflow-auto [data-group-column]').length,
+          cards: document.querySelectorAll('.h-full.overflow-auto [data-card-title]').length,
+          body: document.body.innerText.replace(/\n/g, ' ').slice(0, 100),
+        }))
+        diag = ` | 实况 ${JSON.stringify(d)}`
+      } catch {
+        diag = ' | 实况读取失败'
+      }
+      throw new Error(`waitFor 超时${label ? `：${label}` : ''}${diag}`)
+    }
     await sleep(120)
   }
 }
@@ -406,13 +424,14 @@ async function waitFor(fn, timeout = 9000, label = '') {
 const colCount = () => ev(() => document.querySelectorAll('.h-full.overflow-auto [data-date]').length)
 const firstDate = () =>
   ev(() => document.querySelector('.h-full.overflow-auto [data-date]')?.dataset.date ?? null)
+// v2-M2 统一分组模型：未分组虚拟列（无 data-date）恒为第一列，日期列整体右移一列 → idx -1
 const midDate = () =>
   ev(() => {
     const s = document.querySelector('.h-full.overflow-auto')
     if (!s) return null
     const cols = [...s.querySelectorAll('[data-date]')]
     if (!cols.length) return null
-    const idx = Math.round((s.scrollLeft + s.clientWidth / 2 - 16 - 118) / 248)
+    const idx = Math.round((s.scrollLeft + s.clientWidth / 2 - 16 - 118) / 248) - 1
     return cols[Math.max(0, Math.min(cols.length - 1, idx))]?.dataset.date ?? null
   })
 const dateVisible = (date) =>
@@ -432,6 +451,24 @@ const cardColumnDate = (title) =>
     )
     return el ? (el.closest('[data-date]')?.dataset.date ?? null) : null
   }, title)
+/** v2-M2 统一分组模型：卡片标题 → 所在分组列 key（data-group-column；未分组 = 'ungrouped'） */
+const cardGroupKey = (title) =>
+  ev((t) => {
+    const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+      (p) => p.textContent === t,
+    )
+    return el ? (el.closest('[data-group-column]')?.dataset.groupColumn ?? null) : null
+  }, title)
+/** 分组列是否在视口内（key = 分组 id / 'ungrouped'） */
+const groupColVisible = (key) =>
+  ev((k) => {
+    const s = document.querySelector('.h-full.overflow-auto')
+    const c = s?.querySelector(`[data-group-column="${k}"]`)
+    if (!s || !c) return false
+    const sr = s.getBoundingClientRect()
+    const cr = c.getBoundingClientRect()
+    return cr.left < sr.right && cr.right > sr.left
+  }, key)
 
 async function openCard(title) {
   await ev((t) => {
@@ -652,8 +689,7 @@ async function main() {
   await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
   await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${boardId}`, token)
 
-  const OUTLIER_PAST = addDays(TODAY, -90)
-  const OUTLIER_FUTURE = addDays(TODAY, 90)
+  // v2-M2：离群卡（today±90）归「未分组」列，t02/t61/t62 断言见各用例
 
   await t('t01 密码门：错误密码报错 → 正确密码进板', async () => {
     await page.goto(`${WEB}/b/${gateId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
@@ -670,9 +706,9 @@ async function main() {
     eq(cards, 0, '空板无卡片')
   })
 
-  await t('t02 首屏：恒定 61 列 = 今天 ±30，今天列可见，窗口内卡 12 张', async () => {
+  await t('t02 首屏：迁移后 61 日期列 = 今天 ±30，今天列可见，全量 14 卡渲染', async () => {
     await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
-    await waitFor(async () => (await colCount()) === 61, 9000, '渲染 61 列')
+    await waitFor(async () => (await colCount()) === 61, 9000, '渲染 61 日期列')
     eq(await firstDate(), addDays(TODAY, -30), '首列 = 今天-30')
     const last = await ev(() => {
       const cols = [...document.querySelectorAll('.h-full.overflow-auto [data-date]')]
@@ -681,9 +717,10 @@ async function main() {
     eq(last, addDays(TODAY, 30), '末列 = 今天+30')
     ok(await dateVisible(TODAY), '今天列首屏可见')
     const cards = await ev(() => document.querySelectorAll('.h-full.overflow-auto [data-card-title]').length)
-    eq(cards, 12, '窗口内渲染 12 张（±90 两张离群卡不渲染）')
-    // 出窗离群卡不在 DOM
-    eq(await cardColumnDate('E2E 卡 01'), null, 'today-90 离群卡不渲染')
+    eq(cards, 14, '全量 14 张渲染（统一分组模型：离群卡归未分组列，不再隐藏）')
+    // 出窗离群卡（today±90）：从「不渲染」变为「未分组列可见」（统一模型的有意行为变化）
+    eq(await cardGroupKey('E2E 卡 01'), 'ungrouped', 'today-90 离群卡在未分组列')
+    eq(await cardGroupKey('E2E 卡 14'), 'ungrouped', 'today+90 离群卡在未分组列')
     await sleep(400)
     await page.screenshot({ path: path.join(VDIR, 'board-v17-minimap.png') })
   })
@@ -734,34 +771,41 @@ async function main() {
     ok(Math.abs(dims.rw - 60 / 181) < 0.01, `右压暗宽比 ${(dims.rw * 100).toFixed(1)}% ≈ 33.1%（60/181）`)
   })
 
-  await t('t04 窗口滑动：scrollLeft 补偿保证视觉连续，列数恒 61', async () => {
+  await t('t04 无滑动窗口：滚远后列集合不变，视觉位置随 scrollLeft 精确移动', async () => {
+    // v2-M2 统一分组模型：滑动窗口退役——列全量常驻，滚动只改视觉位置
     const before = await ev(() => {
       const s = document.querySelector('.h-full.overflow-auto')
       const cols = [...s.querySelectorAll('[data-date]')]
-      const idx = Math.round((s.scrollLeft + s.clientWidth / 2 - 16 - 118) / 248)
-      const d = cols[Math.max(0, Math.min(cols.length - 1, idx))]
+      const d = cols[30] // 参照列 = 今天
       return { first: cols[0].dataset.date, D: d.dataset.date, left: d.getBoundingClientRect().left }
     })
     await ev(() => {
       document.querySelector('.h-full.overflow-auto').scrollLeft += 12 * 248
     })
-    await waitFor(async () => (await firstDate()) !== before.first, 5000, '窗口滑动重建')
-    await sleep(250)
+    await sleep(300)
     const after = await ev((D) => {
       const s = document.querySelector('.h-full.overflow-auto')
       const cols = [...s.querySelectorAll('[data-date]')]
       const d = cols.find((c) => c.dataset.date === D)
       return { first: cols[0].dataset.date, left: d ? d.getBoundingClientRect().left : null, count: cols.length }
     }, before.D)
-    eq(after.count, 61, '滑动后列数恒 61')
-    const slid = dayDiff(after.first, before.first)
-    ok(slid >= 11 && slid <= 17, `窗口前移 ${slid} 天（预期 14 左右）`)
-    ok(after.left !== null, '参照列仍在窗口内')
+    eq(after.first, before.first, '首列不变（无窗口滑动重建）')
+    eq(after.count, 61, '列数恒 61（全量常驻渲染）')
+    ok(after.left !== null, '参照列恒在 DOM')
     const expectLeft = before.left - 12 * COLUMN_STEP
     ok(
       Math.abs(after.left - expectLeft) <= 4,
-      `视觉连续：参照列屏位 ${before.left.toFixed(1)} → ${after.left.toFixed(1)}，期望 ${expectLeft.toFixed(1)} ±4`,
+      `视觉位置随 scrollLeft 精确移动：${before.left.toFixed(1)} → ${after.left.toFixed(1)}，期望 ${expectLeft.toFixed(1)} ±4`,
     )
+    // 滚回今天恢复现场
+    await ev((d) => {
+      const s = document.querySelector('.h-full.overflow-auto')
+      const col = s.querySelector(`[data-date="${d}"]`)
+      const r = col.getBoundingClientRect()
+      const sr = s.getBoundingClientRect()
+      s.scrollLeft += r.left - sr.left - 512
+    }, TODAY)
+    await sleep(300)
   })
 
   await t('t05 FAB：滑远后出现，点击回到今天', async () => {
@@ -785,45 +829,61 @@ async function main() {
     await waitFor(() => dateVisible(TODAY), 8000, 'FAB 回今天')
   })
 
-  await t('t06 键盘：→ +7 天 / Shift+→ +30 天 / ← -7 天 / T 回今天', async () => {
+  await t('t06 键盘：→ +7 天 / ← -7 天 / Shift+← -30 天 / Shift+→ +30 天 / T 回今天', async () => {
+    // v2-M2：键盘导航以「视口中线列的 data-date」为基准（组名可解析为日期才步进）；
+    // 窗口固定 ±30，步进序列设计为全程落在窗口内（出窗目标 = 无操作）
     await ev(() => document.body.focus())
     await sleep(300)
     const m0 = await midDate()
     await page.keyboard.press('ArrowRight')
-    await sleep(900)
+    await sleep(1400)
     const m1 = await midDate()
     ok(Math.abs(dayDiff(m1, m0) - 7) <= 1, `→ 后中线 ${m0} → ${m1}（预期 +7）`)
+    await page.keyboard.press('ArrowLeft')
+    await sleep(1400)
+    const m2 = await midDate()
+    ok(Math.abs(dayDiff(m2, m1) + 7) <= 1, `← 后中线 ${m1} → ${m2}（预期 -7）`)
+    await page.keyboard.down('Shift')
+    await page.keyboard.press('ArrowLeft')
+    await page.keyboard.up('Shift')
+    await sleep(1400)
+    const m3 = await midDate()
+    // today-30 是左缘列，居中滚动被 clamp 到 scrollLeft=0 → 中线落在 today-28 附近（容差 [-31,-27]）
+    const d32 = dayDiff(m3, m2)
+    ok(d32 >= -31 && d32 <= -27, `Shift+← 后中线 ${m2} → ${m3}（预期 -30，左缘 clamp 至 -28 附近）`)
     await page.keyboard.down('Shift')
     await page.keyboard.press('ArrowRight')
     await page.keyboard.up('Shift')
-    await sleep(900)
-    const m2 = await midDate()
-    ok(Math.abs(dayDiff(m2, m1) - 30) <= 1, `Shift+→ 后中线 ${m1} → ${m2}（预期 +30）`)
-    await page.keyboard.press('ArrowLeft')
-    await sleep(900)
-    const m3 = await midDate()
-    ok(Math.abs(dayDiff(m3, m2) + 7) <= 1, `← 后中线 ${m2} → ${m3}（预期 -7）`)
+    await sleep(1400)
+    const m4 = await midDate()
+    ok(Math.abs(dayDiff(m4, m3) - 30) <= 1, `Shift+→ 后中线 ${m3} → ${m4}（预期 +30）`)
     await page.keyboard.press('t')
     await waitFor(() => dateVisible(TODAY), 8000, 'T 回今天')
     await sleep(500)
     ok(Math.abs(dayDiff(await midDate(), TODAY)) <= 1, 'T 后中线回到今天附近')
   })
 
-  await t('t07 minimap 点击跳转（双向同步）', async () => {
+  await t('t07 minimap 点击跳转（窗口内目标）+ 出窗点击无操作（双向同步）', async () => {
     const pt = await ev(() => {
       const r = document.querySelector('[data-minimap]').getBoundingClientRect()
       return { x: r.left, y: r.top + r.height / 2, w: r.width }
     })
-    // v17：span = today-90 → today+90（181 天）；floor 映射：点 85% → today-90 + floor(0.85×181) = today+63
-    const expect1 = addDays(TODAY, -90 + Math.floor(0.85 * 181))
-    await page.mouse.click(pt.x + pt.w * 0.85, pt.y)
+    // v2-M2：列 = 迁移窗口（today±30）；span 仍 = today-90 → today+90（181 天）
+    // 点 62% → floor(0.62×181)=112 → today+22（窗口内，有同名日期组列）
+    const expect1 = addDays(TODAY, -90 + Math.floor(0.62 * 181))
+    await page.mouse.click(pt.x + pt.w * 0.62, pt.y)
     await waitFor(async () => Math.abs(dayDiff(await midDate(), expect1)) <= 2, 7000, `点击跳到 ${expect1} 附近`)
     // 点回 50% → floor(0.5×181)=90 → today
     await page.mouse.click(pt.x + pt.w * 0.5, pt.y)
     await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 2, 7000, '点击回今天')
+    // 出窗点击（97% → today+85，无同名组列）→ 无操作（退化语义）
+    const before = await midDate()
+    await page.mouse.click(pt.x + pt.w * 0.97, pt.y)
+    await sleep(600)
+    eq(await midDate(), before, '出窗点击无操作（无同名日期组列）')
   })
 
-  await t('t08 minimap 拖框先行 + tooltip 读数 + 大跳截图', async () => {
+  await t('t08 minimap 拖框先行 + tooltip 读数 + 窗口内大跳', async () => {
     const pt = await ev(() => {
       const r = document.querySelector('[data-minimap]').getBoundingClientRect()
       return { x: r.left, y: r.top + r.height / 2, w: r.width }
@@ -833,7 +893,7 @@ async function main() {
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
     })
     const mid60 = pt.x + pt.w * 0.6
-    const target97 = pt.x + pt.w * 0.97
+    const target63 = pt.x + pt.w * 0.63 // floor(0.63×181)=113 → today+23（窗口内）
     await page.mouse.move(fr.x, fr.y)
     await page.mouse.down()
     try {
@@ -859,13 +919,13 @@ async function main() {
       eq(tipState.text, tip60, `拖拽中 tooltip 读框中心日期 ${tip60}`)
       await page.screenshot({ path: path.join(VDIR, 'board-v17-drag-tooltip.png') })
       for (let i = 1; i <= 6; i++) {
-        await page.mouse.move(mid60 + ((target97 - mid60) * i) / 6, fr.y)
+        await page.mouse.move(mid60 + ((target63 - mid60) * i) / 6, fr.y)
         await sleep(45)
       }
     } finally {
       await page.mouse.up()
     }
-    const expectD = addDays(TODAY, -90 + Math.floor(0.97 * 181)) // ≈ today+85
+    const expectD = addDays(TODAY, -90 + Math.floor(0.63 * 181)) // ≈ today+23
     await waitFor(async () => Math.abs(dayDiff(await midDate(), expectD)) <= 3, 8000, `拖拽大跳到 ${expectD} 附近`)
     // 松开后 tooltip 隐藏
     const tipGone = await ev(() => document.querySelector('[data-minimap-tooltip]').style.opacity)
@@ -899,8 +959,9 @@ async function main() {
     await waitFor(async () => (await readTip()).opacity === '0', 4000, '移出轨道 tooltip 隐藏')
   })
 
-  await t('t55 minimap 压暗随窗口滑动：左增右减', async () => {
-    // 回到今天（窗口 today±30）
+  await t('t55 minimap 压暗静态：无滑动窗口，滚动不改变遮罩', async () => {
+    // v2-M2：滑动窗口退役 → dim 遮罩恒 = 今天±30 窗口外两片（center 恒 TODAY），
+    // 滚动只移动视口框，遮罩宽度不再变化
     const pt = await ev(() => {
       const r = document.querySelector('[data-minimap]').getBoundingClientRect()
       return { x: r.left, y: r.top + r.height / 2, w: r.width }
@@ -914,14 +975,19 @@ async function main() {
       }))
     const m1 = await readDims()
     const before = await firstDate()
+    const left0 = await ev(() => document.querySelector('.h-full.overflow-auto').scrollLeft)
     await ev(() => {
       document.querySelector('.h-full.overflow-auto').scrollLeft += 12 * 248
     })
-    await waitFor(async () => (await firstDate()) !== before, 5000, '窗口滑动重建')
-    await sleep(300)
+    await sleep(400)
+    eq(await firstDate(), before, '滚动后首列不变（无窗口滑动）')
+    ok(
+      (await ev(() => document.querySelector('.h-full.overflow-auto').scrollLeft)) > left0,
+      'scrollLeft 确实移动',
+    )
     const m2 = await readDims()
-    ok(m2.l - m1.l > 50, `左压暗增 ${(m2.l - m1.l).toFixed(1)}px > 50px`)
-    ok(m1.r - m2.r > 50, `右压暗减 ${(m1.r - m2.r).toFixed(1)}px > 50px`)
+    ok(Math.abs(m2.l - m1.l) <= 1, `左压暗恒定（${m1.l.toFixed(1)} → ${m2.l.toFixed(1)}px）`)
+    ok(Math.abs(m2.r - m1.r) <= 1, `右压暗恒定（${m1.r.toFixed(1)} → ${m2.r.toFixed(1)}px）`)
     // 回今天恢复现场
     await page.mouse.click(pt.x + pt.w * 0.5, pt.y)
     await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 2, 8000, '回今天')
@@ -1001,22 +1067,25 @@ async function main() {
     await closeDialog()
   })
 
-  await t('t11 详情页改 publish_at 出窗（B2）：视野跟随新日期，可改回', async () => {
+  await t('t11 详情页改 publish_at 出窗：归未分组列 + 视野跟随，可改回', async () => {
+    // v2-M2 统一分组模型：改期到无同名日期组的日期 → 归「未分组」（不自动建组）；
+    // 视野跟随到卡片新列（revealCard）；publish_at 本身保留（纯信息字段）
     const far = addDays(TODAY, 40)
     await openCard('E2E 新增卡')
     await editPublishAt(`${far}T09:00`)
-    await waitFor(async () => (await firstDate()) === addDays(TODAY, 10), 7000, '窗口重建（首列 = today+10）')
-    await waitFor(async () => (await cardColumnDate('E2E 新增卡')) === far, 5000, '卡片落在 today+40')
-    await waitFor(() => dateVisible(far), 7000, 'today+40 列滚入视口')
-    // 改回 today+1（视野应跟随回来）
+    await waitFor(async () => (await cardGroupKey('E2E 新增卡')) === 'ungrouped', 6000, '出窗改期 → 归未分组列')
+    await waitFor(() => groupColVisible('ungrouped'), 7000, '视野跟随到未分组列')
+    const it = await storedItem(boardId, 'E2E 新增卡')
+    eq(it?.publish_at, `${far}T09:00`, 'publish_at 保留（纯信息字段，不驱动分桶）')
+    // 改回 today+1（有同名日期组 → 自动挂回；视野跟随回日期区）
     const back = addDays(TODAY, 1)
     await editPublishAt(`${back}T09:00`)
-    await waitFor(async () => (await firstDate()) === addDays(TODAY, -29), 7000, '窗口跟随回 today+1')
-    await waitFor(async () => (await cardColumnDate('E2E 新增卡')) === back, 5000, '卡片回到 today+1')
+    await waitFor(async () => (await cardColumnDate('E2E 新增卡')) === back, 5000, '卡片挂回 today+1 同名日期组')
+    await waitFor(() => dateVisible(back), 7000, 'today+1 列滚入视口')
     await closeDialog()
   })
 
-  await t('t12 拖拽跨日：publish_at 日期切换、时分保留', async () => {
+  await t('t12 拖拽跨列：group_id 切换到目标日期组、publish_at 不变', async () => {
     const target = addDays(TODAY, 3)
     const from = await ev(() => {
       const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
@@ -1039,10 +1108,40 @@ async function main() {
       await sleep(80)
       await page.mouse.move(to.x, to.y, { steps: 12 })
       await sleep(280)
+      // autoScroll 可能在驻留期间顶偏内容（指针落入左右缘 20% 热区会持续横滚）：
+      // 迭代把指针校正回目标列当前中心，直到 over 命中目标列，再松手
+      const wantGid = await ev(
+        (d) => document.querySelector(`.h-full.overflow-auto [data-date="${d}"]`)?.dataset.groupKey ?? null,
+        target,
+      )
+      for (let i = 0; i < 6; i++) {
+        const over = await ev(() => window.__dndOver ?? null)
+        if (over === `col-${wantGid}`) break
+        const c = await ev((d) => {
+          const col = document.querySelector(`.h-full.overflow-auto [data-date="${d}"]`)
+          const r = col.getBoundingClientRect()
+          const sr = document.querySelector('.h-full.overflow-auto').getBoundingClientRect()
+          return {
+            x: Math.max(sr.left + 40, Math.min(r.left + 118, sr.right - 40)),
+            y: Math.min(r.top + 320, 800),
+          }
+        }, target)
+        await page.mouse.move(c.x, c.y, { steps: 4 })
+        await sleep(160)
+      }
     } finally {
       await page.mouse.up()
     }
-    await waitFor(async () => (await cardColumnDate('E2E 卡 05')) === target, 6000, '落定到 today+3')
+    // v2-M2：跨列拖拽只改列归属（group_id），publish_at 不再随拖拽变化
+    await waitFor(async () => (await cardColumnDate('E2E 卡 05')) === target, 6000, '落定到 today+3 组列')
+    await sleep(1200) // 等同步层落盘 localStorage
+    const it = await storedItem(boardId, 'E2E 卡 05')
+    eq(it?.publish_at, `${addDays(TODAY, -2)}T10:04`, 'publish_at 不随拖拽变化（纯信息字段）')
+    const gid3 = await ev(
+      (d) => document.querySelector(`.h-full.overflow-auto [data-date="${d}"]`)?.dataset.groupKey ?? null,
+      target,
+    )
+    eq(it?.group_id, gid3, 'group_id 落盘 = 目标日期组 id')
     await sleep(500) // 等 click 抑制解除
   })
 
@@ -1095,10 +1194,10 @@ async function main() {
     await sleep(500)
   })
 
-  await t('t57 相邻日拖拽：甩进邻列 30% 深处即判定落点（v19 碰撞判定修复回归）', async () => {
-    // 前置状态：t12 已把「E2E 卡 05」落定 today+3（publish_at = today+3T10:04）
+  await t('t57 相邻列拖拽：甩进邻列 30% 深处即判定落点（v19 碰撞判定修复回归）', async () => {
+    // 前置状态：t12 已把「E2E 卡 05」落定 today+3 组列（publish_at 恒为 today-2T10:04）
     const fromDate = addDays(TODAY, 3)
-    eq(await cardColumnDate('E2E 卡 05'), fromDate, 't57 前提：卡 05 在 today+3')
+    eq(await cardColumnDate('E2E 卡 05'), fromDate, 't57 前提：卡 05 在 today+3 组列')
     // t13 的 autoScroll 改变了 scrollLeft，先把 today+3 滚到视口第 3 列（today+2/+4 均可见）
     await ev((d) => {
       const s = document.querySelector('.h-full.overflow-auto')
@@ -1116,6 +1215,12 @@ async function main() {
       if (n === 0) { target = d; break }
     }
     ok(target, '找到相邻空列作为落点')
+    // v2-M2：列 droppable id = col-<分组 id>（不再是 col-<日期>），按列元素 data-group-key 取
+    const targetGid = await ev(
+      (d) => document.querySelector(`.h-full.overflow-auto [data-date="${d}"]`)?.dataset.groupKey ?? null,
+      target,
+    )
+    ok(targetGid, '目标列有分组 id')
     const from = await ev(() => {
       const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
         (p) => p.textContent === 'E2E 卡 05',
@@ -1135,7 +1240,7 @@ async function main() {
       await page.mouse.move(toX, from.y + 4, { steps: 10 })
       await sleep(280)
       // 判定级断言：指针在邻列 30% 深处，over 必须已是目标列（旧判定此处为拖拽卡自身）
-      eq(await ev(() => window.__dndOver ?? null), `col-${target}`, '拖拽中 over = 目标列')
+      eq(await ev(() => window.__dndOver ?? null), `col-${targetGid}`, '拖拽中 over = 目标列')
       const ring = await ev((d) => {
         const col = document.querySelector(`.h-full.overflow-auto [data-date="${d}"]`)
         return col?.querySelector(':scope > .rounded-2xl')?.className.includes('ring-2') ?? false
@@ -1145,10 +1250,11 @@ async function main() {
     } finally {
       await page.mouse.up()
     }
-    await waitFor(async () => (await cardColumnDate('E2E 卡 05')) === target, 6000, '落定相邻日')
+    await waitFor(async () => (await cardColumnDate('E2E 卡 05')) === target, 6000, '落定相邻组列')
     await sleep(1200) // 等同步层落盘 localStorage
     const it = await storedItem(boardId, 'E2E 卡 05')
-    eq(it?.publish_at, `${target}T10:04`, 'publish_at 日期部分切换、时分保留')
+    eq(it?.publish_at, `${addDays(TODAY, -2)}T10:04`, 'publish_at 不随跨列拖拽变化（纯信息字段）')
+    eq(it?.group_id, targetGid, 'group_id 落盘 = 目标日期组 id')
     await sleep(500) // 等 click 抑制解除
   })
 
@@ -1195,6 +1301,11 @@ async function main() {
       propagation_4h: null,
       engagement_4h: null,
     }
+    // v2-M2：统一分组模型下归属由 group_id 决定；外部写入方需带上目标日期组 id
+    // （服务端 doc 此时已含迁移回推的 61 组），否则注入卡按设计落「未分组」列
+    const g2 = (doc.groups ?? []).find((g) => g.name === addDays(TODAY, 2))
+    ok(g2, '服务端 doc 已含今天+2 日期组（迁移已回推）')
+    ext.group_id = g2.id
     doc.items.push(ext)
     doc.orders['ext-0001'] = 99
     const put = await api('PUT', `/boards/${boardId}`, { doc }, token)
@@ -1507,7 +1618,7 @@ async function main() {
     eq(await cardColumnDate(DELETE_TARGET_TITLE), null, '目标卡已移除')
   })
 
-  await t('t29 数据板跨日拖拽：今天 → 明天（旧 dragAcrossDays）', async () => {
+  await t('t29 数据板跨列拖拽：今天组 → 明天组（group_id 切换、publish_at 不变；旧 dragAcrossDays）', async () => {
     const tomorrow = addDays(TODAY, 1)
     const counts = () =>
       ev(({ key, tm }) => ({
@@ -1541,6 +1652,9 @@ async function main() {
     const after = await counts()
     eq(after.today, before.today - 1, '今天列 -1')
     eq(after.next, before.next + 1, '明天列 +1')
+    // v2-M2：拖拽只改 group_id；publish_at 保持创建时的今天
+    const it29 = await storedItem(dataId, 'E2E 新卡片')
+    ok(it29?.publish_at?.startsWith(`${TODAY}T`), 'publish_at 保持今天（不随拖拽变化）')
     await sleep(500) // 等 click 抑制解除
   })
 
@@ -2673,9 +2787,9 @@ async function main() {
     )
   })
 
-  await t('t61 F5 搜索：Ctrl+K 唤起 → 窗口外卡可搜到并定位高亮；空态；Esc 关闭', async () => {
-    // 窗口外离群卡（today-90，t02 已断言不渲染）
-    eq(await cardColumnDate('E2E 卡 01'), null, '前置：离群卡未渲染')
+  await t('t61 F5 搜索：Ctrl+K 唤起 → 未分组离群卡可搜到并定位高亮；空态；Esc 关闭', async () => {
+    // 离群卡（today-90）：统一分组模型下在「未分组」列渲染
+    eq(await cardGroupKey('E2E 卡 01'), 'ungrouped', '前置：离群卡在未分组列')
     await page.keyboard.down('Control')
     await page.keyboard.press('k')
     await page.keyboard.up('Control')
@@ -2684,17 +2798,16 @@ async function main() {
     await page.keyboard.type('E2E 卡 01', { delay: 10 })
     await waitFor(
       () =>
-        ev((d) => {
+        ev(() => {
           const rows = [...document.querySelectorAll('[data-search-result]')]
-          return rows.length === 1 && (rows[0].textContent?.includes(d) ?? false)
-        }, OUTLIER_PAST),
+          return rows.length === 1 && (rows[0].textContent?.includes('未分组') ?? false)
+        }),
       4000,
-      '结果含目标卡与所在日期',
+      '结果含目标卡，副标题 = 未分组',
     )
     await ev(() => document.querySelector('[data-search-result]')?.click())
     await waitFor(() => ev(() => !document.querySelector('[data-search-palette]')), 4000, '面板关闭')
-    await waitFor(async () => (await cardColumnDate('E2E 卡 01')) === OUTLIER_PAST, 9000, '窗口滑动后离群卡渲染')
-    ok(await dateVisible(OUTLIER_PAST), '目标列已滚入视口')
+    await waitFor(() => groupColVisible('ungrouped'), 9000, '未分组列滚入视口')
     await waitFor(
       () => ev(() => !!document.querySelector('[data-card-highlight="true"]')),
       4000,
@@ -2747,12 +2860,11 @@ async function main() {
     )
 
     // 带 #card= 打开（先回列表再进板，避免同 URL 仅 hash 变化不触发整页重载）：
-    // 目标是窗口外离群卡 e2e-c01（today-90）——窗口应自动平移过去并高亮
+    // 目标是未分组列的离群卡 e2e-c01（today-90）——视野应滚到未分组列并高亮
     await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
     await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200#card=e2e-c01`, { waitUntil: 'domcontentloaded' })
-    await waitFor(async () => (await colCount()) === 61, 9000, '看板正常打开（61 列）')
-    await waitFor(async () => (await cardColumnDate('E2E 卡 01')) === OUTLIER_PAST, 9000, '定位到离群卡列')
-    ok(await dateVisible(OUTLIER_PAST), '目标列滚入视口')
+    await waitFor(async () => (await colCount()) === 61, 9000, '看板正常打开（61 日期列）')
+    await waitFor(() => groupColVisible('ungrouped'), 9000, '未分组列滚入视口')
     await waitFor(
       () => ev(() => document.querySelector('[data-card-highlight="true"]')?.dataset.cardId === 'e2e-c01'),
       4000,
@@ -2771,9 +2883,448 @@ async function main() {
     await page.screenshot({ path: path.join(VDIR, 'board-v2-m1-share.png') })
   })
 
+  // ------------------------------------------------------------------
+  // v2-M2 F3 统一分组模型（t63–t66）
+  // ------------------------------------------------------------------
+  let migId = null // t63 迁移板捕获（清理用）
+
+  await t('t63 统一分组：存量板加载自动迁移（61 日期组 + 未分组首列 + 逐卡回填落盘）', async () => {
+    // 全新存量板（doc 无 groups 字段）→ 前端加载时自动迁移派生 61 个日期组
+    const legacy = fixtureDoc('E2E 迁移板')
+    const mk2 = await api('POST', '/boards', { name: 'E2E 迁移板', password: MAIN_PASS, doc: legacy })
+    eq(mk2.status, 201, '创建迁移板')
+    migId = mk2.body.board_id
+    const auth2 = await api('POST', `/boards/${migId}/auth`, { password: MAIN_PASS })
+    const migToken = auth2.body.token
+    await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${migId}`, migToken)
+    await page.goto(`${WEB}/b/${migId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, '迁移后 61 日期列')
+    // 未分组虚拟列恒第一（无 data-date）
+    const firstCol = await ev(() => {
+      const c = document.querySelector('.h-full.overflow-auto [data-group-column]')
+      return { key: c?.dataset.groupColumn ?? null, hasDate: c?.hasAttribute('data-date') ?? null }
+    })
+    eq(firstCol.key, 'ungrouped', '第一列 = 未分组虚拟列')
+    eq(firstCol.hasDate, false, '未分组列无 data-date')
+    eq(await firstDate(), addDays(TODAY, -30), '首日期列 = 今天-30')
+    eq(await lastDate(), addDays(TODAY, 30), '末日期列 = 今天+30')
+    // 迁移落盘（同步层推回服务端）：61 组 + 窗口内 12 卡回填 + 离群卡 2 张不留组
+    const getDoc = async () => (await api('GET', `/boards/${migId}`, undefined, migToken)).body.doc
+    await waitFor(async () => {
+      const d = await getDoc()
+      return d.groups?.length === 61 && d.items.filter((it) => it.group_id).length === 12
+    }, 9000, '迁移落盘：61 组 + 窗口内 12 卡回填 group_id')
+    const d1 = await getDoc()
+    ok(
+      !d1.items.find((it) => it.id === 'e2e-c01').group_id &&
+        !d1.items.find((it) => it.id === 'e2e-c14').group_id,
+      '窗口外离群卡（±90）不留组',
+    )
+    ok(
+      d1.items
+        .filter((it) => it.group_id)
+        .every((it) =>
+          d1.groups.some((g) => g.id === it.group_id && g.name === it.publish_at.slice(0, 10)),
+        ),
+      '逐卡 group_id 指向 publish_at 同名日期组',
+    )
+    // 幂等：reload 后 groups id 集合不变（确定性 migrateGroupId + 已落盘不再重迁）
+    const ids0 = d1.groups.map((g) => g.id).join(',')
+    await page.goto(`${WEB}/b/${migId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, 'reload 后仍 61 列')
+    const d2 = await getDoc()
+    eq(d2.groups.map((g) => g.id).join(','), ids0, '迁移幂等：组 id 集合不变')
+    // 61 满员：「+ 新建分组」禁用并提示上限
+    const addBtn = await ev(() => {
+      const b = document.querySelector('[data-add-group]')
+      return { disabled: b?.disabled ?? null, title: b?.getAttribute('title') ?? null }
+    })
+    eq(addBtn.disabled, true, '61 满员新建禁用')
+    ok(addBtn.title?.includes('61'), '禁用提示含上限文案')
+  })
+
+  await t('t64 统一分组：列头行内改名 / Esc 取消 / grip 整列排序 / 删除确认归未分组 / 新建上限', async () => {
+    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, '主板 61 日期列')
+    const sd0 = await storedDoc(boardId)
+    eq(sd0.groups.length, 61, '迁移组已随同步落盘（61）')
+
+    // -- 行内改名：点击名称 → input（自动全选）→ 输入即替换 → Enter 保存
+    const g0 = sd0.groups[0] // today-30 日期组（空组）
+    await ev((gid) => {
+      document.querySelector(`[data-group-column="${gid}"] [data-group-name]`)?.click()
+    }, g0.id)
+    await waitFor(() => ev(() => !!document.querySelector('[data-group-name-input]')), 4000, '改名输入框出现')
+    await sleep(150) // 等 select() 全选生效
+    await page.keyboard.type('冲刺阶段', { delay: 10 })
+    await page.keyboard.press('Enter')
+    await waitFor(
+      async () => (await storedDoc(boardId)).groups.find((g) => g.id === g0.id)?.name === '冲刺阶段',
+      4000,
+      '改名落盘',
+    )
+    // 改为自定义名后该列不再是日期组：data-date 消失
+    ok(
+      await ev(
+        (gid) => !document.querySelector(`[data-group-column="${gid}"]`)?.hasAttribute('data-date'),
+        g0.id,
+      ),
+      '改为自定义名后 data-date 消失',
+    )
+
+    // -- Esc 取消：第二个组开始编辑后 Esc → 名称不变
+    const g1 = (await storedDoc(boardId)).groups[1]
+    await ev((gid) => {
+      document.querySelector(`[data-group-column="${gid}"] [data-group-name]`)?.click()
+    }, g1.id)
+    await waitFor(() => ev(() => !!document.querySelector('[data-group-name-input]')), 4000, '第二个改名输入框')
+    await sleep(150)
+    await page.keyboard.type('随便改改', { delay: 8 })
+    await page.keyboard.press('Escape')
+    await sleep(250)
+    eq((await storedDoc(boardId)).groups.find((g) => g.id === g1.id)?.name, g1.name, 'Esc 取消改名')
+
+    // -- grip 整列拖拽排序：第一组列拖到第二组列上 → 两组互换（先滚回最左让两列入视口）
+    await ev(() => {
+      document.querySelector('.h-full.overflow-auto').scrollLeft = 0
+    })
+    await sleep(300)
+    const orderBefore = (await storedDoc(boardId)).groups.map((g) => g.id)
+    const grip = await ev((gid) => {
+      const el = document.querySelector(`[data-group-column="${gid}"] [data-group-grip]`)
+      const r = el.getBoundingClientRect()
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    }, g0.id)
+    const over2 = await ev((gid) => {
+      const el = document.querySelector(`[data-group-column="${gid}"]`)
+      const r = el.getBoundingClientRect()
+      return { x: r.left + Math.round(r.width / 2), y: r.top + 40 }
+    }, g1.id)
+    ok(grip.x > 0 && over2.x > 0, '两目标列在视口内')
+    await page.mouse.move(grip.x, grip.y)
+    await page.mouse.down()
+    try {
+      await page.mouse.move(grip.x + 20, grip.y, { steps: 3 })
+      await sleep(80)
+      await page.mouse.move(over2.x, over2.y, { steps: 8 })
+      await sleep(280)
+    } finally {
+      await page.mouse.up()
+    }
+    await waitFor(
+      async () => {
+        const g = (await storedDoc(boardId)).groups.map((x) => x.id)
+        return g[0] === orderBefore[1] && g[1] === orderBefore[0]
+      },
+      4000,
+      '拖拽后前两组互换（数组序 = 列顺序）',
+    )
+    await sleep(600) // 等 grip 拖拽后的 click 抑制解除（150ms 窗口 + 余量），否则下面的删除点击会被吞
+
+    // -- 删除确认：今天组 → 确认气泡带卡片数 → 组内卡片归未分组
+    // （成员动态取：t13/t57 等拖拽已改变部分卡片的列归属，不写死 fixture 名单）
+    const sdBeforeDel = await storedDoc(boardId)
+    const todayGid = sdBeforeDel.groups.find((g) => g.name === TODAY)?.id
+    ok(todayGid, '存在今天同名日期组')
+    const delMembers = sdBeforeDel.items.filter((it) => it.group_id === todayGid)
+    ok(delMembers.length > 0, `今天组内有卡（${delMembers.length} 张）`)
+    await ev((gid) => {
+      document.querySelector(`[data-group-column="${gid}"] [data-group-delete]`)?.click()
+    }, todayGid)
+    await waitFor(() => ev(() => !!document.querySelector('[data-group-delete-confirm]')), 4000, '删除确认气泡')
+    const cnt = await ev(() => document.querySelector('[data-group-delete-count]')?.textContent ?? '')
+    ok(cnt.includes(`${delMembers.length} 张`), `确认框带组内卡片数（${cnt}）`)
+    await ev(() => document.querySelector('[data-group-delete-ok]')?.click())
+    await waitFor(async () => (await storedDoc(boardId)).groups.length === 60, 4000, '删组落盘（61 → 60）')
+    await waitFor(async () => {
+      const sd = await storedDoc(boardId)
+      return delMembers.every((m) => !sd.items.find((it) => it.id === m.id)?.group_id)
+    }, 4000, '组内卡片归未分组（group_id 移除）')
+    eq(await cardGroupKey(delMembers[0].title), 'ungrouped', '组内卡落在未分组列')
+
+    // -- 末尾「+ 新建分组」：60 组可建 → 建后 61 满员禁用 → 删空组恢复 60
+    eq(await ev(() => document.querySelector('[data-add-group]')?.disabled ?? null), false, '60 组时新建可用')
+    await ev(() => document.querySelector('[data-add-group]')?.click())
+    await waitFor(async () => (await storedDoc(boardId)).groups.length === 61, 4000, '新建分组落盘（末尾追加）')
+    const lastG = (await storedDoc(boardId)).groups.at(-1)
+    eq(lastG.name, '未命名分组', '新组默认名')
+    eq(await ev(() => document.querySelector('[data-add-group]')?.disabled ?? null), true, '满 61 后新建禁用')
+    await ev((gid) => {
+      document.querySelector(`[data-group-column="${gid}"] [data-group-delete]`)?.click()
+    }, lastG.id)
+    await waitFor(() => ev(() => !!document.querySelector('[data-group-delete-confirm]')), 4000, '空组确认气泡')
+    await ev(() => document.querySelector('[data-group-delete-ok]')?.click())
+    await waitFor(async () => (await storedDoc(boardId)).groups.length === 60, 4000, '删空组恢复 60')
+
+    // -- 未分组兜底：整板 PUT 写入悬空 group_id → 重载后该卡归「未分组」列且字段被重置
+    const full = await api('GET', `/boards/${boardId}`, undefined, token)
+    const dd = full.body.doc
+    const victim = dd.items.find((it) => it.group_id)
+    const victimTitle = victim.title
+    victim.group_id = 'grp-ghost'
+    await api('PUT', `/boards/${boardId}`, { doc: dd }, token)
+    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await waitFor(() => ev(() => !!document.querySelector('[data-group-column="ungrouped"]')), 9000, '看板重载')
+    await waitFor(async () => (await cardGroupKey(victimTitle)) === 'ungrouped', 6000, '悬空卡归未分组列')
+    await waitFor(
+      async () => {
+        const sd = await storedDoc(boardId)
+        const it = sd.items.find((x) => x.title === victimTitle)
+        return it && !('group_id' in it)
+      },
+      4000,
+      '悬空 group_id 加载时重置（字段移除，不污染真实分组）',
+    )
+  })
+
+  await t('t65 统一分组：跨组拖拽往返（拖入改 group_id + 重取 order；拖回未分组移除字段）', async () => {
+    // 起点：未分组列里有卡（t02 离群卡 + t64 删组归入的卡 + 悬空兜底卡）
+    const sd = await storedDoc(boardId)
+    const targetGroup = sd.groups[0]
+    const victim = sd.items.find((it) => !it.group_id)
+    ok(victim, '未分组列有可拖拽卡')
+    // 滚回最左（未分组列与第一组列均可见）
+    await ev(() => {
+      document.querySelector('.h-full.overflow-auto').scrollLeft = 0
+    })
+    await sleep(300)
+    const from = await ev((t0) => {
+      const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+        (p) => p.textContent === t0,
+      )
+      if (!el) return null
+      const r = el.closest('.group').getBoundingClientRect()
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    }, victim.title)
+    const to = await ev((gid) => {
+      const col = document.querySelector(`[data-group-column="${gid}"]`)
+      if (!col) return null
+      const r = col.getBoundingClientRect()
+      return { x: r.left + Math.round(r.width * 0.5), y: Math.min(r.top + 300, 800) }
+    }, targetGroup.id)
+    ok(from && to && to.x > 0, '拖拽源/目标在视口内')
+    await page.mouse.move(from.x, from.y)
+    await page.mouse.down()
+    try {
+      await page.mouse.move(from.x + 30, from.y + 6, { steps: 4 })
+      await sleep(80)
+      await page.mouse.move(to.x, to.y, { steps: 12 })
+      await sleep(280)
+    } finally {
+      await page.mouse.up()
+    }
+    await waitFor(async () => (await cardGroupKey(victim.title)) === targetGroup.id, 6000, '落定到目标分组列')
+    await waitFor(
+      async () => (await storedItem(boardId, victim.title))?.group_id === targetGroup.id,
+      4000,
+      'group_id 落盘为目标分组',
+    )
+    // 跨组重取 order：目标组内按 orders 升序包含该卡
+    const sd2 = await storedDoc(boardId)
+    const inTarget = sd2.items
+      .filter((it) => it.group_id === targetGroup.id)
+      .sort((a, b) => (sd2.orders[a.id] ?? 0) - (sd2.orders[b.id] ?? 0))
+    ok(inTarget.some((it) => it.id === victim.id), '目标组内按全局 orders 排序可见')
+
+    // 拖回未分组列 → group_id 字段移除
+    // 第一次拖拽可能触发 dnd-kit 边缘自动滚动，导致未分组列移出视口；
+    // 先滚回最左再取坐标，且整段重试一次兜底（坐标捕获与 mouse.down 之间的重渲染会让拖拽落空）
+    let backOk = false
+    for (let attempt = 0; attempt < 2 && !backOk; attempt++) {
+      await ev(() => {
+        document.querySelector('.h-full.overflow-auto').scrollLeft = 0
+      })
+      await sleep(300)
+      const from2 = await ev((t0) => {
+        const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+          (p) => p.textContent === t0,
+        )
+        if (!el) return null
+        const r = el.closest('.group').getBoundingClientRect()
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+      }, victim.title)
+      const to2 = await ev(() => {
+        const col = document.querySelector('[data-group-column="ungrouped"]')
+        const r = col.getBoundingClientRect()
+        return { x: r.left + Math.round(r.width * 0.5), y: Math.min(r.top + 300, 800) }
+      })
+      ok(from2 && to2 && to2.x > 0, `拖回：源/目标在视口内（attempt ${attempt + 1}）`)
+      await page.mouse.move(from2.x, from2.y)
+      await page.mouse.down()
+      try {
+        await page.mouse.move(from2.x - 30, from2.y + 6, { steps: 4 })
+        await sleep(80)
+        await page.mouse.move(to2.x, to2.y, { steps: 12 })
+        await sleep(280)
+      } finally {
+        await page.mouse.up()
+      }
+      backOk = await Promise.race([
+        (async () => {
+          try {
+            await waitFor(async () => (await cardGroupKey(victim.title)) === 'ungrouped', 3000, '拖回探测')
+            return true
+          } catch {
+            return false
+          }
+        })(),
+        sleep(3200).then(() => false),
+      ])
+    }
+    await waitFor(async () => (await cardGroupKey(victim.title)) === 'ungrouped', 3000, '拖回未分组列')
+    await waitFor(
+      async () => !('group_id' in ((await storedItem(boardId, victim.title)) ?? {})),
+      4000,
+      '拖入未分组 = 移除 group_id 字段',
+    )
+    await sleep(500)
+  })
+
+  await t('t66 统一分组：写入时归属解析（change-set 建卡）+ 搜索副标题 + 日期导航退化', async () => {
+    // 写入时归属解析：change-set create 带 publish_at 无 group_id →
+    // 窗口内有同名日期组则挂入；出窗 → 归未分组（绝不自动建组）
+    const d5 = addDays(TODAY, 5)
+    const d45 = addDays(TODAY, 45)
+    const ver = (await api('GET', `/boards/${boardId}`, undefined, token)).body.version
+    const cs = await api(
+      'POST',
+      `/boards/${boardId}/change-sets`,
+      {
+        base_version: ver,
+        operations: [
+          { op: 'create', client_ref: 'w-hit', item: { title: 'E2E 解析卡', publish_at: `${d5}T10:00` } },
+          { op: 'create', client_ref: 'w-miss', item: { title: 'E2E 出窗解析卡', publish_at: `${d45}T10:00` } },
+        ],
+      },
+      token,
+    )
+    eq(cs.status, 201, 'change-set 创建 201')
+    const cm = await api('POST', `/boards/${boardId}/change-sets/${cs.body.change_set_id}/commit`, {}, token)
+    eq(cm.status, 200, 'change-set commit 200')
+    // 页面轮询（poll=1000）应用远端快照
+    await waitFor(async () => (await cardColumnDate('E2E 解析卡')) === d5, 9000, '窗口内建卡 → 挂同名日期组列')
+    await waitFor(async () => (await cardGroupKey('E2E 出窗解析卡')) === 'ungrouped', 9000, '出窗建卡 → 归未分组')
+    const sd66 = await storedDoc(boardId)
+    const g5 = sd66.groups.find((g) => g.name === d5)
+    ok(g5, 'today+5 同名日期组存在')
+    eq(sd66.items.find((it) => it.title === 'E2E 解析卡')?.group_id, g5.id, '解析卡 group_id = 同名日期组')
+    ok(!sd66.items.find((it) => it.title === 'E2E 出窗解析卡')?.group_id, '出窗解析卡无 group_id')
+    ok(!sd66.groups.some((g) => g.name === d45), '未自动建出窗日期组')
+
+    // 搜索副标题 = 分组名（日期组同名 / 未分组）
+    await page.keyboard.down('Control')
+    await page.keyboard.press('k')
+    await page.keyboard.up('Control')
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-palette]')), 4000, '搜索面板唤起')
+    await page.click('[data-search-input]')
+    await page.keyboard.type('E2E 解析卡', { delay: 10 })
+    await waitFor(
+      () =>
+        ev(
+          (n) =>
+            [...document.querySelectorAll('[data-search-result] [data-search-subtitle]')].some(
+              (s) => s.textContent === n,
+            ),
+          d5,
+        ),
+      4000,
+      '解析卡副标题 = 同名日期组名',
+    )
+    // 点击定位 → 目标分组列滚入视口 + 一次性高亮
+    await ev((t0) => {
+      const row = [...document.querySelectorAll('[data-search-result]')].find((r) =>
+        r.textContent.includes(t0),
+      )
+      row?.click()
+    }, 'E2E 解析卡')
+    await waitFor(() => ev(() => !document.querySelector('[data-search-palette]')), 4000, '面板关闭')
+    await waitFor(() => groupColVisible(g5.id), 6000, '目标分组列滚入视口')
+    await waitFor(
+      () =>
+        ev(
+          (t0) =>
+            [...document.querySelectorAll('[data-card-highlight="true"] [data-card-title]')].some(
+              (p) => p.textContent === t0,
+            ),
+          'E2E 解析卡',
+        ),
+      4000,
+      '定位卡一次性高亮',
+    )
+    // 出窗卡副标题 = 未分组
+    await page.keyboard.down('Control')
+    await page.keyboard.press('k')
+    await page.keyboard.up('Control')
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-palette]')), 4000, '面板再开')
+    await page.click('[data-search-input]')
+    await page.keyboard.type('E2E 出窗解析卡', { delay: 10 })
+    await waitFor(
+      () =>
+        ev(
+          () =>
+            [...document.querySelectorAll('[data-search-result] [data-search-subtitle]')].some(
+              (s) => s.textContent === '未分组',
+            ),
+        ),
+      4000,
+      '出窗卡副标题 = 未分组',
+    )
+    await page.keyboard.press('Escape')
+    await waitFor(() => ev(() => !document.querySelector('[data-search-palette]')), 4000, 'Esc 关闭')
+
+    // 日期导航退化：把 today+5 组改名为非日期 → data-date 消失；中线停在该列时 → 无操作
+    await ev((gid) => {
+      document.querySelector(`[data-group-column="${gid}"] [data-group-name]`)?.click()
+    }, g5.id)
+    await waitFor(() => ev(() => !!document.querySelector('[data-group-name-input]')), 4000, '改名输入框')
+    await sleep(150)
+    await page.keyboard.type('Sprint 5', { delay: 8 })
+    await page.keyboard.press('Enter')
+    await waitFor(
+      async () => (await storedDoc(boardId)).groups.find((g) => g.id === g5.id)?.name === 'Sprint 5',
+      4000,
+      '改名落盘',
+    )
+    // 组改名卡片不跟随（落盘恒为 group_id，引用稳定）
+    eq(
+      (await storedDoc(boardId)).items.find((it) => it.title === 'E2E 解析卡')?.group_id,
+      g5.id,
+      '组改名卡片不跟随',
+    )
+    // 中线移到该列 → 键盘步进无操作
+    await ev((gid) => {
+      const s = document.querySelector('.h-full.overflow-auto')
+      const col = s.querySelector(`[data-group-column="${gid}"]`)
+      const r = col.getBoundingClientRect()
+      const sr = s.getBoundingClientRect()
+      s.scrollLeft += r.left - sr.left - sr.width / 2 + r.width / 2
+    }, g5.id)
+    await sleep(400)
+    await ev(() => document.body.focus())
+    const m0 = await midDate()
+    await page.keyboard.press('ArrowRight')
+    await sleep(700)
+    eq(await midDate(), m0, '中线列为非日期组名：→ 无操作（导航退化）')
+    // 中线回到日期组列 → 键盘步进恢复
+    await ev((d) => {
+      const s = document.querySelector('.h-full.overflow-auto')
+      const col = s.querySelector(`[data-date="${d}"]`)
+      if (!col) return
+      const r = col.getBoundingClientRect()
+      const sr = s.getBoundingClientRect()
+      s.scrollLeft += r.left - sr.left - sr.width / 2 + r.width / 2
+    }, addDays(TODAY, 4))
+    await sleep(400)
+    const n0 = await midDate()
+    await page.keyboard.press('ArrowLeft')
+    await sleep(700)
+    ok(dayDiff(await midDate(), n0) <= -6, '中线回到日期组列后键盘步进恢复（-7）')
+  })
+
   // 清掉全部测试板（不留测试数据；产品板已被 t53 删除）
   for (const [id, pw] of [
     [boardId, MAIN_PASS],
+    [migId, MAIN_PASS],
     [smallId, SMALL_PASS],
     [guideId, GUIDE_PASS],
     [dataId, DATA_PASS],

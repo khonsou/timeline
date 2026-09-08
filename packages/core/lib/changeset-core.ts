@@ -22,9 +22,19 @@
  *     import { validateChangeSet, applyChangeSet } from '@timeline/core/changeset-core'
  */
 import { normalizeBgColor } from '../types/content.ts'
-import type { ChangeSetCreatedItem, ChangeSetOp, ContentItem, Link, Member } from '../types/content'
+import { MAX_GROUPS } from '../types/content.ts'
+import type {
+  ChangeSetCreatedGroup,
+  ChangeSetCreatedItem,
+  ChangeSetOp,
+  ContentItem,
+  Group,
+  Link,
+  Member,
+} from '../types/content'
 import type { Orders } from './board-view.ts'
 import { nextOrder, publishDateOf } from './board-view.ts'
+import { newChangeSetGroupId, resolveWriteTimeGroup } from './group-core.ts'
 import { PATCH_FIELDS, applyItemPatch, resolveOwnerPatch } from './patch-core.ts'
 import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt, sha1Hex } from './import-core.ts'
 
@@ -37,6 +47,8 @@ export interface ChangeSetBoardDoc {
   orders: Orders
   products: { id: string; name: string }[]
   members: Member[]
+  /** v2-M2 F3 统一分组模型：分组集合（数组序 = 列顺序，≤ 61）；缺省 = 无分组（仅虚拟「未分组」列） */
+  groups?: Group[]
   meta?: { name: string; created_at: string }
 }
 
@@ -58,12 +70,14 @@ export interface ValidateChangeSetResult {
 export interface ApplyChangeSetResult {
   /** 非空 = 全批拒绝（看板零变化）；空数组 = 全部通过 */
   errors: string[]
-  /** 成功时的新 doc（不改写入参；products / meta 原样透传） */
+  /** 成功时的新 doc（不改写入参；products / meta 原样透传；groups 随 op 更新） */
   doc?: ChangeSetBoardDoc
   /** 逐字段变更记录（供审计；幂等同值 patch 不产生记录） */
   changes?: ChangeSetFieldChange[]
   /** create 的 client_ref → 服务端分配 id 映射（按 operations 顺序） */
   created?: ChangeSetCreatedItem[]
+  /** group_create 的 client_ref → 服务端分配分组 id 映射（v2-M2，按 operations 顺序） */
+  createdGroups?: ChangeSetCreatedGroup[]
   /** 本 change-set 新登记的成员（整个 set 内 pending 去重后一次性并入） */
   newMembers?: Member[]
 }
@@ -164,6 +178,16 @@ function normalizeCreateItem(
       item.dimmed = true
     }
   }
+  // group_id（v2-M2 统一分组模型）：非空字符串 trim 保留原串（存在性/同 set client_ref
+  // 解析在 apply，有看板上下文）；null/空串 = 显式归「未分组」（保留 null 哨兵，
+  // apply 不再做日期归属解析——显式值优先）；键缺省 = 未显式指定（apply 走写入时归属解析）
+  if ('group_id' in raw) {
+    if (raw.group_id === null || String(raw.group_id ?? '').trim() === '') {
+      ;(item as Record<string, unknown>).group_id = null
+    } else {
+      item.group_id = String(raw.group_id).trim()
+    }
+  }
 
   if (errors.length > 0) return { errors }
   return { errors, item }
@@ -208,6 +232,12 @@ function normalizePatchChanges(
       // 移除语义必须显式保留：r.next 里字段已被 delete（undefined），
       // 若直接取 r.next[k]，JSON 入库会丢键、二次应用还会误判为非法 boolean/枚举
       changes[k] = null
+    } else if (k === 'group_id' && (raw[k] === null || raw[k] === undefined || String(raw[k]).trim() === '')) {
+      // group_id 移除语义同 bg_color（归「未分组」）；非空值保留 trim 原串，
+      // 存在性/同 set client_ref 解析留待 commit（预校验无看板上下文）
+      changes[k] = null
+    } else if (k === 'group_id') {
+      changes[k] = String(raw[k]).trim()
     } else if (k === 'dimmed' && raw[k] === false) {
       changes[k] = false
     } else {
@@ -265,8 +295,76 @@ function validateOperations(operations: unknown): ValidateChangeSetResult {
       const v = normalizePatchChanges(rec.changes as Record<string, unknown>, `${label}.changes`)
       errors.push(...v.errors)
       if (v.changes && item_id) normalized.push({ op: 'patch', item_id, changes: v.changes })
+    } else if (op === 'group_create') {
+      // v2-M2 F3：group 对象 + 非空 name；client_ref 供同 set 后续 op 引用
+      const rec = raw as { client_ref?: unknown; group?: unknown }
+      let client_ref: string | undefined
+      if (rec.client_ref !== undefined) {
+        client_ref = String(rec.client_ref).trim()
+        if (!client_ref) errors.push(`${label}.client_ref 须为非空字符串`)
+      }
+      if (!rec.group || typeof rec.group !== 'object' || Array.isArray(rec.group)) {
+        errors.push(`${label}.group 须为对象`)
+        continue
+      }
+      const name = String((rec.group as { name?: unknown }).name ?? '').trim()
+      if (!name) {
+        errors.push(`${label}.group.name 必填且非空`)
+        continue
+      }
+      normalized.push({ op: 'group_create', ...(client_ref !== undefined ? { client_ref } : {}), group: { name } })
+    } else if (op === 'group_patch') {
+      const rec = raw as { group_id?: unknown; changes?: unknown }
+      const labelErrs: string[] = []
+      const group_id = String(rec.group_id ?? '').trim()
+      if (!group_id) labelErrs.push(`${label}.group_id 必填且非空`)
+      if (!rec.changes || typeof rec.changes !== 'object' || Array.isArray(rec.changes)) {
+        labelErrs.push(`${label}.changes 须为对象`)
+        errors.push(...labelErrs)
+        continue
+      }
+      const rc = rec.changes as Record<string, unknown>
+      const unknown = Object.keys(rc).filter((k) => k !== 'name' && k !== 'before_group_id')
+      if (unknown.length > 0) {
+        errors.push(...labelErrs, `${label}.changes 不支持字段: ${unknown.join(', ')}`)
+        continue
+      }
+      const changes: { name?: string; before_group_id?: string | null } = {}
+      if ('name' in rc) {
+        const name = String(rc.name ?? '').trim()
+        if (!name) labelErrs.push(`${label}.changes.name 须为非空字符串`)
+        else changes.name = name
+      }
+      if ('before_group_id' in rc) {
+        if (rc.before_group_id === null) changes.before_group_id = null
+        else {
+          const ref = String(rc.before_group_id ?? '').trim()
+          if (!ref) labelErrs.push(`${label}.changes.before_group_id 须为非空字符串或 null（= 移到末尾）`)
+          else changes.before_group_id = ref
+        }
+      }
+      if (!('name' in rc) && !('before_group_id' in rc)) {
+        labelErrs.push(`${label}.changes 须含 name 或 before_group_id`)
+      }
+      errors.push(...labelErrs)
+      if (labelErrs.length === 0) normalized.push({ op: 'group_patch', group_id, changes })
+    } else if (op === 'group_delete') {
+      const rec = raw as { group_id?: unknown; move_to?: unknown }
+      const group_id = String(rec.group_id ?? '').trim()
+      if (!group_id) {
+        errors.push(`${label}.group_id 必填且非空`)
+        continue
+      }
+      let move_to: string | undefined
+      if (rec.move_to !== undefined) {
+        move_to = String(rec.move_to ?? '').trim()
+        if (!move_to) errors.push(`${label}.move_to 须为非空字符串（目标分组 id / 同 set client_ref）`)
+      }
+      normalized.push({ op: 'group_delete', group_id, ...(move_to !== undefined ? { move_to } : {}) })
     } else {
-      errors.push(`${label}.op 非法: "${String(op)}"，合法值: create / patch`)
+      errors.push(
+        `${label}.op 非法: "${String(op)}"，合法值: create / patch / group_create / group_patch / group_delete`,
+      )
     }
   }
   if (errors.length > 0) return { errors }
@@ -321,9 +419,120 @@ export function applyChangeSet(
   const created: ChangeSetCreatedItem[] = []
   const errors: string[] = []
 
+  // v2-M2 F3 统一分组模型：分组运行态（groups 数组序 = 列顺序）+ client_ref 解析表
+  let groups: Group[] = (doc.groups ?? []).map((g) => ({ ...g }))
+  let groupsTouched = false // groups 数组是否发生过结构变化（决定 doc 是否替换 groups 键）
+  const createdGroups: ChangeSetCreatedGroup[] = []
+  const groupRefToId = new Map<string, string>() // 同 set 内 client_ref → 新建分组 id（set 内前序可见）
+  /** 分组引用解析：已有分组 id 优先，其次同 set client_ref；未命中 → null */
+  const resolveGroup = (raw: string): string | null => {
+    if (groups.some((g) => g.id === raw)) return raw
+    return groupRefToId.get(raw) ?? null
+  }
+
   for (const [i, op] of ops.entries()) {
     const label = `operations[${i}]`
-    if (op.op === 'create') {
+    if (op.op === 'group_create') {
+      // 服务端分配确定性内容哈希 id；client_ref 登记进 set 内引用表（重复 client_ref 拒绝）
+      const name = op.group.name
+      const clientRef = op.client_ref ?? null
+      if (clientRef !== null && groupRefToId.has(clientRef)) {
+        errors.push(`${label}: client_ref 重复: "${clientRef}"（同一变更集内须唯一）`)
+        continue
+      }
+      const gid = newChangeSetGroupId(name, clientRef, i)
+      if (groups.some((g) => g.id === gid)) {
+        errors.push(`${label}: 分组 id 重复: ${gid}`)
+        continue
+      }
+      // 统一分组模型：分组总数上限 61（虚拟「未分组」列不占名额）
+      if (groups.length >= MAX_GROUPS) {
+        errors.push(`${label}: 分组已达上限 ${MAX_GROUPS} 个，无法新建「${name}」`)
+        continue
+      }
+      groups.push({ id: gid, name })
+      groupsTouched = true
+      if (clientRef !== null) groupRefToId.set(clientRef, gid)
+      createdGroups.push({ client_ref: clientRef, id: gid })
+      changes.push({ item_id: gid, field: 'group', old_value: null, new_value: name })
+    } else if (op.op === 'group_patch') {
+      const gid = resolveGroup(op.group_id)
+      if (!gid) {
+        errors.push(`${label}: 分组不存在: ${op.group_id}`)
+        continue
+      }
+      const idx = groups.findIndex((g) => g.id === gid)
+      const g = groups[idx]
+      if (op.changes.name !== undefined && op.changes.name !== g.name) {
+        changes.push({ item_id: gid, field: 'group.name', old_value: g.name, new_value: op.changes.name })
+        groups[idx] = { ...g, name: op.changes.name }
+        groupsTouched = true
+      }
+      if (op.changes.before_group_id !== undefined) {
+        // 调列序：null = 移到末尾；否则插到目标分组之前（不可指向自身）
+        let toIdx = groups.length // 末尾
+        if (op.changes.before_group_id !== null) {
+          const beforeId = resolveGroup(op.changes.before_group_id)
+          if (!beforeId) {
+            errors.push(`${label}.changes before_group_id 分组不存在: ${op.changes.before_group_id}`)
+            continue
+          }
+          if (beforeId === gid) {
+            errors.push(`${label}.changes before_group_id 不能是被移动分组自身`)
+            continue
+          }
+          toIdx = groups.findIndex((x) => x.id === beforeId)
+        }
+        const fromIdx = groups.findIndex((x) => x.id === gid)
+        // 幂等：位置未变（已在目标前一位 / 已在末尾）不产生变更记录
+        const targetPos = toIdx > fromIdx ? toIdx - 1 : toIdx
+        if (fromIdx !== targetPos) {
+          const [moved] = groups.splice(fromIdx, 1)
+          groups.splice(targetPos, 0, moved)
+          changes.push({ item_id: gid, field: 'group.order', old_value: fromIdx, new_value: targetPos })
+          groupsTouched = true
+        }
+      }
+    } else if (op.op === 'group_delete') {
+      const gid = resolveGroup(op.group_id)
+      if (!gid) {
+        errors.push(`${label}: 分组不存在: ${op.group_id}`)
+        continue
+      }
+      const g = groups.find((x) => x.id === gid)!
+      const inGroup = items.filter((it) => it.group_id === gid)
+      // move_to 可缺省 = 组内卡片归「未分组」虚拟列（2026-09-08 终稿）；
+      // 显式给出时须指向已存在分组（不能是被删分组自身）
+      let moveToId: string | null = null
+      if (op.move_to !== undefined) {
+        moveToId = resolveGroup(op.move_to)
+        if (!moveToId) {
+          errors.push(`${label}: move_to 分组不存在: ${op.move_to}`)
+          continue
+        }
+        if (moveToId === gid) {
+          errors.push(`${label}: move_to 不能是被删分组自身`)
+          continue
+        }
+      }
+      groups = groups.filter((x) => x.id !== gid)
+      groupsTouched = true
+      if (moveToId !== null) {
+        items = items.map((it) => (it.group_id === gid ? { ...it, group_id: moveToId } : it))
+      } else {
+        // 归未分组 = 移除 group_id 字段（保持 doc 干净，不落 null）
+        items = items.map((it) => {
+          if (it.group_id !== gid) return it
+          const next = { ...it }
+          delete next.group_id
+          return next
+        })
+      }
+      for (const it of inGroup) {
+        changes.push({ item_id: it.id, field: 'group_id', old_value: gid, new_value: moveToId })
+      }
+      changes.push({ item_id: gid, field: 'group', old_value: g.name, new_value: null })
+    } else if (op.op === 'create') {
       const f = op.item as Record<string, unknown>
       const title = String(f.title)
       const type = String(f.type ?? '图文')
@@ -349,6 +558,20 @@ export function applyChangeSet(
         delivery_owner_id = r.id
         if (r.registered) pendingMembers.push(r.registered)
       }
+      // group_id（v2-M2 统一分组模型）：显式非空 → 解析引用（已有分组 id / 同 set client_ref），
+      // 悬空拒绝（写入严格）；显式 null = 归未分组（不解析）；键缺省 → 写入时归属解析：
+      // 挂入组名 == publish_at 日期的组，无同名日期组 → 未分组（绝不自动建组）
+      let groupId: string | undefined
+      if (typeof f.group_id === 'string' && f.group_id) {
+        const resolved = resolveGroup(f.group_id)
+        if (!resolved) {
+          errors.push(`${label}: group_id 不存在: "${f.group_id}"（须指向看板已有分组；同变更集内可先 group_create 再用其 client_ref 引用）`)
+          continue
+        }
+        groupId = resolved
+      } else if (!('group_id' in f)) {
+        groupId = resolveWriteTimeGroup(groups, publish_at)
+      }
       // 指标 gate：最终 status ≠ 已发布 → 三指标强制 null（与 PATCH 同口径）
       const status = (f.status ?? '待执行') as ContentItem['status']
       const gate = status !== '已发布'
@@ -369,6 +592,8 @@ export function applyChangeSet(
         // v2-M1：create 支持 bg_color / dimmed（校验在 normalizeCreateItem；false/缺省不写字段）
         ...(f.bg_color ? { bg_color: f.bg_color as ContentItem['bg_color'] } : {}),
         ...(f.dimmed === true ? { dimmed: true } : {}),
+        // v2-M2：create 支持 group_id（引用已解析为真实分组 id；缺省 = 未分组）
+        ...(groupId ? { group_id: groupId } : {}),
       }
       // 同日多张新卡按 ops 顺序追加当日列尾（对运行态取 nextOrder）；已有卡片顺序不动
       orders[id] = nextOrder(items, orders, publishDateOf(item))
@@ -385,10 +610,23 @@ export function applyChangeSet(
         errors.push(`${label}: 卡片不存在: ${op.item_id}`)
         continue
       }
-      const r = applyItemPatch(op.changes, target, {
+      // group_id 引用解析（v2-M2）：同 set client_ref → 真实分组 id；非空且不可解析 → 拒绝。
+      // null（移除语义）原样透传给 applyItemPatch
+      const rawChanges = { ...op.changes }
+      if ('group_id' in rawChanges && rawChanges.group_id !== null) {
+        const rawGid = String(rawChanges.group_id)
+        const resolved = resolveGroup(rawGid)
+        if (!resolved) {
+          errors.push(`${label}.changes group_id 不存在: "${rawGid}"（须指向看板已有分组；同变更集内可先 group_create 再用其 client_ref 引用）`)
+          continue
+        }
+        rawChanges.group_id = resolved
+      }
+      const r = applyItemPatch(rawChanges, target, {
         members: [...doc.members, ...pendingMembers],
         items,
         orders,
+        groups,
       })
       // 白名单/格式在 validateOperations 已拦截；此处防御性收集（同一套规则，文案一致）
       if (r.unknownFields.length > 0) {
@@ -400,7 +638,7 @@ export function applyChangeSet(
         continue
       }
       pendingMembers.push(...r.pendingMembers)
-      // 跨日 publish_at → 目标日列尾（对运行态取 nextOrder，多次移入同一日依次后移）
+      // 跨列（显式 group_id / publish_at 归属解析）→ 目标列列尾（对运行态取 nextOrder，多次移入同列依次后移）
       if (r.orderUpdate) orders[r.orderUpdate.id] = r.orderUpdate.order
       items = items.map((it) => (it.id === target.id ? r.next! : it))
       for (const c of r.changes) {
@@ -412,11 +650,17 @@ export function applyChangeSet(
   // 4. 全批拒绝语义：任何一步失败 → 看板零变化，返回完整 errors
   if (errors.length > 0) return { errors }
 
+  // groups 仅在被 op 触及时替换（未触及原样透传，保持 doc 干净）
+  const nextDoc: ChangeSetBoardDoc = { ...doc, items, orders, members: [...doc.members, ...pendingMembers] }
+  if (groupsTouched) nextDoc.groups = groups
+  else if (doc.groups) nextDoc.groups = doc.groups
+
   return {
     errors: [],
-    doc: { ...doc, items, orders, members: [...doc.members, ...pendingMembers] },
+    doc: nextDoc,
     changes,
     created,
+    createdGroups,
     newMembers: pendingMembers,
   }
 }

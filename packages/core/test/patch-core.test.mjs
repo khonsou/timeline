@@ -53,11 +53,12 @@ describe('字段白名单', () => {
     assert.deepEqual(r.changes, [])
     assert.equal(r.orderUpdate, null)
   })
-  it('PATCH_FIELDS 恰为 14 个字段且不含只读字段（v19+ 追加 links；v2-M1 追加 bg_color/dimmed）', () => {
-    assert.equal(PATCH_FIELDS.length, 14)
+  it('PATCH_FIELDS 恰为 15 个字段且不含只读字段（v19+ 追加 links；v2-M1 追加 bg_color/dimmed；v2-M2 追加 group_id）', () => {
+    assert.equal(PATCH_FIELDS.length, 15)
     assert.ok(PATCH_FIELDS.includes('links'))
     assert.ok(PATCH_FIELDS.includes('bg_color'))
     assert.ok(PATCH_FIELDS.includes('dimmed'))
+    assert.ok(PATCH_FIELDS.includes('group_id'))
     assert.ok(!PATCH_FIELDS.includes('id'))
     assert.ok(!PATCH_FIELDS.includes('orders'))
     assert.deepEqual([...METRIC_FIELDS], ['roi', 'propagation_4h', 'engagement_4h'])
@@ -174,27 +175,62 @@ describe('nextMemberId 边界', () => {
   })
 })
 
-describe('跨日 orders 联动', () => {
-  it('跨日移动 → 排到目标日列末尾（目标列 2 卡 order 0/1 → 新 order 2）', () => {
-    const r = applyItemPatch({ publish_at: '2026-09-11T12:00' }, item(), ctx())
+describe('跨列 orders 联动（v2-M2 统一分组模型：列 = group_id；改期走写入时归属解析）', () => {
+  const DATE_GROUPS = [
+    { id: 'g-0910', name: '2026-09-10' },
+    { id: 'g-0911', name: '2026-09-11' },
+  ]
+  /** 卡 s-01 在 09-10 组；09-11 组有 s-02/s-03（order 0/1） */
+  const gctx = (over = {}) =>
+    ctx({
+      groups: DATE_GROUPS,
+      items: [
+        item({ group_id: 'g-0910' }),
+        item({ id: 's-02', publish_at: '2026-09-11T08:00', group_id: 'g-0911' }),
+        item({ id: 's-03', publish_at: '2026-09-11T10:00', group_id: 'g-0911' }),
+      ],
+      ...over,
+    })
+  it('改期 → 存在同名日期组则挂入，并排目标列末尾（order 0/1 → 新 order 2）', () => {
+    const r = applyItemPatch({ publish_at: '2026-09-11T12:00' }, item({ group_id: 'g-0910' }), gctx())
+    assert.equal(r.next.group_id, 'g-0911')
     assert.deepEqual(r.orderUpdate, { id: 's-01', order: 2 })
   })
-  it('目标列为空 → order 0', () => {
-    const r = applyItemPatch({ publish_at: '2026-09-12T12:00' }, item(), ctx())
+  it('改期 → 无同名日期组则归未分组（移除 group_id，绝不自动建组），order 取未分组列尾', () => {
+    const r = applyItemPatch({ publish_at: '2026-09-12T12:00' }, item({ group_id: 'g-0910' }), gctx())
+    assert.ok(!('group_id' in r.next))
     assert.deepEqual(r.orderUpdate, { id: 's-01', order: 0 })
   })
-  it('同日时分变更 → 不动 orders（orderUpdate 为 null）', () => {
-    const r = applyItemPatch({ publish_at: '2026-09-10T18:30' }, item(), ctx())
+  it('同日时分变更 → 不触发归属解析、不动 orders（orderUpdate 为 null）', () => {
+    const r = applyItemPatch({ publish_at: '2026-09-10T18:30' }, item({ group_id: 'g-0910' }), gctx())
     assert.equal(r.orderUpdate, null)
+    assert.equal(r.next.group_id, 'g-0910')
     assert.deepEqual(
       r.changes.map((c) => c.field),
       ['publish_at'],
     )
   })
-  it('publish_at 接受空格/斜杠格式并归一化后判定跨日', () => {
-    const r = applyItemPatch({ publish_at: '2026/9/11 12:00' }, item(), ctx())
+  it('publish_at 接受空格/斜杠格式并归一化后判定跨列', () => {
+    const r = applyItemPatch({ publish_at: '2026/9/11 12:00' }, item({ group_id: 'g-0910' }), gctx())
     assert.equal(r.next.publish_at, '2026-09-11T12:00')
+    assert.equal(r.next.group_id, 'g-0911')
     assert.deepEqual(r.orderUpdate, { id: 's-01', order: 2 })
+  })
+  it('显式 group_id 优先于日期归属解析（同传 publish_at 时以显式值为准）', () => {
+    const r = applyItemPatch(
+      { publish_at: '2026-09-11T12:00', group_id: 'g-0910' },
+      item({ group_id: 'g-0910' }),
+      gctx(),
+    )
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.next.group_id, 'g-0910')
+    assert.equal(r.orderUpdate, null) // 列未变
+  })
+  it('ctx 缺省 groups（预校验分层）→ 不做归属解析也不动 orders', () => {
+    const r = applyItemPatch({ publish_at: '2026-09-11T12:00' }, item(), ctx())
+    assert.deepEqual(r.errors, [])
+    assert.ok(!('group_id' in r.next))
+    assert.equal(r.orderUpdate, null)
   })
 })
 
@@ -295,5 +331,41 @@ describe('dimmed（v2-M1 F2）', () => {
   it('重复置灰 / 未置灰时点亮点灯幂等（无 changes）', () => {
     assert.deepEqual(applyItemPatch({ dimmed: true }, item({ dimmed: true }), ctx()).changes, [])
     assert.deepEqual(applyItemPatch({ dimmed: false }, item(), ctx()).changes, [])
+  })
+})
+
+describe('group_id（v2-M2 F3：自定义分组写入，严格分层）', () => {
+  const GROUPS = [
+    { id: 'grp-a', name: '测试阶段' },
+    { id: 'grp-b', name: '发布阶段' },
+  ]
+  it('指向已有分组 → 写入并计入 changes；跨列重取目标列尾 order（列为空 → 0）', () => {
+    const r = applyItemPatch({ group_id: 'grp-a' }, item(), ctx({ groups: GROUPS }))
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.next.group_id, 'grp-a')
+    assert.deepEqual(r.changes, [{ field: 'group_id', old_value: undefined, new_value: 'grp-a' }])
+    assert.deepEqual(r.orderUpdate, { id: 's-01', order: 0 })
+  })
+  it('悬空分组 id → 400 拒绝（写入严格）', () => {
+    const r = applyItemPatch({ group_id: 'grp-ghost' }, item(), ctx({ groups: GROUPS }))
+    assert.equal(r.errors.length, 1)
+    assert.match(r.errors[0], /^group_id 不存在: "grp-ghost"/)
+    assert.equal(r.next, undefined)
+  })
+  it('ctx 缺省 groups 时只校验格式不校验存在性（change-set 预校验分层，同负责人姓名）', () => {
+    const r = applyItemPatch({ group_id: 'grp-ghost' }, item(), ctx())
+    assert.deepEqual(r.errors, [])
+    assert.equal(r.next.group_id, 'grp-ghost')
+  })
+  it('null / 空串 / undefined → 移除字段（归「未分组」虚拟列）', () => {
+    const withGroup = item({ group_id: 'grp-a' })
+    for (const v of [null, '', '   ']) {
+      const r = applyItemPatch({ group_id: v }, withGroup, ctx({ groups: GROUPS }))
+      assert.deepEqual(r.errors, [])
+      assert.ok(!('group_id' in r.next))
+      assert.deepEqual(r.changes, [{ field: 'group_id', old_value: 'grp-a', new_value: undefined }])
+    }
+    // 未分组卡再归未分组 = 幂等无 changes
+    assert.deepEqual(applyItemPatch({ group_id: null }, item(), ctx({ groups: GROUPS })).changes, [])
   })
 })

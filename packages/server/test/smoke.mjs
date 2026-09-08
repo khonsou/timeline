@@ -135,11 +135,12 @@ try {
   const prods = await api('GET', `/boards/${bid}/products`, undefined, tk)
   ok(prods.body.products.length === 1 && prods.body.products[0].id === 'P-1000', 'products 端点')
 
-  // orders 联动：s-03 改期到昨天（列内已有 s-01 order 0 → s-03 应为 1）
+  // orders 联动（v2-M2 统一分组模型：无分组的板只有虚拟「未分组」一列，改期不跨列 → 不动 orders；
+  // 跨列重取 order 的断言见下方 M2 分组段的 PATCH 改期）
   const pDate = await api('PATCH', `/boards/${bid}/items/s-03`, { publish_at: `${day(-1)} 12:00` }, tk)
   ok(pDate.body.item.publish_at === `${day(-1)}T12:00`, 'publish_at 归一化')
   const full = await api('GET', `/boards/${bid}`, undefined, tk)
-  ok(full.body.doc.orders['s-03'] === 1 && full.body.doc.orders['s-01'] === 0, '跨日 orders 排目标日列尾')
+  ok(full.body.doc.orders['s-03'] === 0 && full.body.doc.orders['s-01'] === 0, '无分组板改期不动 orders（同属未分组列）')
 
   // 审计：逐字段旧→新（倒序，最新是 publish_at）
   const audit = await api('GET', `/boards/${bid}/audit?limit=50`, undefined, tk)
@@ -300,6 +301,99 @@ try {
   ok(csExpGet2.body.status === 'expired', 'expired 已落库（非每次重算）')
   const commitExp = await api('POST', `/boards/${bid}/change-sets/${csExp.body.change_set_id}/commit`, {}, tk)
   ok(commitExp.status === 409 && commitExp.body.status === 'expired', '过期 commit → 409')
+
+  // ------------------------------------------------------------------
+  // v2-M2 F3 统一分组模型（3 个 doc 级 op + group_id 写入严格 + 写入时归属解析 + 61 上限）
+  // ------------------------------------------------------------------
+  // 单卡 PATCH group_id：板上无分组 → 悬空拒绝（写入严格）
+  const pGidGhost = await api('PATCH', `/boards/${bid}/items/s-02`, { group_id: 'grp-ghost' }, tk)
+  ok(pGidGhost.status === 400 && /group_id 不存在/.test(pGidGhost.body.error), 'PATCH 悬空 group_id 400（写入严格）')
+
+  // change-set：建三组（含一个同名日期组）+ 新卡引用 client_ref + 写入时归属解析 + 显式 null → 一次事务提交
+  const verG = (await api('GET', `/boards/${bid}`, undefined, tk)).body.version
+  const csGroup = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: verG,
+    operations: [
+      { op: 'group_create', client_ref: 'g-test', group: { name: '测试阶段' } },
+      { op: 'group_create', client_ref: 'g-release', group: { name: '发布阶段' } },
+      { op: 'group_create', client_ref: 'g-date', group: { name: day(2) } },
+      { op: 'create', client_ref: 'row-g', item: { title: '分组新卡', publish_at: `${day(0)}T15:00`, group_id: 'g-test' } },
+      { op: 'create', client_ref: 'row-auto', item: { title: '归属解析卡', publish_at: `${day(2)}T10:00` } },
+      { op: 'create', client_ref: 'row-null', item: { title: '显式未分组卡', publish_at: `${day(2)}T11:00`, group_id: null } },
+      { op: 'patch', item_id: 's-02', changes: { group_id: 'g-release' } },
+    ],
+  }, tk)
+  ok(csGroup.status === 201, 'change-set 含 group op 创建 201', JSON.stringify(csGroup.body))
+  const commitG = await api('POST', `/boards/${bid}/change-sets/${csGroup.body.change_set_id}/commit`, {}, tk)
+  ok(commitG.status === 200 && commitG.body.status === 'committed', 'group op change-set commit 成功', JSON.stringify(commitG.body))
+  ok(commitG.body.groups?.length === 3 && commitG.body.groups[0].client_ref === 'g-test', 'commit 结果含 client_ref → 分组 id 映射')
+  const gidTest = commitG.body.groups[0].id
+  const gidRelease = commitG.body.groups[1].id
+  const gidDate = commitG.body.groups[2].id
+  const docG = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(docG.groups?.length === 3 && docG.groups[0].name === '测试阶段' && docG.groups[2].name === day(2), '分组落盘（数组序 = 列顺序）')
+  const createdCards = Object.fromEntries(commitG.body.items.map((x) => [x.client_ref, x.id]))
+  ok(docG.items.find((it) => it.id === createdCards['row-g']).group_id === gidTest, 'set 内先建后引用：新卡 group_id = 新分组 id')
+  ok(docG.items.find((it) => it.id === createdCards['row-auto']).group_id === gidDate, '写入时归属解析：同名日期组自动挂入')
+  ok(!('group_id' in docG.items.find((it) => it.id === createdCards['row-null'])), '显式 group_id null = 归未分组（不解析）')
+  ok(docG.items.find((it) => it.id === 's-02').group_id === gidRelease, 'patch 引用 client_ref 落组')
+
+  // 单卡 PATCH 改期：有同名日期组 → 自动挂入；无同名日期组 → 归未分组
+  const pDateHit = await api('PATCH', `/boards/${bid}/items/s-01`, { publish_at: `${day(2)}T08:00` }, tk)
+  ok(pDateHit.status === 200 && pDateHit.body.item.group_id === gidDate, 'PATCH 改期 → 同名日期组自动挂入')
+  const docHit = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(docHit.orders['s-01'] === 1, '改期跨列重取目标列尾 order（组内仅 row-auto 占 0 → 1）')
+  const pDateMiss = await api('PATCH', `/boards/${bid}/items/s-01`, { publish_at: `${day(5)}T08:00` }, tk)
+  ok(pDateMiss.status === 200 && !('group_id' in pDateMiss.body.item), 'PATCH 改期无同名日期组 → 归未分组（不自动建组）')
+  const docAfterDate = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(docAfterDate.groups.length === 3, '归属解析不自动建组（groups 数不变）')
+
+  // 删组 move_to 可缺省 = 归未分组；显式 move_to = 迁移；重命名 + 调列序
+  const csDel = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: commitG.body.version + 2,
+    operations: [
+      { op: 'group_patch', group_id: gidRelease, changes: { name: '发布阶段·改', before_group_id: gidTest } },
+      { op: 'group_delete', group_id: gidTest },
+    ],
+  }, tk)
+  const commitDel = await api('POST', `/boards/${bid}/change-sets/${csDel.body.change_set_id}/commit`, {}, tk)
+  ok(commitDel.status === 200, '重命名+调序+删组（move_to 缺省）一次提交', JSON.stringify(commitDel.body))
+  const docG2 = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(
+    docG2.groups.length === 2 && docG2.groups[0].name === '发布阶段·改' &&
+      !('group_id' in docG2.items.find((it) => it.id === createdCards['row-g'])),
+    '删组缺省 move_to：组内卡片归未分组（group_id 移除）',
+  )
+  const csDel2 = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: commitDel.body.version,
+    operations: [{ op: 'group_delete', group_id: gidDate, move_to: gidRelease }],
+  }, tk)
+  const commitDel2 = await api('POST', `/boards/${bid}/change-sets/${csDel2.body.change_set_id}/commit`, {}, tk)
+  const docG3 = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(
+    commitDel2.status === 200 && docG3.groups.length === 1 &&
+      docG3.items.find((it) => it.id === createdCards['row-auto']).group_id === gidRelease,
+    '删组显式 move_to：组内卡片迁入目标分组',
+    JSON.stringify(commitDel2.body),
+  )
+
+  // 61 上限：补满到 61 个 → 第 62 个 group_create 400
+  const curGroups = docG3.groups.length
+  const csFill = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: commitDel2.body.version,
+    operations: Array.from({ length: 61 - curGroups }, (_, i) => ({
+      op: 'group_create',
+      group: { name: `填充组 ${i + 1}` },
+    })),
+  }, tk)
+  const commitFill = await api('POST', `/boards/${bid}/change-sets/${csFill.body.change_set_id}/commit`, {}, tk)
+  ok(commitFill.status === 200, `补满分组到 61（现有 ${curGroups}）`, JSON.stringify(commitFill.body))
+  const csOver = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: commitFill.body.version,
+    operations: [{ op: 'group_create', group: { name: '第 62 组' } }],
+  }, tk)
+  const commitOver = await api('POST', `/boards/${bid}/change-sets/${csOver.body.change_set_id}/commit`, {}, tk)
+  ok(commitOver.status === 400 && /分组已达上限 61 个/.test(commitOver.body.error), '第 62 个分组 → 400（61 上限）', JSON.stringify(commitOver.body))
 
   // PATCH If-Match：符合 → 正常；不符 → 409；不带 → 旧行为
   const curV = (await api('GET', `/boards/${bid}`, undefined, tk)).body.version

@@ -312,6 +312,12 @@ interface SortableCardProps {
   onCopyShareLink: (id: string) => void
   /** F5/F6 定位一次性高亮 */
   highlighted?: boolean
+  /**
+   * v2-M2：列归属 key 覆盖（custom 分组模式传入 group_id / '' 未分组）。
+   * 缺省 = publishDateOf(card)（date 模式）；碰撞判定按 data.date 同列过滤，
+   * 两种模式复用同一字段（见 Board.tsx 组合式碰撞判定注释）。
+   */
+  colKey?: string
 }
 
 export default function SortableCard({
@@ -322,10 +328,11 @@ export default function SortableCard({
   onToggleDimmed,
   onCopyShareLink,
   highlighted,
+  colKey,
 }: SortableCardProps) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: card.id,
-    data: { type: 'card', date: publishDateOf(card) },
+    data: { type: 'card', date: colKey ?? publishDateOf(card) },
   })
 
   return (

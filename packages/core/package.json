@@ -15,7 +15,9 @@
     "./lib/board-view.ts": "./lib/board-view.ts",
     "./lib/format.ts": "./lib/format.ts",
     "./lib/patch-core.ts": "./lib/patch-core.ts",
-    "./lib/changeset-core.ts": "./lib/changeset-core.ts"
+    "./lib/changeset-core.ts": "./lib/changeset-core.ts",
+    "./group-core": "./lib/group-core.ts",
+    "./lib/group-core.ts": "./lib/group-core.ts"
   },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\""

@@ -15,13 +15,14 @@
  * 本文件保持纯 TypeScript（含 erasable 类型标注），不依赖 DOM / Node API，
  * 不改写传入的 item / members / orders，也不做审计序列化（审计属 server 职责）。
  */
-import type { ContentItem, Member } from '../types/content'
+import type { ContentItem, Group, Member } from '../types/content'
 import { normalizeBgColor } from '../types/content.ts'
 import type { Orders } from './board-view.ts'
-import { nextOrder } from './board-view.ts'
+import { nextOrderInColumn } from './board-view.ts'
+import { resolveWriteTimeGroup } from './group-core.ts'
 import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt } from './import-core.ts'
 
-/** PATCH 允许修改的字段白名单（v19+ 追加 links；v2-M1 追加 bg_color / dimmed） */
+/** PATCH 允许修改的字段白名单（v19+ 追加 links；v2-M1 追加 bg_color / dimmed；v2-M2 追加 group_id） */
 export const PATCH_FIELDS = [
   'title',
   'type',
@@ -37,6 +38,7 @@ export const PATCH_FIELDS = [
   'links',
   'bg_color',
   'dimmed',
+  'group_id',
 ] as const
 export type PatchField = (typeof PATCH_FIELDS)[number]
 
@@ -94,18 +96,22 @@ export interface ItemPatchResult {
   pendingMembers: Member[]
   /** 相对 item 实际变化的字段（含 gate 产生的变化） */
   changes: ItemPatchChange[]
-  /** 跨日移动时的目标列 order；未跨日为 null */
+  /** 跨列移动（显式 group_id / publish_at 归属解析）时的目标列列尾 order；未跨列为 null */
   orderUpdate: { id: string; order: number } | null
 }
 
 /**
  * 对单条内容应用 PATCH 规则，纯函数：不改写传入的 item/members/orders。
  * 未知字段或校验失败时不产生 next/changes/orderUpdate。
+ *
+ * ctx.groups（v2-M2 F3）：传入时启用 group_id 存在性校验（写入严格：指向不存在的
+ * 分组 → 拒绝）；缺省（如 change-set 创建时无看板上下文的预校验）只校验格式，
+ * 存在性留待 commit 全量校验（与负责人姓名解析同一分层）。
  */
 export function applyItemPatch(
   body: Record<string, unknown>,
   item: ContentItem,
-  ctx: { members: Member[]; items: ContentItem[]; orders: Orders },
+  ctx: { members: Member[]; items: ContentItem[]; orders: Orders; groups?: Group[] },
 ): ItemPatchResult {
   const next = { ...item }
   const errors: string[] = []
@@ -186,6 +192,27 @@ export function applyItemPatch(
         delete next.dimmed
       }
     }
+    // group_id（v2-M2 F3 统一分组模型）：显式值优先——null / 空串 / undefined → 移除字段
+    // （归「未分组」虚拟列）；非空字符串 → ctx.groups 存在时校验存在性（写入严格 400），
+    // 缺省只校验格式（change-set 预校验无看板上下文，存在性留待 commit——与负责人姓名解析同一分层）。
+    // 未显式给 group_id 但改了 publish_at → 写入时归属解析（一次性）：挂入组名 == 新日期
+    // 的组；无同名日期组 → 归未分组（移除字段，绝不自动建组）。ctx.groups 缺省时跳过解析。
+    if ('group_id' in body) {
+      const raw = body.group_id
+      if (raw === null || raw === undefined || String(raw).trim() === '') {
+        delete next.group_id
+      } else {
+        const v = String(raw).trim()
+        if (ctx.groups && !ctx.groups.some((g) => g.id === v)) {
+          errors.push(`group_id 不存在: "${v}"（须指向看板已有分组；同变更集内可先 group_create 再引用）`)
+        } else next.group_id = v
+      }
+    } else if ('publish_at' in body && ctx.groups && next.publish_at.slice(0, 10) !== item.publish_at.slice(0, 10)) {
+      // 仅在日期部分实际变化时解析（同值补丁不动分组归属）
+      const gid = resolveWriteTimeGroup(ctx.groups, next.publish_at)
+      if (gid) next.group_id = gid
+      else delete next.group_id
+    }
   }
 
   if (unknownFields.length > 0 || errors.length > 0) {
@@ -208,10 +235,11 @@ export function applyItemPatch(
   }
 
   let orderUpdate: { id: string; order: number } | null = null
-  const newDate = String(next.publish_at ?? '').slice(0, 10)
-  const oldDate = String(item.publish_at ?? '').slice(0, 10)
-  if (newDate !== oldDate) {
-    orderUpdate = { id: item.id, order: nextOrder(ctx.items, ctx.orders, newDate) }
+  // 列归属变化（显式 group_id / publish_at 归属解析）→ 重取目标列列尾 order（v1 改期语义的一般化）
+  const newKey = next.group_id ?? ''
+  const oldKey = item.group_id ?? ''
+  if (newKey !== oldKey) {
+    orderUpdate = { id: item.id, order: nextOrderInColumn(ctx.items, ctx.orders, newKey) }
   }
 
   return { unknownFields, errors, next, pendingMembers, changes, orderUpdate }

@@ -10,7 +10,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link2, Search } from 'lucide-react'
-import type { ContentItem } from '@timeline/core/types'
+import type { ContentItem, Group } from '@timeline/core/types'
 import { publishDateOf, type Orders } from '@timeline/core/board-view'
 
 interface SearchPaletteProps {
@@ -21,6 +21,8 @@ interface SearchPaletteProps {
   products: { id: string; name: string }[]
   /** 成员目录（内容/投放负责人 id → 姓名参与匹配；v2-M1c 测试反馈补充） */
   members: { id: string; name: string }[]
+  /** v2-M2 F3 统一分组模型：结果行副标题恒 = 分组名（未分组/悬空 → 「未分组」） */
+  groups?: Group[]
   onClose: () => void
   /** 点击结果：定位并高亮卡片（F5/F6 共用机制在 Board 内） */
   onLocate: (id: string) => void
@@ -36,6 +38,7 @@ export default function SearchPalette({
   orders,
   products,
   members,
+  groups = [],
   onClose,
   onLocate,
   onCopyLink,
@@ -80,6 +83,11 @@ export default function SearchPalette({
       )
       .slice(0, MAX_RESULTS)
   }, [items, orders, products, members, query])
+
+  // v2-M2 统一分组模型：结果行副标题恒 = 分组名（未分组/悬空 → 「未分组」）
+  const groupName = useMemo(() => new Map(groups.map((g) => [g.id, g.name])), [groups])
+  const subtitleOf = (c: ContentItem): string =>
+    c.group_id ? (groupName.get(c.group_id) ?? '未分组') : '未分组'
 
   if (!open) return null
 
@@ -161,7 +169,7 @@ export default function SearchPalette({
                     {c.title || '未命名卡片'}
                   </p>
                   <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <span className="tabular-nums">{publishDateOf(c)}</span>
+                    <span data-search-subtitle className="tabular-nums">{subtitleOf(c)}</span>
                     <span>·</span>
                     <span>{c.status}</span>
                     {c.dimmed === true && (

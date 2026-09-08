@@ -55,9 +55,14 @@ describe('validateChangeSet 预校验', () => {
     assert.deepEqual(validateChangeSet({ operations: 'x' }).errors, ['operations 须为非空数组'])
     assert.deepEqual(validateChangeSet(null).errors, ['请求体须为对象'])
   })
-  it('op 仅允许 create / patch', () => {
+  it('op 仅允许 create / patch / group_* 五种（统一分组模型无 group_mode）', () => {
     const r = validateChangeSet({ operations: [{ op: 'delete', item_id: 's-01' }] })
-    assert.deepEqual(r.errors, ['operations[0].op 非法: "delete"，合法值: create / patch'])
+    assert.deepEqual(r.errors, [
+      'operations[0].op 非法: "delete"，合法值: create / patch / group_create / group_patch / group_delete',
+    ])
+    // group_mode 已随双模式方案废弃
+    const old = validateChangeSet({ operations: [{ op: 'group_mode', mode: 'custom' }] })
+    assert.match(old.errors[0], /op 非法: "group_mode"/)
   })
   it('patch 的 changes 走同一套白名单与文案；create 不允许指定 id', () => {
     const r = validateChangeSet({
@@ -148,14 +153,28 @@ describe('create：排序与 id 分配', () => {
 })
 
 describe('patch：复用 applyItemPatch 校验与联动', () => {
-  it('跨日 publish_at → 目标日列尾（运行态 nextOrder），同日时分不动 orders', () => {
-    const r = applyChangeSet(doc(), [
+  it('改期跨列（写入时归属解析）→ 目标日期组列尾；同日时分不动 orders 也不动分组', () => {
+    // 统一分组模型：列 = group_id；09-10/09-11 为同名日期组
+    const d = doc({
+      groups: [
+        { id: 'g-0910', name: '2026-09-10' },
+        { id: 'g-0911', name: '2026-09-11' },
+      ],
+      items: [
+        item({ group_id: 'g-0910' }),
+        item({ id: 's-02', publish_at: '2026-09-11T08:00', group_id: 'g-0911' }),
+        item({ id: 's-03', publish_at: '2026-09-11T10:00', group_id: 'g-0911' }),
+      ],
+    })
+    const r = applyChangeSet(d, [
       { op: 'patch', item_id: 's-01', changes: { publish_at: '2026-09-11T12:00' } },
       { op: 'patch', item_id: 's-02', changes: { publish_at: '2026-09-11T09:00' } },
     ])
     assert.deepEqual(r.errors, [])
+    assert.equal(r.doc.items.find((it) => it.id === 's-01').group_id, 'g-0911') // 挂入同名日期组
     assert.equal(r.doc.orders['s-01'], 2) // 目标列 0/1 → 列尾 2
     assert.equal(r.doc.orders['s-02'], 0) // 同日时分变更顺序不变
+    assert.equal(r.doc.items.find((it) => it.id === 's-02').group_id, 'g-0911') // 时分变更不动分组
     assert.deepEqual(
       r.changes.filter((c) => c.field === 'publish_at').map((c) => [c.item_id, c.old_value, c.new_value]),
       [
@@ -163,6 +182,11 @@ describe('patch：复用 applyItemPatch 校验与联动', () => {
         ['s-02', '2026-09-11T08:00', '2026-09-11T09:00'],
       ],
     )
+    // 无同名日期组 → 归未分组（移除 group_id），order 取未分组列尾
+    const r2 = applyChangeSet(d, [{ op: 'patch', item_id: 's-01', changes: { publish_at: '2026-12-01T12:00' } }])
+    assert.deepEqual(r2.errors, [])
+    assert.ok(!('group_id' in r2.doc.items.find((it) => it.id === 's-01')))
+    assert.equal(r2.doc.orders['s-01'], 0) // 未分组列原本为空
   })
   it('指标 gate：patch status≠已发布清空三指标并进变更记录', () => {
     const r = applyChangeSet(doc(), [{ op: 'patch', item_id: 's-01', changes: { status: '待执行' } }])
@@ -419,5 +443,168 @@ describe('v2-M1b：bg_color(hex) / dimmed 经 change-set（agent 写入口）', 
     ])
     const created = r.doc.items.find((it) => it.id === r.created[0].id)
     assert.equal('dimmed' in created, false)
+  })
+})
+
+describe('v2-M2 F3 统一分组模型：3 个 doc 级 op', () => {
+  const gdoc = (over = {}) =>
+    doc({
+      groups: [
+        { id: 'grp-a', name: 'A 组' },
+        { id: 'grp-b', name: 'B 组' },
+      ],
+      ...over,
+    })
+
+  it('group_create：确定性 id + client_ref 映射；同 set 重试幂等', () => {
+    const ops = [{ op: 'group_create', client_ref: 'g1', group: { name: ' 测试阶段 ' } }]
+    const r1 = applyChangeSet(doc(), ops)
+    const r2 = applyChangeSet(doc(), ops)
+    assert.deepEqual(r1.errors, [])
+    assert.equal(r1.doc.groups.length, 1)
+    assert.equal(r1.doc.groups[0].name, '测试阶段') // trim
+    assert.match(r1.doc.groups[0].id, /^grp-[0-9a-f]{16}$/)
+    assert.equal(r1.doc.groups[0].id, r2.doc.groups[0].id) // 确定性哈希
+    assert.deepEqual(r1.createdGroups, [{ client_ref: 'g1', id: r1.doc.groups[0].id }])
+  })
+  it('group_create：分组满 61 → 全批拒绝（虚拟「未分组」列不占名额）', () => {
+    const full = doc({
+      groups: Array.from({ length: 61 }, (_, i) => ({ id: `grp-${i}`, name: `G${i}` })),
+    })
+    const r = applyChangeSet(full, [{ op: 'group_create', group: { name: '第 62 组' } }])
+    assert.equal(r.errors.length, 1)
+    assert.match(r.errors[0], /分组已达上限 61 个/)
+    assert.equal(r.doc, undefined)
+    // 60 个时可建第 61 个
+    const almost = doc({
+      groups: Array.from({ length: 60 }, (_, i) => ({ id: `grp-${i}`, name: `G${i}` })),
+    })
+    const ok = applyChangeSet(almost, [{ op: 'group_create', group: { name: '第 61 组' } }])
+    assert.deepEqual(ok.errors, [])
+    assert.equal(ok.doc.groups.length, 61)
+  })
+  it('预校验：空 name / 空 client_ref / move_to 空串 / group_patch 缺 name 与 before_group_id', () => {
+    const r = validateChangeSet({
+      operations: [
+        { op: 'group_create', group: { name: '  ' } },
+        { op: 'group_create', client_ref: ' ', group: { name: 'x' } },
+        { op: 'group_delete', group_id: 'grp-a', move_to: ' ' },
+        { op: 'group_patch', group_id: 'grp-a', changes: {} },
+        { op: 'group_delete', group_id: ' ' },
+      ],
+    })
+    assert.deepEqual(r.errors, [
+      'operations[0].group.name 必填且非空',
+      'operations[1].client_ref 须为非空字符串',
+      'operations[2].move_to 须为非空字符串（目标分组 id / 同 set client_ref）',
+      'operations[3].changes 须含 name 或 before_group_id',
+      'operations[4].group_id 必填且非空',
+    ])
+  })
+  it('set 内先建后引用：group_create 的 client_ref 被后续 create/patch 的 group_id 引用', () => {
+    const r = applyChangeSet(doc(), [
+      { op: 'group_create', client_ref: 'g-new', group: { name: '新阶段' } },
+      { op: 'create', item: { title: '新卡', publish_at: '2026-09-12T09:00', group_id: 'g-new' } },
+      { op: 'patch', item_id: 's-01', changes: { group_id: 'g-new' } },
+    ])
+    assert.deepEqual(r.errors, [])
+    const gid = r.createdGroups[0].id
+    const card = r.doc.items.find((it) => it.id === r.created[0].id)
+    assert.equal(card.group_id, gid)
+    assert.equal(r.doc.items.find((it) => it.id === 's-01').group_id, gid)
+  })
+  it('写入严格：patch/create 引用不存在分组（且非同 set 新建）→ 全批拒绝', () => {
+    const r = applyChangeSet(doc(), [
+      { op: 'create', item: { title: '新卡', publish_at: '2026-09-12T09:00', group_id: 'grp-ghost' } },
+      { op: 'patch', item_id: 's-01', changes: { group_id: 'grp-ghost' } },
+    ])
+    assert.equal(r.errors.length, 2)
+    assert.match(r.errors[0], /group_id 不存在: "grp-ghost"/)
+    assert.match(r.errors[1], /group_id 不存在: "grp-ghost"/)
+    assert.equal(r.doc, undefined)
+    // 预校验放行（存在性检查在 commit，与负责人姓名同一分层）
+    assert.deepEqual(
+      validateChangeSet({ operations: [{ op: 'patch', item_id: 's-01', changes: { group_id: 'grp-ghost' } }] }).errors,
+      [],
+    )
+  })
+  it('group_patch：重命名 + 调列序（before_group_id / null=末尾）；幂等无变更记录', () => {
+    const r = applyChangeSet(gdoc(), [
+      { op: 'group_patch', group_id: 'grp-a', changes: { name: 'A 组·改' } },
+      { op: 'group_patch', group_id: 'grp-b', changes: { before_group_id: 'grp-a' } },
+    ])
+    assert.deepEqual(r.errors, [])
+    assert.deepEqual(
+      r.doc.groups.map((g) => [g.id, g.name]),
+      [
+        ['grp-b', 'B 组'],
+        ['grp-a', 'A 组·改'],
+      ],
+    )
+    // null = 移到末尾
+    const r2 = applyChangeSet(gdoc(), [{ op: 'group_patch', group_id: 'grp-a', changes: { before_group_id: null } }])
+    assert.deepEqual(r2.doc.groups.map((g) => g.id), ['grp-b', 'grp-a'])
+    // 幂等：同名 / 同位置不产生变更记录
+    const r3 = applyChangeSet(gdoc(), [
+      { op: 'group_patch', group_id: 'grp-a', changes: { name: 'A 组', before_group_id: 'grp-b' } },
+    ])
+    assert.deepEqual(r3.errors, [])
+    assert.deepEqual(r3.changes, [])
+    // before_group_id 指向自身 / 不存在 → 拒绝
+    const r4 = applyChangeSet(gdoc(), [
+      { op: 'group_patch', group_id: 'grp-a', changes: { before_group_id: 'grp-a' } },
+    ])
+    assert.match(r4.errors[0], /不能是被移动分组自身/)
+  })
+  it('group_delete：move_to 可缺省 = 归未分组；显式 move_to 迁移组内卡片', () => {
+    const d = gdoc({
+      items: [item({ group_id: 'grp-a' }), item({ id: 's-02', group_id: 'grp-a' }), item({ id: 's-03', group_id: 'grp-b' })],
+    })
+    // 缺省 move_to：非空组直接删，组内卡片归「未分组」（移除 group_id 字段）
+    const toUngrouped = applyChangeSet(d, [{ op: 'group_delete', group_id: 'grp-a' }])
+    assert.deepEqual(toUngrouped.errors, [])
+    assert.deepEqual(toUngrouped.doc.groups.map((g) => g.id), ['grp-b'])
+    assert.ok(toUngrouped.doc.items.every((it) => !('group_id' in it) || it.group_id === 'grp-b'))
+    assert.equal(toUngrouped.doc.items.filter((it) => !('group_id' in it)).length, 2)
+    // move_to 指向自身 / 不存在 → 拒绝
+    const self = applyChangeSet(d, [{ op: 'group_delete', group_id: 'grp-a', move_to: 'grp-a' }])
+    assert.match(self.errors[0], /move_to 不能是被删分组自身/)
+    const ghost = applyChangeSet(d, [{ op: 'group_delete', group_id: 'grp-a', move_to: 'grp-ghost' }])
+    assert.match(ghost.errors[0], /move_to 分组不存在/)
+    // 合法迁移
+    const ok = applyChangeSet(d, [{ op: 'group_delete', group_id: 'grp-a', move_to: 'grp-b' }])
+    assert.deepEqual(ok.errors, [])
+    assert.deepEqual(ok.doc.groups.map((g) => g.id), ['grp-b'])
+    assert.ok(ok.doc.items.every((it) => it.group_id === 'grp-b'))
+  })
+  it('create 写入时归属解析：同名日期组挂入 / 无同名组留未分组（不自动建组）/ 显式 null 优先', () => {
+    const d = doc({
+      groups: [
+        { id: 'g-0912', name: '2026-09-12' },
+        { id: 'g-x', name: '测试阶段' },
+      ],
+    })
+    const r = applyChangeSet(d, [
+      { op: 'create', item: { title: 'A', publish_at: '2026-09-12T09:00' } },
+      { op: 'create', item: { title: 'B', publish_at: '2026-09-13T09:00' } },
+      { op: 'create', item: { title: 'C', publish_at: '2026-09-12T10:00', group_id: null } },
+      { op: 'create', item: { title: 'D', publish_at: '2026-09-12T11:00', group_id: 'g-x' } },
+    ])
+    assert.deepEqual(r.errors, [])
+    const [a, b, c, d4] = r.created.map((x) => r.doc.items.find((it) => it.id === x.id))
+    assert.equal(a.group_id, 'g-0912') // 组名 == publish_at 日期 → 挂入
+    assert.ok(!('group_id' in b)) // 无同名日期组 → 未分组（groups 不膨胀）
+    assert.equal(r.doc.groups.length, 2)
+    assert.ok(!('group_id' in c)) // 显式 null = 归未分组（即使有同名日期组）
+    assert.equal(d4.group_id, 'g-x') // 显式分组优先于日期解析
+  })
+  it('patch group_id null = 归未分组（移除语义，经 commit 保留 null 键入库再应用）', () => {
+    const d = gdoc({ items: [item({ group_id: 'grp-a' })] })
+    const v = validateChangeSet({ operations: [{ op: 'patch', item_id: 's-01', changes: { group_id: null } }] })
+    assert.deepEqual(v.errors, [])
+    assert.equal(v.normalized[0].changes.group_id, null) // 移除语义入库不丢键
+    const r = applyChangeSet(d, v.normalized)
+    assert.deepEqual(r.errors, [])
+    assert.ok(!('group_id' in r.doc.items[0]))
   })
 })
