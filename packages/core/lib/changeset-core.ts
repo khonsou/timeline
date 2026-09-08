@@ -36,6 +36,7 @@ import type { Orders } from './board-view.ts'
 import { nextOrder, publishDateOf } from './board-view.ts'
 import { newChangeSetGroupId, resolveWriteTimeGroup } from './group-core.ts'
 import { PATCH_FIELDS, applyItemPatch, resolveOwnerPatch } from './patch-core.ts'
+import { applyMirrorUpdates, diffPostMirror, normalizePreIds, validatePreIdRefs } from './relation-core.ts'
 import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt, sha1Hex } from './import-core.ts'
 
 /** 单板卡片数硬上限（协议 §9：change-set commit 时校验，超限全批拒绝） */
@@ -188,6 +189,13 @@ function normalizeCreateItem(
       item.group_id = String(raw.group_id).trim()
     }
   }
+  // pre_ids（v2-M3 F4 卡片关系，唯一写入源）：格式校验 + 去重在此发生；
+  // 存在性留待 apply（有看板上下文）；空数组 = 无前序（create 不写字段）
+  if ('pre_ids' in raw) {
+    const n = normalizePreIds(raw.pre_ids)
+    if (n.error) errors.push(`${label}: ${n.error}`)
+    else if (n.value!.length > 0) item.pre_ids = n.value
+  }
 
   if (errors.length > 0) return { errors }
   return { errors, item }
@@ -238,6 +246,11 @@ function normalizePatchChanges(
       changes[k] = null
     } else if (k === 'group_id') {
       changes[k] = String(raw[k]).trim()
+    } else if (k === 'pre_ids') {
+      // v2-M3 F4：空数组 = 清空全部前序（移除语义），必须显式保留 []——r.next 里字段已被
+      // delete，直接取 r.next[k] 会丢键；存在性/自环校验留待 commit（预校验无看板上下文）
+      const n = normalizePreIds(raw[k])
+      changes[k] = n.value ?? []
     } else if (k === 'dimmed' && raw[k] === false) {
       changes[k] = false
     } else {
@@ -572,6 +585,18 @@ export function applyChangeSet(
       } else if (!('group_id' in f)) {
         groupId = resolveWriteTimeGroup(groups, publish_at)
       }
+      // pre_ids（v2-M3 F4）：存在性校验（运行态 ids，同 set 前序新建卡可见）；
+      // 自环拒绝（防御：服务端分配 id，客户端本不可预知）；空数组 = 不写字段
+      let preIds: string[] | undefined
+      if (Array.isArray(f.pre_ids) && (f.pre_ids as string[]).length > 0) {
+        const v = f.pre_ids as string[]
+        const refErrs = validatePreIdRefs(v, id, ids)
+        if (refErrs.length > 0) {
+          errors.push(...refErrs.map((e) => `${label}: ${e}`))
+          continue
+        }
+        preIds = v
+      }
       // 指标 gate：最终 status ≠ 已发布 → 三指标强制 null（与 PATCH 同口径）
       const status = (f.status ?? '待执行') as ContentItem['status']
       const gate = status !== '已发布'
@@ -594,11 +619,21 @@ export function applyChangeSet(
         ...(f.dimmed === true ? { dimmed: true } : {}),
         // v2-M2：create 支持 group_id（引用已解析为真实分组 id；缺省 = 未分组）
         ...(groupId ? { group_id: groupId } : {}),
+        // v2-M3：create 支持 pre_ids（存在性已校验；post_ids 镜像在下方同事务维护）
+        ...(preIds ? { pre_ids: preIds } : {}),
       }
       // 同日多张新卡按 ops 顺序追加当日列尾（对运行态取 nextOrder）；已有卡片顺序不动
       orders[id] = nextOrder(items, orders, publishDateOf(item))
       items.push(item)
       ids.add(id)
+      // v2-M3：pre_ids 写入 → 被引用卡的 post_ids 镜像同事务更新 + 审计
+      if (preIds) {
+        const mus = diffPostMirror(items, id, [], preIds)
+        items = applyMirrorUpdates(items, mus)
+        for (const mu of mus) {
+          changes.push({ item_id: mu.id, field: 'post_ids', old_value: mu.old_post_ids ?? null, new_value: mu.new_post_ids ?? null })
+        }
+      }
       created.push({ client_ref: clientRef, id })
       // 新建卡审计：逐字段 old_value = null
       for (const [field, value] of Object.entries(item)) {
@@ -643,6 +678,13 @@ export function applyChangeSet(
       items = items.map((it) => (it.id === target.id ? r.next! : it))
       for (const c of r.changes) {
         changes.push({ item_id: target.id, field: c.field, old_value: c.old_value, new_value: c.new_value })
+      }
+      // v2-M3 F4：pre_ids 变更 → 被引用卡的 post_ids 镜像同事务更新 + 审计
+      if (r.mirrorUpdates.length > 0) {
+        items = applyMirrorUpdates(items, r.mirrorUpdates)
+        for (const mu of r.mirrorUpdates) {
+          changes.push({ item_id: mu.id, field: 'post_ids', old_value: mu.old_post_ids ?? null, new_value: mu.new_post_ids ?? null })
+        }
       }
     }
   }

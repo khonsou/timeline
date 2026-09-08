@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
@@ -12,8 +12,10 @@ import {
   resolveProduct,
 } from '@/lib/content-data'
 import { isPublished } from '@timeline/core/board-view'
+import { type Orders } from '@timeline/core/board-view'
 import { STATUSES } from '@timeline/core/import-core'
 import { formatCompact, formatPublishAt, formatRoi } from '@timeline/core/format'
+import { matchCards } from '@/lib/card-search'
 
 type EditField =
   | 'publish_at'
@@ -31,6 +33,13 @@ interface DetailDialogProps {
   onClose: () => void
   onUpdate: (id: string, patch: Partial<ContentItem>) => void
   onDelete: (id: string) => void
+  /** v2-M3 F4「前后关系」小节：全量卡片（chip 解析/选择器候选）与排序权重 */
+  items: ContentItem[]
+  orders: Orders
+  /** 编辑只走 pre_ids（唯一写入源）；post_ids 镜像由 core 同步维护 */
+  onSetPreIds: (id: string, preIds: string[]) => void
+  /** chip 点击跳转定位（复用 F5/F6 定位机制；两视图通用，由 BoardPage 路由） */
+  onLocateCard: (id: string) => void
 }
 
 const INPUT_BASE =
@@ -60,12 +69,169 @@ function linkify(text: string): React.ReactNode[] {
   )
 }
 
+// ---------------------------------------------------------------------------
+// v2-M3 F4「前后关系」小节（建边主入口，时间线/关系视图通用；方案 B+ 决策 #11）：
+// 前序/后续对称可增删——写路径统一翻译为 pre_ids（前序写本卡；后续写对方卡：
+// 加 = 对方卡 pre_ids 加上本卡，删 = 对方卡 pre_ids 减掉本卡），post_ids 恒为 core
+// 镜像只读展示。chip 点击跳转定位。
+// 选择器复用 F5 搜索的卡片匹配逻辑（matchCards：标题/备注/产品名/负责人）。
+// ---------------------------------------------------------------------------
+function RelationRow({
+  kind,
+  card,
+  items,
+  orders,
+  onSetPreIds,
+  onLocateCard,
+}: {
+  kind: 'pre' | 'post'
+  card: ContentItem
+  items: ContentItem[]
+  orders: Orders
+  onSetPreIds: (id: string, preIds: string[]) => void
+  onLocateCard: (id: string) => void
+}) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const byId = useMemo(() => new Map(items.map((it) => [it.id, it])), [items])
+  // 缺省空数组需稳定引用（useMemo 依赖口径，防每次渲染变引用）
+  const ids = useMemo(
+    () => (kind === 'pre' ? (card.pre_ids ?? []) : (card.post_ids ?? [])),
+    [kind, card.pre_ids, card.post_ids],
+  )
+  // 选择器候选排除：本卡自身 + 该行已关联卡（重复/自环不进候选；成环允许，数据层不禁止）
+  const exclude = useMemo(() => new Set([card.id, ...ids]), [card.id, ids])
+  const candidates = useMemo(
+    () => matchCards(query, items, orders, listProducts(), listMembers(), exclude).slice(0, 20),
+    [query, items, orders, exclude],
+  )
+  const inputRef = useRef<HTMLInputElement>(null)
+  useEffect(() => {
+    if (pickerOpen) inputRef.current?.focus()
+  }, [pickerOpen])
+
+  const add = (targetId: string) => {
+    if (kind === 'pre') {
+      onSetPreIds(card.id, [...(card.pre_ids ?? []), targetId])
+    } else {
+      // 添加后续 = 把本卡写进目标卡的 pre_ids（post_ids 不可直接写，单一写入源铁律）
+      const target = byId.get(targetId)
+      if (target) onSetPreIds(targetId, [...(target.pre_ids ?? []), card.id])
+    }
+    setPickerOpen(false)
+    setQuery('')
+  }
+
+  return (
+    <div className="mt-1.5" data-rel-row={kind}>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <span className="w-8 shrink-0 text-[11px] text-slate-400">{kind === 'pre' ? '前序' : '后续'}</span>
+        {ids.length === 0 && <span className="text-[11px] text-slate-300">无</span>}
+        {ids.map((rid) => {
+          const target = byId.get(rid)
+          return (
+            <span
+              key={rid}
+              data-rel-chip
+              className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 py-0.5 pl-2.5 pr-1 text-[11px] text-slate-600"
+            >
+              <button
+                type="button"
+                data-rel-locate
+                title={`点击定位「${target?.title ?? rid}」`}
+                onClick={() => onLocateCard(rid)}
+                className="max-w-40 truncate transition-colors hover:text-indigo-600"
+              >
+                {target?.title || '未命名卡片'}
+              </button>
+              <button
+                type="button"
+                data-rel-remove
+                aria-label={`移除${kind === 'pre' ? '前序' : '后续'}「${target?.title ?? rid}」`}
+                onClick={() => {
+                  if (kind === 'pre') {
+                    onSetPreIds(card.id, (card.pre_ids ?? []).filter((x) => x !== rid))
+                  } else {
+                    // 移除后续 = 把本卡从对方卡的 pre_ids 剔除（post_ids 不可直接写，单一写入源铁律；
+                    // 并发/失败沿用 onSetPreIds 既有写入路径约定，与删前序同级）
+                    const t = byId.get(rid)
+                    if (t) onSetPreIds(rid, (t.pre_ids ?? []).filter((x) => x !== card.id))
+                  }
+                }}
+                className="flex h-3.5 w-3.5 items-center justify-center rounded-full text-slate-300 transition-colors hover:bg-rose-100 hover:text-rose-500"
+              >
+                ×
+              </button>
+            </span>
+          )
+        })}
+        <button
+          type="button"
+          data-rel-add={kind}
+          onClick={() => {
+            setPickerOpen((v) => !v)
+            setQuery('')
+          }}
+          className="rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] text-slate-400 transition-colors hover:border-indigo-300 hover:text-indigo-500"
+        >
+          + 添加{kind === 'pre' ? '前序' : '后续'}
+        </button>
+      </div>
+      {pickerOpen && (
+        <div data-rel-picker className="relative mt-1.5 rounded-xl border border-slate-200 bg-white p-2 shadow-[0_10px_28px_-10px_rgba(15,23,42,0.25)]">
+          <input
+            ref={inputRef}
+            data-rel-input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                e.stopPropagation()
+                setPickerOpen(false)
+              } else if (e.key === 'Enter' && candidates[0]) {
+                e.preventDefault()
+                add(candidates[0].id)
+              }
+            }}
+            placeholder="搜索标题、备注、产品或负责人…"
+            className="w-full rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[12px] outline-none focus:border-indigo-300 focus:bg-white"
+          />
+          <div className="mt-1 max-h-40 overflow-y-auto">
+            {query.trim() === '' ? (
+              <p className="px-2 py-3 text-center text-[11px] text-slate-300">输入关键词搜索卡片</p>
+            ) : candidates.length === 0 ? (
+              <p className="px-2 py-3 text-center text-[11px] text-slate-400">没有匹配「{query.trim()}」的卡片</p>
+            ) : (
+              candidates.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  data-rel-option
+                  onClick={() => add(c.id)}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[12px] text-slate-700 transition-colors hover:bg-indigo-50/80"
+                >
+                  <span className="truncate">{c.title || '未命名卡片'}</span>
+                  <span className="ml-auto shrink-0 text-[10px] text-slate-300">{c.status}</span>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function DetailDialog({
   card,
   autoEditTitle,
   onClose,
   onUpdate,
   onDelete,
+  items,
+  orders,
+  onSetPreIds,
+  onLocateCard,
 }: DetailDialogProps) {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
@@ -654,6 +820,27 @@ export default function DetailDialog({
                     {card.comment ? linkify(card.comment) : '添加备注…'}
                   </p>
                 )}
+              </div>
+
+              {/* 5.5 前后关系（v2-M3 F4 建边主入口）：前序可编辑 / 后续镜像只读 + 选择器添加 */}
+              <div className="mt-4" data-relations>
+                <p className="text-[10px] text-slate-400">前后关系</p>
+                <RelationRow
+                  kind="pre"
+                  card={card}
+                  items={items}
+                  orders={orders}
+                  onSetPreIds={onSetPreIds}
+                  onLocateCard={onLocateCard}
+                />
+                <RelationRow
+                  kind="post"
+                  card={card}
+                  items={items}
+                  orders={orders}
+                  onSetPreIds={onSetPreIds}
+                  onLocateCard={onLocateCard}
+                />
               </div>
               </div>{/* /2~5 内容区滚动容器 */}
 

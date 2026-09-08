@@ -1,8 +1,10 @@
-# Agent API 指南（拾光轴 · Timeline Board · v19 change-set 协议）
+# Agent API 指南（拾光轴 · Timeline Board · v19 change-set 协议 + v2 字段/分组/关系）
 
 > 面向第三方 agent 的看板读写协议：**变更集（Change Set）是唯一写入口径**——
 > 提案（创建 pending）→ 人工 review（GET）→ 原子提交（commit）→ 逐字段审计溯源。
 > 鉴权与人完全同一套：**看板 URL + 密码 → 换 12h token**，没有独立的 agent key 体系。
+> v2 追加（语义详见第 6 / 7 节）：M1 卡片表现字段（`bg_color` / `dimmed`）、
+> M2 统一分组模型（`groups[]` / `group_id` + 三个分组 op）、M3 卡片前后关系（`pre_ids` / `post_ids`）。
 > 上手示例脚本见 [examples/agent-quickstart.mjs](../examples/agent-quickstart.mjs)（零依赖直跑）。
 
 ## 1. 鉴权
@@ -54,7 +56,9 @@ curl -H "authorization: Bearer $TOKEN" \
   'http://<host>:8787/api/boards/<board_id>/items'
 # → { "items": [ { id, title, type, publish_at, roi, comment, product_id,
 #                  status, content_owner_id, delivery_owner_id,
-#                  propagation_4h, engagement_4h, links? }, ... ] }
+#                  propagation_4h, engagement_4h, links?,
+#                  bg_color?, dimmed?, group_id?,      // v2-M1 / v2-M2，可缺省
+#                  pre_ids?, post_ids? }, ... ] }      // v2-M3，可缺省（post_ids 为只读镜像）
 
 # 过滤（均可选、可叠加、AND 语义）：
 #   date=YYYY-MM-DD   按日列（publish_at 日期前缀匹配）
@@ -106,20 +110,28 @@ pending
   过期后不得提交（commit → `409`，`status: "expired"`）。
 - 终态记录保留 30 天；审计记录长期保留。
 
-### 4.2 Operations（v1 仅 create / patch）
+### 4.2 Operations（卡片 op：create / patch；v2-M2 追加分组 op：group_create / group_patch / group_delete）
 
 | op | 形状 | 语义 |
 |---|---|---|
 | `create` | `{ "op":"create", "client_ref":"row-1", "item": {…} }` | **卡片 id 由服务端分配**（客户端不可指定，传 id → 400）；`client_ref` 是客户端追踪柄，提交结果里回映射 `client_ref → id`；同一日期多张新卡按 operations 顺序追加到当日列尾，已有卡片顺序不变 |
 | `patch` | `{ "op":"patch", "item_id":"ag-c04", "changes": {…} }` | 与单卡 PATCH 同一套白名单与校验规则（见第 5 节）；`publish_at` 跨日 → 目标日列尾，同日 → 顺序不变 |
+| `group_create`（v2-M2） | `{ "op":"group_create", "client_ref":"g-1", "group": {"name":"Sprint 5"} }` | 新建分组；**分组 id 由服务端分配**（`grp-` 前缀内容哈希，同一 change-set 重试 id 不变）；`client_ref` 可被同 set 后续 op 的 `group_id` / `move_to` / `before_group_id` 直接引用（set 内先建后引用）；提交结果回映射 `groups: [{client_ref, id}]`；分组总数上限 **61**（虚拟「未分组」列不占名额），超限全批拒绝 |
+| `group_patch`（v2-M2） | `{ "op":"group_patch", "group_id":"grp-…", "changes": {"name": "…", "before_group_id": "grp-…" \| null} }` | 重命名 / 调列序（`before_group_id` = 移到该分组之前；`null` = 移到末尾；不可指向自身）；组改名**不影响卡片**（卡片落盘恒为 group_id 引用，不跟随改名） |
+| `group_delete`（v2-M2） | `{ "op":"group_delete", "group_id":"grp-…", "move_to": "grp-…"（可缺省） }` | 删组；`move_to` 缺省 = 组内卡片归「未分组」（移除 `group_id` 字段）；显式给出时须指向已存在分组（不能是被删分组自身；同 set 新建分组的 client_ref 可引用） |
 
-- `item` / `changes` 的可用字段 = PATCH 白名单 12 字段（第 5 节）；create 时
+- 卡片 `item` / `changes` 的可用字段 = PATCH 白名单 16 字段（第 5 节）；create 时
   `title` / `publish_at` 必填，其余缺省按新建卡片默认（type=图文、status=待执行、
-  指标 null、负责人未分配、product 未归属）。
-- **不支持 `delete`**（破坏审计链、误删代价高；未来优先增加可恢复的 `archive`）；
+  指标 null、负责人未分配、product 未归属、未分组）。
+- **不支持卡片 `delete`**（破坏审计链、误删代价高；v2-M3 起 agent 删卡走整板 PUT，
+  服务端规范化会自动级联剔除关系引用，见第 7 节）；
   **不支持 `reorder`**（不允许直接写 order）。
 - 负责人字段传**姓名或成员 id**：未知姓名自动登记新成员（`M-<序号>`），
   整个 change-set 内同名去重后一次性并入成员目录。
+- **写入时归属解析**（v2-M2，一次性）：create / patch 未显式给 `group_id` 但带
+  `publish_at`，且存在同名日期组（组名 = `YYYY-MM-DD`）→ 挂入该组；无同名组 →
+  归未分组，**绝不自动建组**。patch 仅当日期部分实际变化时触发；显式传 `group_id`
+  （含 `null`）时以显式值为准。
 - **2000 张硬上限**：commit 时校验，超限**全批拒绝**（看板零变化）。
 
 ### 4.3 创建（提案）
@@ -139,10 +151,11 @@ curl -X POST http://<host>:8787/api/boards/<board_id>/change-sets \
 # → 201 { change_set_id, status:"pending", expires_at, … }（完整 change-set）
 ```
 
-创建时服务端做**预校验**（格式类错误尽早暴露：operations 非空数组、op 仅 create/patch、
-白名单、逐字段格式），失败 → `400 { "error": "…；…", "errors": [...] }`（中文文案，
-多错误 `；` 拼接）。注意：patch 的 `item_id` 存在性、2000 上限、版本并发**不在预校验阶段**，
-都在 commit。
+创建时服务端做**预校验**（格式类错误尽早暴露：operations 非空数组、op 仅
+create / patch / group_create / group_patch / group_delete、白名单、逐字段格式），失败 →
+`400 { "error": "…；…", "errors": [...] }`（中文文案，多错误 `；` 拼接）。注意：
+patch 的 `item_id` 存在性、`group_id` / `pre_ids` 的引用存在性、2000 上限、分组 61 上限、
+版本并发**不在预校验阶段**，都在 commit。
 
 ### 4.4 提交（原子确认）
 
@@ -161,6 +174,7 @@ curl -X POST http://<host>:8787/api/boards/<board_id>/change-sets/cs-3f9a…/com
 
 ```text
 全部通过   → 200 { "status":"committed", "version":43, "items":[{"client_ref":"row-1","id":"auto-…"}…] }
+             （v2-M2 起含 group_create 时追加 "groups":[{"client_ref":"g-1","id":"grp-…"}…]）
 校验失败   → 400 { "error":"…", "errors":[…] }，change-set → rejected，看板零变化，不允许部分提交
 版本不一致 → 409 { "error":"VERSION_CONFLICT", "current_version":43 }，change-set → conflicted，看板零变化
 ```
@@ -183,8 +197,8 @@ curl -X POST http://<host>:8787/api/boards/<board_id>/change-sets/cs-3f9a…/can
 
 ## 5. 改卡片（单卡 PATCH）
 
-body 为字段补丁对象，只允许以下白名单字段（**12 个**），其余键一律
-`400 { "error": "不支持修改的字段: xxx" }`：
+body 为字段补丁对象，只允许以下白名单字段（**16 个**），其余键一律
+`400 { "error": "不支持修改的字段: xxx" }`（v2-M3 起含 `post_ids`——它是只读镜像，见第 7 节）：
 
 | 字段 | 规则 |
 |---|---|
@@ -196,19 +210,26 @@ body 为字段补丁对象，只允许以下白名单字段（**12 个**），�
 | `content_owner_id` / `delivery_owner_id` | 传**成员 id 或姓名**：命中 → 复用；未知姓名 → **自动登记进成员目录**（`M-<序号>`）；空 = 未分配 |
 | `roi` / `propagation_4h` / `engagement_4h` | 空/null → null；须为非负数字 |
 | `comment` | 字符串；**人工备注，不是机器协议**——结构化数据一律走 `links` 等结构化字段 |
-| `links` | **结构化链接数组**（v19 新增），见第 6 节 |
+| `links` | **结构化链接数组**（v19 新增），见第 8 节 |
+| `bg_color`（v2-M1） | 卡片背景色 hex `#rrggbb`（`#rgb` 与大写输入归一化为小写 `#rrggbb`；UI 色板的 8 预设色只是写入快捷值，落盘恒为 hex；旧色板 token 如 `amber` 写入时收敛为对应 hex）。`null` / 空串 = 恢复默认（移除字段） |
+| `dimmed`（v2-M1） | 严格 boolean：`true` = 置灰（卡片半透明退到背景），`false` = 点亮（移除字段）。**系统不做任何自动置灰/解除，完全由用户/agent 控制** |
+| `group_id`（v2-M2） | 分组 id（指向 `groups[]` 已有分组）；非法引用 → `400`；`null` / 空串 = 归「未分组」（移除字段）。未显式给但改了 `publish_at` → 写入时归属解析（见 4.2） |
+| `pre_ids`（v2-M3） | 前序卡片 id 数组（**关系唯一写入源**）：元素须为板内已存在卡片 id（悬空 → `400`；自环 → `400`；重复自动去重）；`[]` = 清空全部前序（移除字段）。规则与镜像语义见第 7 节 |
 
 **可选 `If-Match` 头**（值为看板 version 数字）：携带且与当前 version 不符 →
 `409 { "error":"VERSION_CONFLICT", "current_version": N }`；不携带维持最后一次写胜
 （兼容模式，迁移完成后将转为强制）。整板 `PUT /api/boards/:id` 同样支持可选
 `If-Match`；不携带时兼容放行但响应头带 `Deprecation: true`（该写路径将废弃，
-新写入请走 change-sets）。
+新写入请走 change-sets）。v2-M3 起整板 PUT 与 POST 建板在存储前会做**关系规范化**
+（幂等，见第 7 节）。
 
-两条与 UI 完全一致的内建联动：
+三条与 UI 完全一致的内建联动：
 
 1. **指标 gate**：PATCH 后的最终状态非「已发布」→ 三指标强制为 `null`——
    发布填指标请**同帧**带上 `status: "已发布"`；
-2. **orders 联动**：`publish_at` 跨日变更 → 卡片排到目标日列末尾；同日时分变更不影响列内顺序。
+2. **orders 联动**：`publish_at` 跨日变更 → 卡片排到目标列末尾；同日时分变更不影响列内顺序；
+3. **关系镜像联动**（v2-M3）：`pre_ids` 实际变化时，被增删引用卡片的 `post_ids`
+   在同一事务内自动差分维护（镜像卡的变化同样逐条写审计，field 为 `post_ids`）。
 
 响应：
 
@@ -235,9 +256,57 @@ curl -X PATCH ... -d '{"links":[{"id":"l1","rel":"publish","url":"https://exampl
 ```
 
 校验失败为 `400`，文案与 CLI / UI 导入同一套中文规则，例如：
-`status 非法: "进行中"，合法值: 待执行 / 待发布 / 已发布`、`links[0].url 必填且非空`。
+`status 非法: "进行中"，合法值: 待执行 / 待发布 / 已发布`、`links[0].url 必填且非空`、
+`pre_ids 指向不存在的卡片: ghost`、`pre_ids 不允许自环（卡片不能是自己的前序）`。
 
-## 6. links 字段与 Schema 演进规则
+## 6. 分组与列归属（v2-M2 统一分组模型）
+
+看板 doc 追加 `groups[]`（可缺省），卡片追加 `group_id`（可缺省）：
+
+```jsonc
+{
+  "groups": [ { "id": "grp-…", "name": "Sprint 5" }, ... ],  // 数组序 = 列顺序，≤ 61
+  "items": [ { "id": "…", "group_id": "grp-…", ... }, ... ]
+}
+```
+
+- **不分模式**：日期只不过是组名恰巧是 `YYYY-MM-DD` 的组；`publish_at` 与分组彻底脱钩，
+  是纯信息字段（不再决定列归属）。
+- **「未分组」是虚拟系统列**：不占 `groups[]` 数据、不可删/改名/排序，恒为第一列；
+  卡片 `group_id` 缺省 / 悬空（加载兜底重置）/ 写 `null` = 未分组。
+- **上限 61**：`group_create` 超限 → commit `400` 全批拒绝。
+- **写入严格**：卡片 `group_id` 指向不存在的分组 → `400`（change-set 预校验只查格式，
+  存在性在 commit；同 set 可先 `group_create` 再用其 `client_ref` 引用）。
+- **存量迁移在客户端加载时自动发生**（一次性、确定性幂等）：无 `groups` 字段的老板 →
+  派生「今天 ±30 天」共 61 个同名日期组并回填窗口内卡片 `group_id`；窗口外离群卡归未分组。
+  服务端只是 LWW 存储——agent 读到的 `groups[]` 即迁移结果（页面打开过即已落盘）。
+- 分组管理只走 change-set 的三个 doc 级 op（见 4.2）；**没有分组专用的 REST 端点**。
+
+## 7. 卡片前后关系（v2-M3）
+
+多对多有向依赖「前序 → 后续」：卡片追加 `pre_ids` / `post_ids`（均可缺省）。
+
+- **`pre_ids` 是唯一写入源**（前序卡片 id 数组）；**`post_ids` 是 core 维护的镜像，外部只读**——
+  不变量 `A.post_ids ∋ B ⇔ B.pre_ids ∋ A`，写 `pre_ids` 时同事务自动差分维护；
+  **直接 PATCH / change-set 写 `post_ids` 一律 `400`**（白名单外字段）。
+- **「给 A 加后续 B」= patch `B.pre_ids += A`**（把 A 写进 B 的前序），不要反过来找
+  「写 A 的 post_ids」的入口——不存在，防误用。
+- 规则：元素须为板内已存在卡片 id；自环 `400`；重复自动去重；`pre_ids: []` = 清空
+  （移除字段，镜像同步回收）；删卡级联剔除所有引用。
+- **成环数据层允许**（不写 400），环由关系视图层降级处理（断边标黄提示）——
+  agent 建环不会被拒，但请自行避免。
+- 两条写路径严格度分层：
+  - **PATCH / change-set（严格）**：`pre_ids` 悬空 id / 自环 → `400` 拒绝；
+  - **整板 PUT / POST 带 doc 建板（LWW 覆盖语义）**：服务端**规范化而非拒绝**——
+    `pre_ids` 去重、剔悬空 id、剔自环，并按 `pre_ids` 全量重建 `post_ids` 镜像；
+    确定性、幂等，对合法 doc 是 no-op。**agent 删卡走整板 PUT**（change-set 无卡片
+    delete op），规范化同时覆盖删卡级联：被删卡 id 从所有 `pre_ids` / `post_ids` 剔除。
+- change-set `create` 的 `item` 可携带 `pre_ids`；同 set 内前序新建的卡片可被引用——
+  卡片 id 是确定性内容哈希，客户端可按同一算法（`newChangeSetItemId`）复算得到
+  （注意：卡片引用**没有** client_ref 别名解析，`group_id` / `move_to` / `before_group_id`
+  这些分组引用才支持 client_ref）。
+
+## 8. links 字段与 Schema 演进规则
 
 ```jsonc
 "links": [
@@ -252,7 +321,7 @@ curl -X PATCH ... -d '{"links":[{"id":"l1","rel":"publish","url":"https://exampl
 - **演进铁律：未来字段只能追加，不得改变已有字段语义。** `links` 是首例。
 - 迁移：旧 `comment` 中的 URL 可一次性转换到 `links`，原 `comment` 保留不变。
 
-## 7. 审计
+## 9. 审计
 
 每次有实际变化的写入，按**实际变化的字段**逐字段写一条审计（无变化不写、version 不增）：
 
@@ -268,13 +337,17 @@ curl -H "authorization: Bearer $TOKEN" \
   `change_set_id`、`request_id`（每次写请求生成，同一次提交共用同一 ts 与 request_id）。
 - **直接 PATCH → `change_set_id` / `actor` / `source` 为 `null`**（自报身份只走 change-set 创建入参）；
   历史条目（v19 之前）这四列同样为 `null`——消费方必须容忍 null。
+- v2 起 `field` 新增取值：`bg_color` / `dimmed` / `group_id` / `pre_ids`（M1–M3 卡片字段）；
+  关系镜像联动会在被引用卡片上写 `field: "post_ids"` 条目（item_id = 被改镜像的卡片）；
+  分组 op（M2）写：`group`（`item_id` = 分组 id；create 时 old=null / delete 时 new=null）、
+  `group.name`、`group.order`（old/new 为列序下标）、`group_id`（删组迁移逐卡一条）。
 - 审计只覆盖协议写路径；页面人工编辑的整板 PUT 无逐字段审计。
 
-## 8. 错误码总表
+## 10. 错误码总表
 
 | 码 | 场景 |
 |---|---|
-| `400` | 白名单外字段 / 校验失败（中文明细） / 请求体非法 JSON / change-set 超 2000 张上限 / commit 全量校验不过（change-set → rejected） |
+| `400` | 白名单外字段（含直接写 `post_ids`） / 校验失败（中文明细） / 请求体非法 JSON / change-set 超 2000 张上限 / 分组超 61 上限 / `group_id` / `pre_ids` 非法引用或自环 / commit 全量校验不过（change-set → rejected） |
 | `401` | token 缺失 / 过期 / 签名不符 |
 | `403` | 密码错误 |
 | `404` | 看板 / 卡片 / 变更集不存在 |
@@ -284,7 +357,7 @@ curl -H "authorization: Bearer $TOKEN" \
 | `413` | 请求体超 8MB |
 | `429` | 限速 / 密码锁定，带 `retry_after` |
 
-## 9. 限速与容量
+## 11. 限速与容量
 
 - item 级与 change-set 端点（同一个限速桶）：**每 board 每 IP 120 次/分钟**（内存滑动窗口，
   `BOARD_AGENT_RPM` 可调；重启清零），超限 → `429 { "error": "…", "retry_after": N }`。
@@ -292,7 +365,7 @@ curl -H "authorization: Bearer $TOKEN" \
 - **反代部署必须配置真实客户端 IP 传递**（`X-Forwarded-For`），否则限速退化为每板全局。
 - 单板 **2000 张**硬上限：change-set commit 时校验，超限全批拒绝（400）。
 
-## 10. 上手示例（两个典型 Use Case）
+## 12. 上手示例（两个典型 Use Case）
 
 完整可运行脚本：[examples/agent-quickstart.mjs](../examples/agent-quickstart.mjs)。
 
@@ -338,7 +411,7 @@ curl -s "$API/api/boards/$BOARD/items?status=已发布" -H "authorization: Beare
 curl -s "$API/api/boards/$BOARD/audit?limit=50" -H "authorization: Bearer $TOKEN"
 ```
 
-## 11. 注意事项
+## 13. 注意事项
 
 - **指标字段必须与 `"status":"已发布"` 同帧提交**，否则被 gate 清空。
 - 按姓名指派负责人会**自动登记新成员**（拼写错误会污染成员目录；只增不删，
@@ -348,6 +421,14 @@ curl -s "$API/api/boards/$BOARD/audit?limit=50" -H "authorization: Bearer $TOKEN
 - 429 时按 `retry_after` 退避；反代部署确认真实客户端 IP 传递，否则限速退化为每板全局。
 - **卡片 id 一律服务端分配**（CLI 兼容导入层除外，不进入协议语义）；create 结果用
   `client_ref` 追踪，同一 change-set 内容重试 id 不变（确定性内容哈希）。
+- **「给 A 加后续 B」= patch `B.pre_ids += A`**（v2-M3）；`post_ids` 是只读镜像，
+  直接写一律 400——不要找「写后续」的入口。
+- `dimmed` 完全由用户/agent 控制（v2-M1）：**系统不做任何自动置灰/解除**，
+  agent 读到 `dimmed: true` 不代表卡片失效，只是视觉退到背景。
+- 删卡走整板 PUT（change-set 无卡片 delete op）；v2-M3 起 PUT / POST 建板在存储前做
+  关系规范化（剔悬空/自环/重复 + 重建 `post_ids` 镜像），删卡级联由其覆盖。
+- 老板（无 `groups` 字段）的日期分组是**客户端加载时迁移**出来的（v2-M2）：
+  agent 读到的 `groups[]` / `group_id` 以页面打开后落盘的迁移结果为准。
 - 生产部署 server 必须设固定 `BOARD_SECRET`（缺省随机 → 重启后全部 token 失效）。
 - 看板页面写路径（M4 起）带 `If-Match` 版本保护整板 PUT；双端并发时 agent 的
   change-set 可能因 version 前进被拒（conflicted）——这是协议的并发控制，按上文重建即可。

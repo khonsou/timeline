@@ -23,6 +23,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import TopBar from '@/components/TopBar'
 import Board, { type BoardApi } from '@/components/board/Board'
+import BoardGraph, { type GraphApi } from '@/components/board/BoardGraph'
 import DetailDialog from '@/components/board/DetailDialog'
 import ProductManagerDialog from '@/components/board/ProductManagerDialog'
 import MemberManagerDialog from '@/components/board/MemberManagerDialog'
@@ -45,6 +46,11 @@ import {
 } from '@/lib/content-data'
 import { nextOrderInGroup, publishDateOf, type Orders } from '@timeline/core/board-view'
 import { resolveWriteTimeGroup } from '@timeline/core/group-core'
+import {
+  cascadeDeleteRelations,
+  withAddedRelation,
+  withPreIds,
+} from '@timeline/core/relation-core'
 import {
   computeOrders,
   mergeMembers,
@@ -246,6 +252,11 @@ function SyncedBoard({
   const [searchOpen, setSearchOpen] = useState(false)
   const [toast, setToast] = useState<string | null>(null)
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // v2-M3 F4：视图切换（时间线 / 关系图），视图状态进 URL hash（#view=graph），刷新/分享可定位
+  const [view, setView] = useState<'timeline' | 'graph'>(() =>
+    parseBoardHash(window.location.hash).view === 'graph' ? 'graph' : 'timeline',
+  )
+  const graphApiRef = useRef<GraphApi | null>(null)
   /** 分享链接 #card= 目标（仅首次进板消费一次；hash 保留在地址栏，刷新可复现） */
   const shareCardRef = useRef<string | null>(parseBoardHash(window.location.hash).card ?? null)
   /** 首次全量 GET 已完成（成功失败皆算——失败时以缓存为准，避免离线白等） */
@@ -256,6 +267,18 @@ function SyncedBoard({
     setToast(msg)
     toastTimerRef.current = setTimeout(() => setToast(null), 2500)
   }
+  // v2-M3 F4：视图状态同步进 URL hash（保留既有 #card= 参数；replaceState 不刷历史）
+  useEffect(() => {
+    const h = parseBoardHash(window.location.hash)
+    window.history.replaceState(
+      null,
+      '',
+      buildBoardUrl(boardId, {
+        ...(view === 'graph' ? { view: 'graph' } : {}),
+        ...(h.card ? { card: h.card } : {}),
+      }),
+    )
+  }, [view, boardId])
   useEffect(
     () => () => {
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current)
@@ -263,9 +286,10 @@ function SyncedBoard({
     [],
   )
 
-  // F6：复制卡片分享链接（/b/:id#card=<contentId>，不绕过密码门）；剪贴板不可用时 execCommand 兜底
+  // F6：复制卡片分享链接（/b/:id#card=<contentId>，不绕过密码门）；关系视图下分享带 #view=graph（F4）；
+  // 剪贴板不可用时 execCommand 兜底
   const copyShareLink = async (id: string) => {
-    const url = buildBoardUrl(boardId, { card: id })
+    const url = buildBoardUrl(boardId, { card: id, ...(view === 'graph' ? { view: 'graph' } : {}) })
     try {
       await navigator.clipboard.writeText(url)
     } catch {
@@ -693,19 +717,50 @@ function SyncedBoard({
   useEffect(() => {
     const target = shareCardRef.current
     if (!target || !loaded) return
-    const api = boardApiRef.current
+    const api = view === 'graph' ? graphApiRef.current : boardApiRef.current
     if (!api) return
     shareCardRef.current = null
-    if (items.some((c) => c.id === target)) api.revealCard(target)
-    else showToast('卡片不存在或已删除')
-  }, [items, syncStatus, loaded])
+    if (items.some((c) => c.id === target)) {
+      if (view === 'graph') {
+        // 孤立卡（无任何前后关系）不在图中 → toast 降级提示，不白屏不错位
+        if (graphApiRef.current?.revealNode(target) === false) {
+          showToast('该卡片暂无前后关系，关系视图中不可见')
+        }
+      } else {
+        boardApiRef.current?.revealCard(target)
+      }
+    } else showToast('卡片不存在或已删除')
+  }, [items, syncStatus, loaded, view])
+
+  // ------------------------------------------------------------------
+  // v2-M3 F4 卡片关系：本地写路径（pre_ids 唯一写入源；镜像/级联由 core 同事务维护，
+  // 随整板同步层推送——与 change-set / 单卡 PATCH 同一份 core 规则）
+  // ------------------------------------------------------------------
+  /** 设置某卡的 pre_ids 并同步相关卡 post_ids 镜像（详情弹窗「前后关系」小节用） */
+  const setPreIds = (id: string, preIds: string[]) => {
+    setItems((prev) => withPreIds(prev, id, preIds))
+  }
+  /** 建边 preId → postId（关系视图拖拽连线用；自环/重复/不存在 = 幂等 no-op） */
+  const addRelation = (preId: string, postId: string) => {
+    setItems((prev) => withAddedRelation(prev, preId, postId))
+  }
+  /** 跨视图定位：关系视图 → 节点居中+高亮；时间线 → 列定位+高亮（F5/F6/详情 chip 共用） */
+  const revealCardAny = (id: string) => {
+    if (view === 'graph') {
+      // 孤立卡不在图中 → toast 降级提示
+      if (graphApiRef.current?.revealNode(id) === false) showToast('该卡片暂无前后关系，关系视图中不可见')
+    } else {
+      boardApiRef.current?.revealCard(id)
+    }
+  }
 
   const deleteCard = (id: string) => {
     if (id === detailCardId) {
       setDetailCardId(null)
       setDetailAutoEdit(false)
     }
-    setItems((prev) => prev.filter((c) => c.id !== id))
+    // v2-M3 F4：删卡级联——同事务从所有相关卡的 pre_ids / post_ids 剔除该 id
+    setItems((prev) => cascadeDeleteRelations(prev, new Set([id])).filter((c) => c.id !== id))
     setOrders((prev) => {
       const next = { ...prev }
       delete next[id]
@@ -854,32 +909,53 @@ function SyncedBoard({
         onOpenMembers={() => setMembersOpen(true)}
         onImportFile={handleImportFile}
         onOpenSearch={() => setSearchOpen(true)}
+        view={view}
+        onViewChange={setView}
       />
-      <Board
-        items={items}
-        orders={orders}
-        setItems={setItems}
-        setOrders={setOrders}
-        onOpenDetail={openDetail}
-        onDelete={deleteCard}
-        onAddCard={addCard}
-        apiRef={boardApiRef}
-        onSetBgColor={setBgColor}
-        onToggleDimmed={toggleDimmed}
-        onCopyShareLink={(id) => void copyShareLink(id)}
-        canAdd={items.length < MAX_CARDS}
-        groups={groups}
-        onRenameGroup={renameGroup}
-        onMoveGroup={moveGroup}
-        onDeleteGroup={deleteGroup}
-        onAddGroup={addGroup}
-      />
+      {/* v2-M3 F4 视图切换：时间线保持挂载（hidden 保滚动/拖拽态），关系图按需挂载 */}
+      <div className={`${view === 'timeline' ? 'flex' : 'hidden'} min-h-0 flex-1 flex-col`}>
+        <Board
+          items={items}
+          orders={orders}
+          setItems={setItems}
+          setOrders={setOrders}
+          onOpenDetail={openDetail}
+          onDelete={deleteCard}
+          onAddCard={addCard}
+          apiRef={boardApiRef}
+          onSetBgColor={setBgColor}
+          onToggleDimmed={toggleDimmed}
+          onCopyShareLink={(id) => void copyShareLink(id)}
+          canAdd={items.length < MAX_CARDS}
+          groups={groups}
+          onRenameGroup={renameGroup}
+          onMoveGroup={moveGroup}
+          onDeleteGroup={deleteGroup}
+          onAddGroup={addGroup}
+        />
+      </div>
+      {view === 'graph' && (
+        <BoardGraph
+          items={items}
+          orders={orders}
+          apiRef={graphApiRef}
+          onOpenDetail={openDetail}
+          onAddRelation={addRelation}
+        />
+      )}
       <DetailDialog
         card={detailCard}
         autoEditTitle={detailAutoEdit}
         onClose={closeDetail}
         onUpdate={updateCard}
         onDelete={deleteCard}
+        items={items}
+        orders={orders}
+        onSetPreIds={setPreIds}
+        onLocateCard={(id) => {
+          closeDetail()
+          revealCardAny(id)
+        }}
       />
       <ProductManagerDialog
         open={productsOpen}
@@ -905,7 +981,7 @@ function SyncedBoard({
         members={members}
         groups={groups}
         onClose={() => setSearchOpen(false)}
-        onLocate={(id) => boardApiRef.current?.revealCard(id)}
+        onLocate={revealCardAny}
         onCopyLink={(id) => void copyShareLink(id)}
       />
       {/* v2-M1 轻量 toast（分享链接复制确认 / 卡片已删除提示） */}

@@ -53,12 +53,14 @@ describe('字段白名单', () => {
     assert.deepEqual(r.changes, [])
     assert.equal(r.orderUpdate, null)
   })
-  it('PATCH_FIELDS 恰为 15 个字段且不含只读字段（v19+ 追加 links；v2-M1 追加 bg_color/dimmed；v2-M2 追加 group_id）', () => {
-    assert.equal(PATCH_FIELDS.length, 15)
+  it('PATCH_FIELDS 恰为 16 个字段且不含只读字段（v19+ 追加 links；v2-M1 追加 bg_color/dimmed；v2-M2 追加 group_id；v2-M3 追加 pre_ids）', () => {
+    assert.equal(PATCH_FIELDS.length, 16)
     assert.ok(PATCH_FIELDS.includes('links'))
     assert.ok(PATCH_FIELDS.includes('bg_color'))
     assert.ok(PATCH_FIELDS.includes('dimmed'))
     assert.ok(PATCH_FIELDS.includes('group_id'))
+    assert.ok(PATCH_FIELDS.includes('pre_ids'))
+    assert.ok(!PATCH_FIELDS.includes('post_ids')) // v2-M3：post_ids 是 core 镜像，外部只读
     assert.ok(!PATCH_FIELDS.includes('id'))
     assert.ok(!PATCH_FIELDS.includes('orders'))
     assert.deepEqual([...METRIC_FIELDS], ['roi', 'propagation_4h', 'engagement_4h'])
@@ -367,5 +369,62 @@ describe('group_id（v2-M2 F3：自定义分组写入，严格分层）', () => 
     }
     // 未分组卡再归未分组 = 幂等无 changes
     assert.deepEqual(applyItemPatch({ group_id: null }, item(), ctx({ groups: GROUPS })).changes, [])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v2-M3 F4 卡片关系：pre_ids 唯一写入源；post_ids 镜像差分（同一事务应用）；
+// post_ids 直接 patch → 白名单外 400
+// ---------------------------------------------------------------------------
+describe('pre_ids / post_ids（v2-M3 F4 卡片关系）', () => {
+  const REL_GROUPS = [{ id: 'grp-a', name: 'A' }] // 触发「有看板上下文」严格校验即可，内容无关
+  it('写入 pre_ids → next 落字段 + changes 记录 + 被引用卡 post_ids 镜像差分', () => {
+    const r = applyItemPatch({ pre_ids: ['s-02', 's-03'] }, item(), ctx({ groups: REL_GROUPS }))
+    assert.deepEqual(r.errors, [])
+    assert.deepEqual(r.next.pre_ids, ['s-02', 's-03'])
+    assert.deepEqual(r.changes, [{ field: 'pre_ids', old_value: undefined, new_value: ['s-02', 's-03'] }])
+    assert.deepEqual(r.mirrorUpdates, [
+      { id: 's-02', old_post_ids: undefined, new_post_ids: ['s-01'] },
+      { id: 's-03', old_post_ids: undefined, new_post_ids: ['s-01'] },
+    ])
+  })
+  it('post_ids 直接 patch → 白名单外（不支持修改的字段）', () => {
+    const r = applyItemPatch({ post_ids: ['s-02'] }, item(), ctx({ groups: REL_GROUPS }))
+    assert.deepEqual(r.unknownFields, ['post_ids'])
+    assert.equal(r.next, undefined)
+  })
+  it('自环拒绝；重复 id 去重保序；非数组 / 非字符串元素拒绝', () => {
+    const self = applyItemPatch({ pre_ids: ['s-01'] }, item(), ctx({ groups: REL_GROUPS }))
+    assert.match(self.errors[0], /不允许自环/)
+    const dup = applyItemPatch({ pre_ids: ['s-02', 's-02', 's-03'] }, item(), ctx({ groups: REL_GROUPS }))
+    assert.deepEqual(dup.errors, [])
+    assert.deepEqual(dup.next.pre_ids, ['s-02', 's-03'])
+    const bad = applyItemPatch({ pre_ids: 's-02' }, item(), ctx({ groups: REL_GROUPS }))
+    assert.match(bad.errors[0], /pre_ids 非法/)
+    const badEl = applyItemPatch({ pre_ids: ['s-02', 42] }, item(), ctx({ groups: REL_GROUPS }))
+    assert.match(badEl.errors[0], /pre_ids 元素非法/)
+  })
+  it('悬空 id（有看板上下文）→ 写入严格拒绝；无上下文（预校验分层）只查格式', () => {
+    const strict = applyItemPatch({ pre_ids: ['ghost'] }, item(), ctx({ groups: REL_GROUPS }))
+    assert.match(strict.errors[0], /pre_ids 指向不存在的卡片: ghost/)
+    const lax = applyItemPatch({ pre_ids: ['ghost'] }, item(), ctx())
+    assert.deepEqual(lax.errors, [])
+    assert.deepEqual(lax.next.pre_ids, ['ghost'])
+  })
+  it('移除前序 → 镜像差分剔除；清空数组 → 移除字段 + 镜像全剔；同值补丁幂等无审计', () => {
+    const cur = item({ pre_ids: ['s-02', 's-03'] })
+    const c = ctx({ groups: REL_GROUPS })
+    c.items = c.items.map((it) =>
+      it.id === 's-02' || it.id === 's-03' ? { ...it, post_ids: ['s-01'] } : it,
+    )
+    const r = applyItemPatch({ pre_ids: ['s-03'] }, cur, c)
+    assert.deepEqual(r.next.pre_ids, ['s-03'])
+    assert.deepEqual(r.mirrorUpdates, [{ id: 's-02', old_post_ids: ['s-01'], new_post_ids: undefined }])
+    const clear = applyItemPatch({ pre_ids: [] }, cur, c)
+    assert.ok(!('pre_ids' in clear.next))
+    assert.equal(clear.mirrorUpdates.length, 2)
+    const noop = applyItemPatch({ pre_ids: ['s-02', 's-03'] }, cur, c)
+    assert.deepEqual(noop.changes, [])
+    assert.deepEqual(noop.mirrorUpdates, [])
   })
 })

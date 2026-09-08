@@ -25,6 +25,9 @@ interface TopBarProps {
   onImportFile: (file: File) => void
   /** v2-M1 F5：打开看板内搜索面板（快捷键 ⌘K / Ctrl+K 由 BoardPage 挂载） */
   onOpenSearch?: () => void
+  /** v2-M3 F4：视图切换（时间线 / 关系图）；看板页才传 */
+  view?: 'timeline' | 'graph'
+  onViewChange?: (view: 'timeline' | 'graph') => void
 }
 
 const SYNC_META: Record<SyncDot, { dot: string; text: string; title: string }> = {
@@ -59,6 +62,8 @@ export default function TopBar({
   onOpenMembers,
   onImportFile,
   onOpenSearch,
+  view,
+  onViewChange,
 }: TopBarProps) {
   const fileRef = useRef<HTMLInputElement>(null)
   const { theme, toggleTheme } = useTheme()
@@ -166,6 +171,35 @@ export default function TopBar({
               ⌘K
             </kbd>
           </Button>
+          {/* v2-M3 F4 视图切换：时间线 / 关系图（视图状态进 URL hash，见 BoardPage） */}
+          {view && onViewChange && (
+            <div
+              data-view-toggle
+              className="flex items-center rounded-full border border-slate-200 bg-slate-50 p-0.5 text-[11px]"
+            >
+              {(
+                [
+                  { key: 'timeline', label: '时间线' },
+                  { key: 'graph', label: '关系图' },
+                ] as const
+              ).map((v) => (
+                <button
+                  key={v.key}
+                  type="button"
+                  data-view-tab={v.key}
+                  aria-pressed={view === v.key}
+                  onClick={() => onViewChange(v.key)}
+                  className={`rounded-full px-2.5 py-1 font-medium transition-colors duration-150 ${
+                    view === v.key
+                      ? 'bg-white text-indigo-600 shadow-[0_1px_3px_rgba(15,23,42,0.12)]'
+                      : 'text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  {v.label}
+                </button>
+              ))}
+            </div>
+          )}
           <Button size="sm" variant="ghost" onClick={onOpenProducts} data-products-btn>
             <Boxes className="size-3.5" />
             产品管理
@@ -184,7 +218,7 @@ export default function TopBar({
             <Upload className="size-3.5" />
             导入
           </Button>
-          <Button size="sm" variant="ghost" onClick={onBackToToday}>
+          <Button size="sm" variant="ghost" onClick={onBackToToday} disabled={view === 'graph'}>
             ⌖ 回到今天
           </Button>
           <Button size="sm" disabled={capacityFull} onClick={onAddToToday}>

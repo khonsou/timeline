@@ -395,6 +395,106 @@ try {
   const commitOver = await api('POST', `/boards/${bid}/change-sets/${csOver.body.change_set_id}/commit`, {}, tk)
   ok(commitOver.status === 400 && /分组已达上限 61 个/.test(commitOver.body.error), '第 62 个分组 → 400（61 上限）', JSON.stringify(commitOver.body))
 
+  // ------------------------------------------------------------------
+  // v2-M3 F4 卡片关系：pre_ids 唯一写入源 + post_ids 镜像 + 删卡级联（读取兜底）
+  // ------------------------------------------------------------------
+  // 单卡 PATCH：写 pre_ids → 响应含字段 + 被引用卡 post_ids 镜像同事务落盘
+  const pRel = await api('PATCH', `/boards/${bid}/items/s-02`, { pre_ids: ['s-03', 's-03'] }, tk)
+  ok(pRel.status === 200 && pRel.body.item.pre_ids?.length === 1 && pRel.body.item.pre_ids[0] === 's-03', 'PATCH pre_ids 写入（重复 id 去重）')
+  const docRel = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(JSON.stringify(docRel.items.find((it) => it.id === 's-03').post_ids) === JSON.stringify(['s-02']), 'post_ids 镜像同事务落盘（A.post_ids ∋ B ⇔ B.pre_ids ∋ A）')
+  const auditRel = await api('GET', `/boards/${bid}/audit?limit=4`, undefined, tk)
+  ok(auditRel.body.entries.some((e) => e.item_id === 's-03' && e.field === 'post_ids'), '镜像卡 post_ids 变化写审计')
+  // post_ids 直接 patch → 400（白名单外）；pre_ids 悬空 / 自环 → 400
+  const pPost = await api('PATCH', `/boards/${bid}/items/s-02`, { post_ids: ['s-01'] }, tk)
+  ok(pPost.status === 400 && /不支持修改的字段: post_ids/.test(pPost.body.error), 'PATCH post_ids → 400（单一写入源铁律）')
+  const pRelGhost = await api('PATCH', `/boards/${bid}/items/s-02`, { pre_ids: ['ghost'] }, tk)
+  ok(pRelGhost.status === 400 && /pre_ids 指向不存在的卡片/.test(pRelGhost.body.error), 'PATCH 悬空 pre_ids → 400（写入严格）')
+  const pRelSelf = await api('PATCH', `/boards/${bid}/items/s-02`, { pre_ids: ['s-02'] }, tk)
+  ok(pRelSelf.status === 400 && /不允许自环/.test(pRelSelf.body.error), 'PATCH 自环 pre_ids → 400')
+  // 清空 pre_ids → 字段移除 + 镜像剔除
+  const pRelClear = await api('PATCH', `/boards/${bid}/items/s-02`, { pre_ids: [] }, tk)
+  ok(pRelClear.status === 200 && !('pre_ids' in pRelClear.body.item), 'pre_ids 空数组 = 清空（字段移除）')
+  const docRel2 = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(!('post_ids' in docRel2.items.find((it) => it.id === 's-03')), '清空后镜像同步剔除（post_ids 移除）')
+  // change-set：create 携带 pre_ids + patch 建多对多 → 一次事务；镜像不变量全板成立
+  const verRel = (await api('GET', `/boards/${bid}`, undefined, tk)).body.version
+  const csRel = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: verRel,
+    operations: [
+      { op: 'create', client_ref: 'rel-new', item: { title: '关系新卡', publish_at: `${day(1)}T10:00`, pre_ids: ['s-02', 's-03'] } },
+      { op: 'patch', item_id: 's-03', changes: { pre_ids: ['s-02'] } },
+    ],
+  }, tk)
+  ok(csRel.status === 201, '关系 change-set 创建 201', JSON.stringify(csRel.body))
+  const commitRel = await api('POST', `/boards/${bid}/change-sets/${csRel.body.change_set_id}/commit`, {}, tk)
+  ok(commitRel.status === 200 && commitRel.body.status === 'committed', '关系 change-set commit 成功', JSON.stringify(commitRel.body))
+  const relNewId = commitRel.body.items.find((x) => x.client_ref === 'rel-new').id
+  const docRel3 = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  const inv = docRel3.items.every((a) =>
+    docRel3.items.every((b) => (a.post_ids ?? []).includes(b.id) === (b.pre_ids ?? []).includes(a.id)),
+  )
+  ok(inv, '镜像不变量全板成立（多对多：s-02→s-03、s-02→新卡、s-03→新卡）')
+  ok(docRel3.items.find((it) => it.id === relNewId).pre_ids?.length === 2, 'create 携带多前序落盘')
+  // change-set patch 悬空 pre_ids → 400 全批拒绝（板零变化）
+  const csRelBad = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: commitRel.body.version,
+    operations: [{ op: 'patch', item_id: 's-02', changes: { pre_ids: ['ghost'] } }],
+  }, tk)
+  const commitRelBad = await api('POST', `/boards/${bid}/change-sets/${csRelBad.body.change_set_id}/commit`, {}, tk)
+  ok(commitRelBad.status === 400 && /pre_ids 指向不存在的卡片/.test(commitRelBad.body.error), 'change-set 悬空 pre_ids commit → 400 全批拒绝')
+
+  // v2-M3 完整性补强：整板覆盖入口（PUT / POST 带 doc 建板）同样强制关系规范化——
+  // 不再是可留下脏关系状态的旁路（pre_ids 剔悬空/自环/重复 + post_ids 镜像全量重建；确定性幂等）
+  const curDoc = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  const dirtyDoc = JSON.parse(JSON.stringify(curDoc))
+  const dS02 = dirtyDoc.items.find((it) => it.id === 's-02')
+  const dS03 = dirtyDoc.items.find((it) => it.id === 's-03')
+  dS02.pre_ids = ['ghost-x', 's-03', 's-02', 's-03'] // 悬空 + 合法 + 自环 + 重复
+  dS03.post_ids = ['ghost-y'] // 脏镜像：应被按 pre_ids 全量重建覆盖
+  const putDirty = await api('PUT', `/boards/${bid}`, { doc: dirtyDoc }, tk)
+  ok(putDirty.status === 200, 'PUT 带脏关系整板覆盖接收（规范化在存储前）', JSON.stringify(putDirty.body))
+  const docNorm = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  const nS02 = docNorm.items.find((it) => it.id === 's-02')
+  ok(JSON.stringify(nS02.pre_ids) === JSON.stringify(['s-03']), 'PUT 规范化：pre_ids 剔悬空/自环/重复')
+  const invPut = docNorm.items.every((a) =>
+    docNorm.items.every((b) => (a.post_ids ?? []).includes(b.id) === (b.pre_ids ?? []).includes(a.id)),
+  )
+  ok(invPut, 'PUT 规范化：post_ids 镜像全量重建（全板镜像不变量恢复）')
+  ok(
+    !docNorm.items.some((it) => (it.pre_ids ?? []).some((x) => x.startsWith('ghost')) || (it.post_ids ?? []).some((x) => x.startsWith('ghost'))),
+    'PUT 规范化：脏引用无存留',
+  )
+  // 幂等：规范化后 doc 再 PUT → 内容零变化（对合法 doc 是 no-op）
+  const putAgain = await api('PUT', `/boards/${bid}`, { doc: docNorm }, tk)
+  ok(putAgain.status === 200, '规范化后 doc 再 PUT 接收')
+  const docNorm2 = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  ok(JSON.stringify(docNorm2) === JSON.stringify(docNorm), 'PUT 规范化幂等：合法 doc 内容零变化')
+  // POST 建板带脏关系同理
+  const mkDirty = await api('POST', '/boards', {
+    name: 'dirty-rel', password: 'pw',
+    doc: {
+      items: [
+        { id: 'd-01', title: '甲', type: '图文', publish_at: `${day(0)}T09:00`, roi: null, comment: '', product_id: '', status: '待发布', content_owner_id: '', delivery_owner_id: '', propagation_4h: null, engagement_4h: null, pre_ids: ['ghost', 'd-01'] },
+        { id: 'd-02', title: '乙', type: '图文', publish_at: `${day(0)}T10:00`, roi: null, comment: '', product_id: '', status: '待发布', content_owner_id: '', delivery_owner_id: '', propagation_4h: null, engagement_4h: null, pre_ids: ['d-01', 'd-01'], post_ids: ['ghost2'] },
+      ],
+      orders: { 'd-01': 0, 'd-02': 1 },
+      products: [], members: [],
+    },
+  })
+  ok(mkDirty.status === 201, 'POST 建板带脏关系 201')
+  const dirtyBid = mkDirty.body.board_id
+  const dirtyTk = (await api('POST', `/boards/${dirtyBid}/auth`, { password: 'pw' })).body.token
+  const dirtyGot = (await api('GET', `/boards/${dirtyBid}`, undefined, dirtyTk)).body.doc
+  const g01 = dirtyGot.items.find((it) => it.id === 'd-01')
+  const g02 = dirtyGot.items.find((it) => it.id === 'd-02')
+  ok(!('pre_ids' in g01), 'POST 建板规范化：悬空 + 自环剔尽 → pre_ids 字段移除')
+  ok(
+    JSON.stringify(g02.pre_ids) === JSON.stringify(['d-01']) && JSON.stringify(g01.post_ids) === JSON.stringify(['d-02']),
+    'POST 建板规范化：pre_ids 去重 + post_ids 镜像重建覆盖脏值',
+  )
+  await api('DELETE', `/boards/${dirtyBid}`, { password: 'pw' })
+
   // PATCH If-Match：符合 → 正常；不符 → 409；不带 → 旧行为
   const curV = (await api('GET', `/boards/${bid}`, undefined, tk)).body.version
   const pMatch = await api('PATCH', `/boards/${bid}/items/s-02`, { comment: 'if-match ok' }, tk, { 'if-match': String(curV) })

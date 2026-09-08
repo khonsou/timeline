@@ -11,7 +11,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link2, Search } from 'lucide-react'
 import type { ContentItem, Group } from '@timeline/core/types'
-import { publishDateOf, type Orders } from '@timeline/core/board-view'
+import { type Orders } from '@timeline/core/board-view'
+import { matchCards } from '@/lib/card-search'
 
 interface SearchPaletteProps {
   open: boolean
@@ -61,28 +62,11 @@ export default function SearchPalette({
     if (open) inputRef.current?.focus()
   }, [open])
 
-  const results = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    if (!q) return []
-    // v2-M1c：产品名与负责人（内容/投放）姓名参与匹配——卡片上只存 id，按目录解析名称
-    const productName = new Map(products.map((p) => [p.id, p.name.toLowerCase()]))
-    const memberName = new Map(members.map((m) => [m.id, m.name.toLowerCase()]))
-    return items
-      .filter(
-        (c) =>
-          c.title.toLowerCase().includes(q) ||
-          (c.comment ?? '').toLowerCase().includes(q) ||
-          (productName.get(c.product_id) ?? '').includes(q) ||
-          (memberName.get(c.content_owner_id) ?? '').includes(q) ||
-          (memberName.get(c.delivery_owner_id) ?? '').includes(q),
-      )
-      .sort(
-        (a, b) =>
-          publishDateOf(a).localeCompare(publishDateOf(b)) ||
-          (orders[a.id] ?? 0) - (orders[b.id] ?? 0),
-      )
-      .slice(0, MAX_RESULTS)
-  }, [items, orders, products, members, query])
+  const results = useMemo(
+    // v2-M3：匹配逻辑提取为共享 helper（与详情弹窗「前后关系」卡片选择器同口径）
+    () => matchCards(query, items, orders, products, members).slice(0, MAX_RESULTS),
+    [items, orders, products, members, query],
+  )
 
   // v2-M2 统一分组模型：结果行副标题恒 = 分组名（未分组/悬空 → 「未分组」）
   const groupName = useMemo(() => new Map(groups.map((g) => [g.id, g.name])), [groups])

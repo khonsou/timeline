@@ -201,3 +201,18 @@
   background-color: color-mix(in srgb, var(--card-bgc) 16%, transparent);
   border-color: color-mix(in srgb, var(--card-bgc) 40%, transparent);
 }
+
+/* v2-M3 F4 关系视图「点亮提示」（纯视图事件，不改写任何数据）：
+ * 某卡全部前序进入「已发布」时节点播放一次光晕淡入淡出；
+ * prefers-reduced-motion 下不播动画（直接无提示切换，符合决策记录 #5 降级口径） */
+@keyframes graph-lit-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  25% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+}
+.graph-lit {
+  animation: graph-lit-pulse 1.2s ease-out 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-lit { animation: none; }
+}

@@ -19,6 +19,7 @@ import {
 } from '@/lib/content-data'
 import { nextOrder, publishDateOf, type Orders } from '@timeline/core/board-view'
 import { migrateLegacyGroups } from '@timeline/core/group-core'
+import { normalizeRelationFields } from '@timeline/core/relation-core'
 import { STATUSES, mergeMembers, mergeProducts } from '@timeline/core/import-core'
 
 export interface BoardDoc {
@@ -103,7 +104,9 @@ export function validateItemsOrders(parsed: unknown): { items: ContentItem[]; or
       if (next.dimmed !== true) delete next.dimmed
       return next
     })
-    return { items: migrated, orders: patched }
+    // v2-M3 F4 读取兜底：pre_ids/post_ids 悬空 id 剔除 + 按 pre_ids 重建 post_ids 镜像
+    // （引用稳定：无关系/已一致的数据原样返回，不触发额外渲染）
+    return { items: normalizeRelationFields(migrated), orders: patched }
   }
   return null
 }

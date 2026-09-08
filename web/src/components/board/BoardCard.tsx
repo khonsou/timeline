@@ -33,6 +33,8 @@ interface CardViewProps {
   onCopyShareLink?: () => void
   /** F5/F6 定位高亮：一次性淡入淡出，不循环 */
   highlighted?: boolean
+  /** v2-M3 关系视图复用：false = 不渲染 hover 工具条（图视图只保留开详情 + 拖拽连线） */
+  toolbar?: boolean
   // 渲染模式
   placeholder?: boolean // 拖拽中在原位置渲染虚线占位
   overlay?: boolean // DragOverlay 浮动副本
@@ -57,7 +59,8 @@ function CardView(p: CardViewProps) {
   const dimmed = p.card.dimmed === true
   // v2-M1：新增 JSX 读值一律走解构（react-hooks/refs 只命中 p.* 成员链，
   // 本文件 27 个历史告警均为此类；解构写法同 DetailDialog 先例，不新增告警）
-  const { card, highlighted: highlightProp } = p
+  const { card, highlighted: highlightProp, toolbar } = p
+  const showToolbar = interactive && toolbar !== false
   const cardId = card.id
   const highlighted = highlightProp === true
   // v2-M1b：bg_color 为 hex 自有属性；存量色板 token 经 normalizeBgColor 回退解析，
@@ -98,8 +101,9 @@ function CardView(p: CardViewProps) {
       ].join(' ')}
     >
       <div className={p.placeholder ? 'invisible' : undefined}>
-        {/* hover 工具条：背景色 / 置灰·点亮 / 复制分享链接 / 删除（v2-M1 扩展，删除保持最右） */}
-        {interactive && (
+        {/* hover 工具条：背景色 / 置灰·点亮 / 复制分享链接 / 删除（v2-M1 扩展，删除保持最右；
+            v2-M3 关系视图 toolbar=false 不渲染） */}
+        {showToolbar && (
           <div
             data-card-toolbar
             className="absolute right-1.5 top-1.5 z-10 flex items-center gap-1 opacity-0 transition-opacity duration-150 focus-within:opacity-100 group-hover:opacity-100"
@@ -301,7 +305,9 @@ function CardView(p: CardViewProps) {
 
 // ---------------------------------------------------------------------------
 // SortableCard：挂载 useSortable
+// v2-M3：CardView 导出复用（关系图节点 = 同款完整卡片面，不挂 sortable）
 // ---------------------------------------------------------------------------
+export { CardView }
 interface SortableCardProps {
   card: ContentItem
   onOpenDetail: (id: string) => void

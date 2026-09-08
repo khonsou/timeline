@@ -55,6 +55,10 @@ import { DatabaseSync } from 'node:sqlite'
 import { applyItemPatch } from '@timeline/core/patch-core'
 // v19：change-set 预校验与按序应用（协议 §5.4–5.7 的 core 全量校验一步）同方式引用
 import { applyChangeSet, validateChangeSet } from '@timeline/core/changeset-core'
+// v2-M3 完整性补强：整板覆盖入口（PUT / POST 带 doc 建板）同样强制关系规范化——
+// pre_ids 去重/剔悬空/剔自环 + 按 pre_ids 全量重建 post_ids 镜像；确定性幂等，
+// 对合法 doc 是 no-op（引用稳定，不动 groups——分组迁移仍保持客户端职责）
+import { normalizeRelationFields } from '@timeline/core/relation-core'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.API_PORT || 8787)
@@ -383,6 +387,8 @@ const server = http.createServer(async (req, res) => {
       const doc = body.doc === undefined ? emptyDoc(name) : body.doc
       if (!validDoc(doc)) return send(res, 400, { error: 'doc 结构非法：需要 { items[], orders{}, products[], members[] }' })
       if (doc.items.length > MAX_CARDS) return send(res, 400, { error: MAX_CARDS_MSG }) // v16 硬上限
+      // 关系规范化（pre_ids 清洗 + post_ids 镜像重建）：建板入口不留脏关系状态
+      doc.items = normalizeRelationFields(doc.items)
       if (!doc.meta || typeof doc.meta !== 'object') doc.meta = { name, created_at: new Date().toISOString() }
       const id = newBoardId()
       const now = new Date().toISOString()
@@ -443,6 +449,9 @@ const server = http.createServer(async (req, res) => {
         const body = await readBody(req)
         if (!validDoc(body.doc)) return send(res, 400, { error: 'doc 结构非法：需要 { items[], orders{}, products[], members[] }' })
         if (body.doc.items.length > MAX_CARDS) return send(res, 400, { error: MAX_CARDS_MSG }) // v16 硬上限
+        // 关系规范化在持久化之前（pre_ids 清洗 + post_ids 镜像重建）：
+        // 保证存进去的永远是规范化后的 doc——PUT 不再是可以留下悬空边的旁路
+        body.doc.items = normalizeRelationFields(body.doc.items)
         qUpdate.run(JSON.stringify(body.doc), new Date().toISOString(), id)
         return send(res, 200, { version: qGet.get(id).version }, compatMode ? { deprecation: 'true' } : {})
       }
@@ -539,6 +548,7 @@ const server = http.createServer(async (req, res) => {
 
         // 白名单 + 逐字段校验 + 负责人解析 + 指标联动 + 跨日 orders：全部在 core patch-core
         // v2-M2：groups 传入 ctx → group_id 存在性校验（写入严格）
+        // v2-M3：pre_ids 写入 + post_ids 镜像差分（同一事务内应用）；直接 patch post_ids → 400（白名单外）
         const r = applyItemPatch(body, item, { members: doc.members, items: doc.items, orders: doc.orders, groups: doc.groups ?? [] })
         if (r.unknownFields.length) {
           return send(res, 400, { error: `不支持修改的字段: ${r.unknownFields.join(', ')}` })
@@ -546,7 +556,7 @@ const server = http.createServer(async (req, res) => {
         if (r.errors.length) return send(res, 400, { error: r.errors.join('；') })
 
         // 按实际变化字段审计；无变化 → 200 但不写审计、version 不增
-        if (!r.changes.length && !r.pendingMembers.length) {
+        if (!r.changes.length && !r.pendingMembers.length && !r.mirrorUpdates.length) {
           return send(res, 200, { changed: false, version: row.version, item })
         }
 
@@ -554,12 +564,24 @@ const server = http.createServer(async (req, res) => {
         if (r.orderUpdate) doc.orders[itemId] = r.orderUpdate.order
 
         doc.items = doc.items.map((it) => (it.id === itemId ? r.next : it))
+        // v2-M3：pre_ids 变更 → 被引用卡的 post_ids 镜像同步更新（同一写回事务）
+        for (const mu of r.mirrorUpdates) {
+          doc.items = doc.items.map((it) => {
+            if (it.id !== mu.id) return it
+            const next = { ...it }
+            if (mu.new_post_ids && mu.new_post_ids.length) next.post_ids = mu.new_post_ids
+            else delete next.post_ids
+            return next
+          })
+        }
         if (r.pendingMembers.length) doc.members = [...doc.members, ...r.pendingMembers]
         const now = new Date().toISOString()
         qUpdate.run(JSON.stringify(doc), now, id) // 与 PUT 同一持久化路径（version+1、updated_at 刷新）
         // 直接 PATCH 的审计：change_set_id / actor / source 记 null（协议 §3：自报机制只走 change-set 创建入参），request_id 每次请求生成
         const requestId = newRequestId()
         for (const c of r.changes) qAuditInsert.run(now, id, itemId, c.field, auditVal(c.old_value), auditVal(c.new_value), null, null, null, requestId)
+        // v2-M3：镜像卡的 post_ids 变化同样逐条审计
+        for (const mu of r.mirrorUpdates) qAuditInsert.run(now, id, mu.id, 'post_ids', auditVal(mu.old_post_ids ?? null), auditVal(mu.new_post_ids ?? null), null, null, null, requestId)
         return send(res, 200, { changed: true, version: qGet.get(id).version, item: r.next })
       }
 

@@ -20,9 +20,10 @@ import { normalizeBgColor } from '../types/content.ts'
 import type { Orders } from './board-view.ts'
 import { nextOrderInColumn } from './board-view.ts'
 import { resolveWriteTimeGroup } from './group-core.ts'
+import { diffPostMirror, normalizePreIds, validatePreIdRefs, type MirrorUpdate } from './relation-core.ts'
 import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt } from './import-core.ts'
 
-/** PATCH 允许修改的字段白名单（v19+ 追加 links；v2-M1 追加 bg_color / dimmed；v2-M2 追加 group_id） */
+/** PATCH 允许修改的字段白名单（v19+ 追加 links；v2-M1 追加 bg_color / dimmed；v2-M2 追加 group_id；v2-M3 追加 pre_ids） */
 export const PATCH_FIELDS = [
   'title',
   'type',
@@ -39,6 +40,9 @@ export const PATCH_FIELDS = [
   'bg_color',
   'dimmed',
   'group_id',
+  'pre_ids',
+  // v2-M3 F4 单一写入源铁律：post_ids 是 core 镜像（外部只读），不在白名单内——
+  // 直接 patch post_ids 走 unknownFields → 400「不支持修改的字段」
 ] as const
 export type PatchField = (typeof PATCH_FIELDS)[number]
 
@@ -98,6 +102,8 @@ export interface ItemPatchResult {
   changes: ItemPatchChange[]
   /** 跨列移动（显式 group_id / publish_at 归属解析）时的目标列列尾 order；未跨列为 null */
   orderUpdate: { id: string; order: number } | null
+  /** v2-M3 F4：pre_ids 变更引起的其它卡 post_ids 镜像差分（同一事务内由调用方应用） */
+  mirrorUpdates: MirrorUpdate[]
 }
 
 /**
@@ -213,10 +219,26 @@ export function applyItemPatch(
       if (gid) next.group_id = gid
       else delete next.group_id
     }
+    // pre_ids（v2-M3 F4 卡片关系，唯一写入源）：数组格式校验 + 去重；自环拒绝；
+    // ctx.groups 存在（有看板上下文）时逐个校验元素为板内存在卡片 id（写入严格 400，
+    // 与 group_id 同一分层——change-set 预校验无上下文，存在性留待 commit）。
+    // 空数组 = 清空全部前序（移除字段，保持 doc 干净）。post_ids 镜像在下方统一差分。
+    if ('pre_ids' in body) {
+      const n = normalizePreIds(body.pre_ids)
+      if (n.error) {
+        errors.push(n.error)
+      } else {
+        const v = n.value!
+        const refErrs = validatePreIdRefs(v, item.id, ctx.groups ? new Set(ctx.items.map((x) => x.id)) : undefined)
+        if (refErrs.length > 0) errors.push(...refErrs)
+        else if (v.length > 0) next.pre_ids = v
+        else delete next.pre_ids
+      }
+    }
   }
 
   if (unknownFields.length > 0 || errors.length > 0) {
-    return { unknownFields, errors, next: undefined, pendingMembers, changes: [], orderUpdate: null }
+    return { unknownFields, errors, next: undefined, pendingMembers, changes: [], orderUpdate: null, mirrorUpdates: [] }
   }
 
   // 指标-状态联动：非「已发布」状态强制三项效果指标为 null
@@ -226,10 +248,10 @@ export function applyItemPatch(
 
   const changes: ItemPatchChange[] = []
   for (const f of PATCH_FIELDS) {
-    // links 是数组，引用比较恒不等 → 按内容（JSON 序）比较，保证同值补丁幂等无审计
+    // links / pre_ids 是数组，引用比较恒不等 → 按内容（JSON 序）比较，保证同值补丁幂等无审计
     const changed =
-      f === 'links'
-        ? JSON.stringify(next.links ?? null) !== JSON.stringify(item.links ?? null)
+      f === 'links' || f === 'pre_ids'
+        ? JSON.stringify(next[f] ?? null) !== JSON.stringify(item[f] ?? null)
         : next[f] !== item[f]
     if (changed) changes.push({ field: f, old_value: item[f], new_value: next[f] })
   }
@@ -242,5 +264,11 @@ export function applyItemPatch(
     orderUpdate = { id: item.id, order: nextOrderInColumn(ctx.items, ctx.orders, newKey) }
   }
 
-  return { unknownFields, errors, next, pendingMembers, changes, orderUpdate }
+  // v2-M3 F4：pre_ids 实际变化 → 其它卡的 post_ids 镜像差分（同一事务内由调用方应用 + 审计）
+  const preIdsChanged = JSON.stringify(next.pre_ids ?? null) !== JSON.stringify(item.pre_ids ?? null)
+  const mirrorUpdates = preIdsChanged
+    ? diffPostMirror(ctx.items, item.id, item.pre_ids ?? [], next.pre_ids ?? [])
+    : []
+
+  return { unknownFields, errors, next, pendingMembers, changes, orderUpdate, mirrorUpdates }
 }

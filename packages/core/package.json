@@ -17,7 +17,9 @@
     "./lib/patch-core.ts": "./lib/patch-core.ts",
     "./lib/changeset-core.ts": "./lib/changeset-core.ts",
     "./group-core": "./lib/group-core.ts",
-    "./lib/group-core.ts": "./lib/group-core.ts"
+    "./lib/group-core.ts": "./lib/group-core.ts",
+    "./relation-core": "./lib/relation-core.ts",
+    "./lib/relation-core.ts": "./lib/relation-core.ts"
   },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\""

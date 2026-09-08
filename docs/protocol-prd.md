@@ -1,7 +1,7 @@
 # Timeline Board Automation Protocol — PRD & 第三方接入 README
 
-> 版本：v1.0（协议冻结版）
-> 日期：2026-09-07
+> 版本：v1.0（协议冻结版）+ v2 追加语义（见 §13）
+> 日期：2026-09-07（v1 冻结）；2026-09-08/09（v2-M1/M2/M3 追加语义，见 §13）
 > 读者：Timeline 服务端/前端/CLI 开发者；第三方 Timeline Agent 开发团队
 > 状态：基础协议已冻结。新增能力只允许追加上层协议与新字段，不允许修改本文档定义的端点语义。
 
@@ -111,6 +111,9 @@ actor 与 source 由客户端在创建 change-set / 发起 PATCH 时自报，
 | `comment` | string | 人工备注，**不是机器协议** |
 | `links` | array | **新增**。结构化链接，见 §8 |
 
+> v2 追加字段（遵循 §8 演进铁律，只追加不改义）：`bg_color` / `dimmed`（v2-M1）、
+> `group_id`（v2-M2）、`pre_ids` / `post_ids`（v2-M3）——语义见 §13。
+
 **内建联动规则（与 UI 一致）：**
 
 1. **指标 gate**：变更后最终 `status ≠ 已发布` → `roi / propagation_4h / engagement_4h` 强制置 null。发布填指标请同帧带上 `status: 已发布`。
@@ -210,7 +213,7 @@ Content-Type: application/json
 {"status": "已发布", "engagement_4h": 860}
 ```
 
-- 白名单字段：`title, type, status, publish_at, product_id, content_owner_id, delivery_owner_id, roi, propagation_4h, engagement_4h, comment, links`。
+- 白名单字段：`title, type, status, publish_at, product_id, content_owner_id, delivery_owner_id, roi, propagation_4h, engagement_4h, comment, links`（v2 起追加 `bg_color, dimmed, group_id, pre_ids`，共 16 个，见 §13；`post_ids` 为只读镜像，不在白名单内）。
 - 白名单外字段（含 `id`、`orders`）→ `400 不支持修改的字段: xxx`。
 - **`If-Match` 为可选**：携带则当前 version 不符返回 `409 VERSION_CONFLICT`；不携带维持最后一次写胜（兼容模式，迁移完成后将转为强制）。
 - 校验规则与 CLI / UI 导入同源（core 纯函数），错误文案中文、多错误 `；` 拼接。
@@ -311,6 +314,9 @@ id 倒序；limit 上限 200，非正整数回落 50。
 | `patch` | 同单卡 PATCH 白名单与校验规则；`publish_at` 跨日 → 目标日列尾，同日 → 顺序不变 |
 | ~~delete~~ | **v1 不支持**（破坏审计链、误删代价高）；未来优先增加可恢复的 `archive` |
 | ~~reorder~~ | v1 不允许直接写 `order`；未来需要精确排序再单设 `reorder` op |
+
+> v2-M2 追加三个 doc 级 op：`group_create` / `group_patch` / `group_delete`（见 §13.2）；
+> 卡片 delete 仍不支持——v2-M3 起 agent 删卡走整板 PUT（服务端规范化覆盖级联，见 §13.3）。
 
 ---
 
@@ -471,3 +477,75 @@ curl -s "$API/api/boards/$BOARD/audit?limit=50" -H "Authorization: Bearer $TOKEN
 - AGENTS.md 行数等文档偏差顺手修正
 
 **建议排期**：M1 → M2 串行（契约先行），M3 与 M4 可并行，M5 收尾。总计约 5–7 周。
+
+---
+
+## 13. v2 追加语义（M1 卡片表现 / M2 统一分组 / M3 卡片关系）
+
+> v2 三个里程碑（2026-09-08/09）已落地。全部为追加语义：端点形状与 §1–§12 冻结语义不变，
+> 字段只追加不改义（§8 铁律）。以代码实现为准：`packages/core/types/content.ts`、
+> `lib/patch-core.ts` / `lib/group-core.ts` / `lib/relation-core.ts` / `lib/changeset-core.ts`。
+
+### 13.1 卡片表现字段（v2-M1）
+
+| 字段 | 类型 | 语义 |
+|---|---|---|
+| `bg_color` | string（可缺省） | 卡片背景色，自有 hex 属性：落盘恒为小写 `#rrggbb`（`#rgb` / 大写输入归一化；UI 色板 8 预设色只是写入快捷值；旧色板 token 如 `amber` 写入时收敛为对应 hex）。`null` / 空串 = 恢复默认（移除字段） |
+| `dimmed` | boolean（可缺省） | 置灰标记：`true` = 卡片半透明退到背景（仍可读可编辑）；`false` = 点亮（移除字段）。**系统不做任何自动置灰/解除，完全由用户/agent 控制** |
+
+- 两字段均入 PATCH 白名单（白名单由 12 扩至 16，v2-M2/M3 再各加一个，见下）与 change-set
+  create / patch 两条写路径。
+- 看板内搜索（Ctrl+K）与卡片分享链接（`#card=`）是纯前端能力，**无协议变更**。
+
+### 13.2 统一分组模型（v2-M2）
+
+- `BoardDoc` 追加 `groups?: Group[]`（`{ id, name }`，**数组序 = 列顺序**，总数上限
+  **61**，`group_create` 超限 → commit `400` 全批拒绝；虚拟「未分组」列不占名额）。
+- `ContentItem` 追加 `group_id?: string`：引用 `groups[]` 的分组 id 决定列归属；
+  `publish_at` 与分组彻底脱钩（纯信息字段）。缺省 / 悬空（加载兜底重置）/ 写 `null` 或空串
+  = 归「未分组」（移除字段，不落 null）。
+- **不分模式**：日期只不过是组名恰巧是 `YYYY-MM-DD` 的组。
+- change-set 新增三个 doc 级 op：
+
+  | op | 形状 | 语义 |
+  |---|---|---|
+  | `group_create` | `{ op, client_ref?, group: { name } }` | 分组 id 服务端分配（`grp-` 前缀内容哈希，同 change-set 重试幂等）；`client_ref` 可被同 set 后续 op 的 `group_id` / `move_to` / `before_group_id` 引用（set 内先建后引用）；commit 结果回映射 `groups: [{ client_ref, id }]` |
+  | `group_patch` | `{ op, group_id, changes: { name?, before_group_id? \| null } }` | 重命名 / 调列序（`before_group_id` = 移到该分组之前，`null` = 移到末尾，不可指向自身）；组改名卡片不跟随（落盘恒为 group_id，引用稳定） |
+  | `group_delete` | `{ op, group_id, move_to? }` | `move_to` 缺省 = 组内卡片归未分组；显式给出须指向已存在分组（不能是被删分组自身；同 set client_ref 可引用） |
+
+- **写入严格**：卡片 `group_id` 指向不存在的分组 → `400`（PATCH 即时；change-set 在 commit
+  全量校验，预校验只查格式——与负责人姓名解析同一分层）。
+- **写入时归属解析**（一次性，非运行时耦合）：create / patch 未显式给 `group_id` 但带
+  `publish_at`（patch 仅当日期部分实际变化时触发），且存在同名日期组 → 挂入该组；
+  无同名组 → 归未分组，**绝不自动建组**。
+- **存量迁移在客户端加载时自动发生**（一次性、确定性幂等）：无 `groups` 字段的老板 →
+  派生「今天 ±30 天」共 61 个同名日期组（含空日期列，所见与 v1 滑动窗口一致），窗口内卡片
+  回填 `group_id`，窗口外离群卡归未分组。服务端是 LWW 存储，不感知迁移。
+- 分组 op 审计字段：`group`（create：old=null；delete：new=null）、`group.name`、
+  `group.order`（列序下标）、`group_id`（删组迁移逐卡一条）。
+
+### 13.3 卡片前后关系（v2-M3）
+
+- `ContentItem` 追加 `pre_ids?: string[]` / `post_ids?: string[]`：多对多有向依赖
+  「前序 → 后续」。
+- **`pre_ids` 是唯一写入源；`post_ids` 是 core 镜像、外部只读**——不变量
+  `A.post_ids ∋ B ⇔ B.pre_ids ∋ A`；写 `pre_ids` 时同事务差分维护镜像（镜像卡的变化
+  同样逐条写审计，field 为 `post_ids`）；**外部直接写 `post_ids` 一律 `400`**
+  （不在 PATCH 白名单内）。
+- **指引（防误用）：「给 A 加后续 B」= patch `B.pre_ids += A`**，不存在「写 A 的后续」的入口。
+- 规则：元素须为板内已存在卡片 id；自环拒绝；重复自动去重；`pre_ids: []` = 清空
+  （移除字段 + 镜像回收）；删卡级联剔除所有引用；**成环数据层允许**，环由关系视图层
+  降级（断边标黄提示），数据层不禁止。
+- 严格度按写路径分层：
+
+  | 写路径 | 悬空 id / 自环 |
+  |---|---|
+  | PATCH / change-set | **严格 `400` 拒绝**（change-set 全批拒绝，看板零变化） |
+  | 整板 PUT / POST 带 doc 建板 | **规范化而非拒绝**（LWW 覆盖语义）：去重、剔悬空、剔自环 + 按 `pre_ids` 全量重建 `post_ids` 镜像；确定性、幂等，对合法 doc 是 no-op；规范化在持久化之前执行 |
+
+- **agent 删卡走整板 PUT**（change-set 无卡片 delete op）——PUT 规范化同时覆盖删卡级联：
+  被删卡 id 从所有 `pre_ids` / `post_ids` 剔除，PUT 不再是能留下悬空边的旁路。
+- change-set `create` 的 `item` 可携带 `pre_ids`；同 set 前序新建卡片可被引用
+  （运行态可见；卡片 id 为确定性内容哈希，可复算——卡片引用无 client_ref 别名，
+  分组引用才有）。
+- 关系视图 / 未连线卡片暂存带 / 点亮提示等均为前端表现层能力，**无协议变更**。

@@ -35,6 +35,11 @@
  *   F5 看板内搜索（Ctrl+K 唤起 / 窗口外卡定位高亮一次 / 空态 / Esc）、
  *   F6 分享链接（复制 toast / #card= 打开定位高亮 / 已删卡降级提示）。
  *
+ * v2-M3（t67–t73）：F4 卡片多对多关系 + 关系视图——详情「前后关系」建边主入口
+ *   （前序/后续对称增删 + post_ids 镜像落盘 + chip × 双侧剔除）、TopBar 视图切换 +
+ *   hash 持久/直达、推进前线强调、拖拽连线建边、环降级断边、前序全发布点亮提示、
+ *   删卡级联剔除、未连线卡片暂存带（折叠计数/展开/双向拖线建边/升入分层图/孤立卡定位升级）。
+ *
  * 运行：node verification/e2e-check.mjs
  *   - 自带 fixture：spawn API server（:5198，独立 tmp sqlite）+ vite（:5199，API_PORT=5198 反代）
  *   - 驱动本机 Chrome（headless）走真实 UI；跑完杀进程组 + 删 tmp sqlite + 删 CLI 产物 board.json
@@ -3321,10 +3326,382 @@ async function main() {
     ok(dayDiff(await midDate(), n0) <= -6, '中线回到日期组列后键盘步进恢复（-7）')
   })
 
+  // ------------------------------------------------------------------
+  // v2-M3 F4 卡片多对多关系 + 关系视图（t67–t72，专用关系板避免主板残留干扰）
+  // 初始 fixture：c01–c05 已发布（过去），c06–c14 待发布（今天起）
+  // ------------------------------------------------------------------
+  let relId = null // 关系板捕获（清理用）
+  const relToken = { v: null }
+
+  await t('t67 前后关系：详情建边主入口（前序/后续对称增删 + 镜像落盘 + chip × 双侧剔除）', async () => {
+    const mk = await api('POST', '/boards', {
+      name: 'E2E 关系板',
+      password: MAIN_PASS,
+      doc: fixtureDoc('E2E 关系板'),
+    })
+    eq(mk.status, 201, '创建关系板')
+    relId = mk.body.board_id
+    relToken.v = (await api('POST', `/boards/${relId}/auth`, { password: MAIN_PASS })).body.token
+    await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${relId}`, relToken.v)
+    await page.goto(`${WEB}/b/${relId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, '关系板加载 61 列')
+
+    // 前序添加：E2E 卡 06 ← E2E 卡 05（点击候选）
+    await openCard('E2E 卡 06')
+    await waitFor(() => ev(() => !!document.querySelector('[data-relations]')), 4000, '前后关系小节渲染')
+    await ev(() => document.querySelector('[data-rel-add="pre"]')?.click())
+    await waitFor(() => ev(() => !!document.querySelector('[data-rel-picker]')), 4000, '前序选择器唤起')
+    await ev(() => document.querySelector('[data-rel-input]')?.focus())
+    await page.keyboard.type('E2E 卡 05', { delay: 10 })
+    await waitFor(() => ev(() => !!document.querySelector('[data-rel-option]')), 4000, '前序候选出现')
+    await ev(() => document.querySelector('[data-rel-option]')?.click())
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      const c06 = d?.items.find((i) => i.id === 'e2e-c06')
+      const c05 = d?.items.find((i) => i.id === 'e2e-c05')
+      return c06?.pre_ids?.includes('e2e-c05') && c05?.post_ids?.includes('e2e-c06')
+    }, 6000, 'pre_ids 写入 + post_ids 镜像落盘')
+
+    // 后续添加：E2E 卡 06 → E2E 卡 08（= 把本卡写进 08 的 pre_ids，单一写入源）
+    await ev(() => document.querySelector('[data-rel-add="post"]')?.click())
+    await waitFor(() => ev(() => !!document.querySelector('[data-rel-picker]')), 4000, '后续选择器唤起')
+    await ev(() => document.querySelector('[data-rel-input]')?.focus())
+    await page.keyboard.type('E2E 卡 08', { delay: 10 })
+    await waitFor(() => ev(() => !!document.querySelector('[data-rel-option]')), 4000, '后续候选出现')
+    await ev(() => document.querySelector('[data-rel-option]')?.click())
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      const c08 = d?.items.find((i) => i.id === 'e2e-c08')
+      const c06 = d?.items.find((i) => i.id === 'e2e-c06')
+      return c08?.pre_ids?.includes('e2e-c06') && c06?.post_ids?.includes('e2e-c08')
+    }, 6000, '添加后续 = 写入目标卡 pre_ids + 本卡镜像')
+    // 方案 B+（决策 #11）：后续行与前序对称可增删——chip 带 ×（写对方卡 pre_ids）
+    eq(
+      await ev(() => document.querySelectorAll('[data-rel-row="post"] [data-rel-remove]').length),
+      1,
+      '后续行 chip 带 ×（对称可删）',
+    )
+    eq(
+      await ev(() => document.querySelectorAll('[data-rel-row="post"] [data-rel-chip]').length),
+      1,
+      '后续行 chip 展示',
+    )
+
+    // 前序 chip × 移除 → 双侧同步剔除
+    await ev(() => document.querySelector('[data-rel-row="pre"] [data-rel-remove]')?.click())
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      const c06 = d?.items.find((i) => i.id === 'e2e-c06')
+      const c05 = d?.items.find((i) => i.id === 'e2e-c05')
+      return !(c06?.pre_ids ?? []).includes('e2e-c05') && !(c05?.post_ids ?? []).includes('e2e-c06')
+    }, 6000, '× 移除后 pre/post 双侧剔除')
+
+    // 后续 chip × 移除 → 对方卡 pre_ids 与本卡 post_ids 同步剔除（双侧落盘）
+    await ev(() => document.querySelector('[data-rel-row="post"] [data-rel-remove]')?.click())
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      const c08 = d?.items.find((i) => i.id === 'e2e-c08')
+      const c06 = d?.items.find((i) => i.id === 'e2e-c06')
+      return !(c08?.pre_ids ?? []).includes('e2e-c06') && !(c06?.post_ids ?? []).includes('e2e-c08')
+    }, 6000, '× 移除后续：对方卡 pre_ids + 本卡 post_ids 双侧剔除')
+
+    // 回加前序（Enter 快捷选第一条候选）——供 t68 前线断言用
+    await ev(() => document.querySelector('[data-rel-add="pre"]')?.click())
+    await ev(() => document.querySelector('[data-rel-input]')?.focus())
+    await page.keyboard.type('E2E 卡 05', { delay: 10 })
+    await waitFor(() => ev(() => !!document.querySelector('[data-rel-option]')), 4000, '前序候选再现')
+    await page.keyboard.press('Enter')
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      return d?.items.find((i) => i.id === 'e2e-c06')?.pre_ids?.includes('e2e-c05')
+    }, 6000, 'Enter 回加前序落盘')
+
+    // 回加后续 c08——供 t68 边/前线与 t69 成环断言用
+    await ev(() => document.querySelector('[data-rel-add="post"]')?.click())
+    await ev(() => document.querySelector('[data-rel-input]')?.focus())
+    await page.keyboard.type('E2E 卡 08', { delay: 10 })
+    await waitFor(() => ev(() => !!document.querySelector('[data-rel-option]')), 4000, '后续候选再现')
+    await ev(() => document.querySelector('[data-rel-option]')?.click())
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      return d?.items.find((i) => i.id === 'e2e-c08')?.pre_ids?.includes('e2e-c06')
+    }, 6000, '回加后续落盘（c08.pre_ids 含 c06）')
+    await closeDialog()
+  })
+
+  await t('t68 关系视图：切换 + hash 持久/直达 + 推进前线 + #card= 定位 + 孤立卡降级', async () => {
+    await ev(() => document.querySelector('[data-view-tab="graph"]')?.click())
+    await waitFor(() => ev(() => !!document.querySelector('[data-graph-view]')), 6000, '关系视图渲染')
+    ok(await ev(() => location.hash.includes('view=graph')), 'hash 同步 view=graph')
+    // 只渲染有关系的卡：c05/c06/c08 在图中，孤立卡 c01 不进图
+    for (const id of ['e2e-c05', 'e2e-c06', 'e2e-c08']) {
+      ok(await ev((i) => !!document.querySelector(`[data-graph-node="${i}"]`), id), `节点 ${id} 渲染`)
+    }
+    ok(!(await ev(() => !!document.querySelector('[data-graph-node="e2e-c01"]'))), '孤立卡不进图')
+    // 边存在；推进前线 = pre 已发布 → post 未发布（c05→c06 前线 / c06→c08 双侧待发布不强调）
+    ok(await ev(() => !!document.querySelector('[data-graph-edge="e2e-c05→e2e-c06"]')), '边 c05→c06 存在')
+    ok(await ev(() => !!document.querySelector('[data-graph-edge="e2e-c06→e2e-c08"]')), '边 c06→c08 存在')
+    ok(
+      await ev(() => !!document.querySelector('[data-graph-edge="e2e-c05→e2e-c06"][data-edge-frontier="true"]')),
+      '前线边 c05→c06 强调',
+    )
+    ok(
+      !(await ev(() => !!document.querySelector('[data-graph-edge="e2e-c06→e2e-c08"][data-edge-frontier]'))),
+      '非前线边 c06→c08 不强调',
+    )
+    // 前序发布 → 前线推进到 c06→c08（轮询应用远端快照）
+    const p1 = await api('PATCH', `/boards/${relId}/items/e2e-c06`, { status: '已发布' }, relToken.v)
+    eq(p1.status, 200, 'PATCH c06 已发布')
+    await waitFor(
+      () => ev(() => !!document.querySelector('[data-graph-edge="e2e-c06→e2e-c08"][data-edge-frontier="true"]')),
+      9000,
+      '前线推进到 c06→c08',
+    )
+
+    // hash 直达：#view=graph 刷新保持关系视图（先回列表避免同 URL 仅 hash 变化不重载）
+    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${WEB}/b/${relId}?poll=1000&push=200#view=graph`, { waitUntil: 'domcontentloaded' })
+    await waitFor(() => ev(() => !!document.querySelector('[data-graph-view]')), 9000, '#view=graph 直达关系视图')
+    // #view=graph&card= 定位节点一次性高亮
+    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${WEB}/b/${relId}?poll=1000&push=200#view=graph&card=e2e-c08`, {
+      waitUntil: 'domcontentloaded',
+    })
+    await waitFor(
+      () => ev(() => document.querySelector('[data-graph-node="e2e-c08"]')?.dataset.cardHighlight === 'true'),
+      9000,
+      '图视图 #card= 定位节点高亮',
+    )
+
+    // 孤立卡定位（搜索面板入口）→ 展开暂存带 + 横滚居中 + 一次性高亮（方案 1 升级，不再 toast）
+    await page.keyboard.down('Control')
+    await page.keyboard.press('k')
+    await page.keyboard.up('Control')
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-palette]')), 4000, '搜索面板唤起')
+    await ev(() => document.querySelector('[data-search-input]')?.focus())
+    await page.keyboard.type('E2E 卡 01', { delay: 10 })
+    await waitFor(() => ev(() => !!document.querySelector('[data-search-result]')), 4000, '孤立卡可搜到')
+    await ev((t0) => {
+      const row = [...document.querySelectorAll('[data-search-result]')].find((r) => r.textContent.includes(t0))
+      row?.click()
+    }, 'E2E 卡 01')
+    await waitFor(
+      () => ev(() => document.querySelector('[data-stage-card="e2e-c01"]')?.dataset.cardHighlight === 'true'),
+      4000,
+      '暂存带展开并高亮孤立卡',
+    )
+    ok(await ev(() => !!document.querySelector('[data-graph-view]')), '关系视图保持')
+  })
+
+  await t('t69 关系视图：拖拽连线建边（手柄 → 目标节点落盘）', async () => {
+    // c08 → c06（与既有 c06→c08 构成环，供 t70 断言降级）
+    const geo = await ev(() => {
+      const from = document.querySelector('[data-graph-node="e2e-c08"]')
+      const to = document.querySelector('[data-graph-node="e2e-c06"]')
+      const h = from?.querySelector('[data-edge-handle]')
+      if (!from || !to || !h) return null
+      const hr = h.getBoundingClientRect()
+      const tr = to.getBoundingClientRect()
+      return {
+        hx: hr.left + hr.width / 2,
+        hy: hr.top + hr.height / 2,
+        tx: tr.left + tr.width / 2,
+        ty: tr.top + tr.height / 2,
+      }
+    })
+    ok(geo, '源/目标节点坐标就绪')
+    await page.mouse.move(geo.hx, geo.hy)
+    await sleep(120)
+    await page.mouse.down()
+    for (let i = 1; i <= 6; i += 1) {
+      await page.mouse.move(geo.hx + ((geo.tx - geo.hx) * i) / 6, geo.hy + ((geo.ty - geo.hy) * i) / 6)
+      await sleep(40)
+    }
+    ok(await ev(() => !!document.querySelector('[data-graph-connecting]')), '拖拽中临时虚线')
+    await page.mouse.up()
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      return d?.items.find((i) => i.id === 'e2e-c06')?.pre_ids?.includes('e2e-c08')
+    }, 6000, '拖拽建边落盘：c06.pre_ids 含 c08')
+    ok(await ev(() => !!document.querySelector('[data-graph-edge="e2e-c08→e2e-c06"]')), '新边 c08→c06 渲染')
+  })
+
+  await t('t70 环降级：断边标黄虚线 + 图不卡死 + 详情 × 拆环恢复', async () => {
+    // t69 构成 c06→c08→c06 环：恰 1 条断边，两节点仍渲染
+    await waitFor(
+      () => ev(() => document.querySelectorAll('[data-edge-broken="true"]').length === 1),
+      6000,
+      '环降级：恰 1 条断边标黄',
+    )
+    for (const id of ['e2e-c06', 'e2e-c08']) {
+      ok(await ev((i) => !!document.querySelector(`[data-graph-node="${i}"]`), id), `环上节点 ${id} 仍渲染`)
+    }
+    // 图节点点击开详情（onClick 在 CardView 卡面根节点上）→ chip × 拆掉 c06 的前序 c08
+    await ev(() => document.querySelector('[data-graph-node="e2e-c06"] [data-card-title]')?.click())
+    await waitFor(() => ev(() => !!document.querySelector('[data-slot="dialog-content"]')), 4000, '图节点开详情')
+    await ev(() => {
+      const chip = [...document.querySelectorAll('[data-rel-row="pre"] [data-rel-chip]')].find((c) =>
+        c.textContent.includes('E2E 卡 08'),
+      )
+      chip?.querySelector('[data-rel-remove]')?.click()
+    })
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      return !(d?.items.find((i) => i.id === 'e2e-c06')?.pre_ids ?? []).includes('e2e-c08')
+    }, 6000, '断环边移除落盘')
+    await closeDialog()
+    await waitFor(
+      () => ev(() => document.querySelectorAll('[data-edge-broken="true"]').length === 0),
+      6000,
+      '拆环后断边标记消失',
+    )
+  })
+
+  await t('t71 点亮提示：前序全部发布 → 图节点一次性光晕（不改写卡片数据）', async () => {
+    const p1 = await api('PATCH', `/boards/${relId}/items/e2e-c10`, { pre_ids: ['e2e-c09'] }, relToken.v)
+    eq(p1.status, 200, 'PATCH c10 pre_ids=[c09]')
+    await waitFor(
+      () => ev(() => !!document.querySelector('[data-graph-edge="e2e-c09→e2e-c10"]')),
+      9000,
+      '新边 c09→c10 轮询入图',
+    )
+    ok(
+      !(await ev(() => document.querySelector('[data-graph-node="e2e-c10"]')?.className.includes('graph-lit'))),
+      '前序未发布不点亮',
+    )
+    const p2 = await api('PATCH', `/boards/${relId}/items/e2e-c09`, { status: '已发布' }, relToken.v)
+    eq(p2.status, 200, 'PATCH c09 已发布')
+    await waitFor(
+      () => ev(() => document.querySelector('[data-graph-node="e2e-c10"]')?.className.includes('graph-lit') ?? false),
+      9000,
+      '前序全部发布 → 点亮光晕',
+    )
+    await waitFor(
+      () => ev(() => !document.querySelector('[data-graph-node="e2e-c10"]')?.className.includes('graph-lit')),
+      6000,
+      '光晕一次性（1.3s 后消退）',
+    )
+    const d71 = await storedDoc(relId)
+    ok(d71 && !('dimmed' in (d71.items.find((i) => i.id === 'e2e-c10') ?? {})), '点亮不改写卡片数据')
+  })
+
+  await t('t72 删卡级联：删除被引用卡 → 所有 pre/post 引用同步剔除', async () => {
+    const p1 = await api('PATCH', `/boards/${relId}/items/e2e-c13`, { pre_ids: ['e2e-c12'] }, relToken.v)
+    eq(p1.status, 200, 'PATCH c13 pre_ids=[c12]')
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      return d?.items.find((i) => i.id === 'e2e-c13')?.pre_ids?.includes('e2e-c12')
+    }, 9000, 'c13 前序 c12 轮询落盘')
+    // 切回时间线走 UI 主路径删除 c12
+    await ev(() => document.querySelector('[data-view-tab="timeline"]')?.click())
+    await waitFor(async () => (await colCount()) === 61, 6000, '切回时间线视图')
+    ok(await ev(() => !location.hash.includes('view=graph')), 'hash 回到时间线')
+    await ev(() => {
+      const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+        (p) => p.textContent === 'E2E 卡 12',
+      )
+      el?.closest('.group')?.querySelector('button[aria-label="删除卡片"]')?.click()
+    })
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      const c13 = d?.items.find((i) => i.id === 'e2e-c13')
+      return d && !d.items.some((i) => i.id === 'e2e-c12') && !(c13?.pre_ids ?? []).includes('e2e-c12')
+    }, 9000, '删卡级联：c12 移除 + c13.pre_ids 剔除')
+  })
+
+  await t('t73 未连线暂存带：折叠计数 → 展开 → 双向拖线建边 → 升入分层图', async () => {
+    // 此时关系：c05→c06、c06→c08、c09→c10（c12 已删）→ 已连线 5 卡，孤立卡 8 张
+    await ev(() => document.querySelector('[data-view-tab="graph"]')?.click())
+    await waitFor(() => ev(() => !!document.querySelector('[data-graph-view]')), 6000, '关系视图渲染')
+    // 折叠态：只显计数，不列卡
+    const toggleText = await ev(() => document.querySelector('[data-stage-toggle]')?.textContent ?? '')
+    ok(toggleText.includes('未连线卡片 (8)'), `折叠计数正确（${toggleText.trim().slice(0, 20)}）`)
+    ok(!(await ev(() => !!document.querySelector('[data-stage-list]'))), '默认折叠不列出卡片')
+    // 展开：8 张孤立卡横排
+    await ev(() => document.querySelector('[data-stage-toggle]')?.click())
+    await waitFor(
+      () => ev(() => document.querySelectorAll('[data-stage-card]').length === 8),
+      4000,
+      '展开列出 8 张孤立卡',
+    )
+    // 暂存卡点击开详情
+    await ev(() => document.querySelector('[data-stage-card="e2e-c07"]')?.click())
+    await waitFor(() => ev(() => !!document.querySelector('[data-slot="dialog-content"]')), 4000, '暂存卡开详情')
+    await closeDialog()
+
+    // 暂存卡 → 图节点拖线（方向规则：拖出方=前序，落点=后续）：c07 → c06
+    const geo1 = await ev(() => {
+      const from = document.querySelector('[data-stage-card="e2e-c07"]')
+      const to = document.querySelector('[data-graph-node="e2e-c06"]')
+      const h = from?.querySelector('[data-edge-handle]')
+      if (!from || !to || !h) return null
+      const hr = h.getBoundingClientRect()
+      const tr = to.getBoundingClientRect()
+      return {
+        hx: hr.left + hr.width / 2,
+        hy: hr.top + hr.height / 2,
+        tx: tr.left + tr.width / 2,
+        ty: tr.top + tr.height / 2,
+      }
+    })
+    ok(geo1, '暂存卡/目标节点坐标就绪')
+    await page.mouse.move(geo1.hx, geo1.hy)
+    await sleep(120)
+    await page.mouse.down()
+    for (let i = 1; i <= 6; i += 1) {
+      await page.mouse.move(geo1.hx + ((geo1.tx - geo1.hx) * i) / 6, geo1.hy + ((geo1.ty - geo1.hy) * i) / 6)
+      await sleep(40)
+    }
+    await page.mouse.up()
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      return d?.items.find((i) => i.id === 'e2e-c06')?.pre_ids?.includes('e2e-c07')
+    }, 6000, '暂存卡→节点建边落盘（c07 为 c06 前序）')
+    // 升入分层图 + 离开暂存带
+    await waitFor(() => ev(() => !!document.querySelector('[data-graph-node="e2e-c07"]')), 4000, 'c07 升入分层图')
+    await waitFor(
+      () => ev(() => document.querySelector('[data-stage-toggle]')?.textContent?.includes('未连线卡片 (7)') ?? false),
+      4000,
+      '暂存带计数降为 7',
+    )
+    ok(await ev(() => !!document.querySelector('[data-graph-edge="e2e-c07→e2e-c06"]')), '新边 c07→c06 渲染')
+
+    // 反向：图节点 → 暂存卡拖线：c05（拖出=前序）→ c04（落点=后续）
+    const geo2 = await ev(() => {
+      const from = document.querySelector('[data-graph-node="e2e-c05"]')
+      const to = document.querySelector('[data-stage-card="e2e-c04"]')
+      const h = from?.querySelector('[data-edge-handle]')
+      if (!from || !to || !h) return null
+      const hr = h.getBoundingClientRect()
+      const tr = to.getBoundingClientRect()
+      return {
+        hx: hr.left + hr.width / 2,
+        hy: hr.top + hr.height / 2,
+        tx: tr.left + tr.width / 2,
+        ty: tr.top + hr.height / 2,
+      }
+    })
+    ok(geo2, '节点/目标暂存卡坐标就绪')
+    await page.mouse.move(geo2.hx, geo2.hy)
+    await sleep(120)
+    await page.mouse.down()
+    for (let i = 1; i <= 6; i += 1) {
+      await page.mouse.move(geo2.hx + ((geo2.tx - geo2.hx) * i) / 6, geo2.hy + ((geo2.ty - geo2.hy) * i) / 6)
+      await sleep(40)
+    }
+    await page.mouse.up()
+    await waitFor(async () => {
+      const d = await storedDoc(relId)
+      return d?.items.find((i) => i.id === 'e2e-c04')?.pre_ids?.includes('e2e-c05')
+    }, 6000, '节点→暂存卡建边落盘（c05 为 c04 前序）')
+    await waitFor(() => ev(() => !!document.querySelector('[data-graph-node="e2e-c04"]')), 4000, 'c04 升入分层图')
+  })
+
   // 清掉全部测试板（不留测试数据；产品板已被 t53 删除）
   for (const [id, pw] of [
     [boardId, MAIN_PASS],
     [migId, MAIN_PASS],
+    [relId, MAIN_PASS],
     [smallId, SMALL_PASS],
     [guideId, GUIDE_PASS],
     [dataId, DATA_PASS],

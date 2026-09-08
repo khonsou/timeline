@@ -37,9 +37,9 @@
 
 | 命令 | 覆盖 | 规模 |
 |---|---|---|
-| `npm run test:core` | core 纯函数单测（node:test） | 20 项，秒级 |
-| `npm run test:server` | server 全链路冒烟（临时端口 5197 + 临时库自建自删） | 24 断言 |
-| `npm run test:e2e` | 真实 Chrome 全量回归（`web/verification/e2e-check.mjs`，自含起停 API :5198 + vite :5199） | 57 项 |
+| `npm run test:core` | core 纯函数单测（node:test） | 128 项，秒级 |
+| `npm run test:server` | server 全链路冒烟（临时端口 5197 + 临时库自建自删） | 103 断言 |
+| `npm run test:e2e` | 真实 Chrome 全量回归（`web/verification/e2e-check.mjs`，自含起停 API :5198 + vite :5199） | 73 项 |
 
 - **交互/拖拽/同步/鉴权类 UI 改动必须跑 e2e**：`npm run build` 抓不到运行时接线错误（v19 拖拽碰撞判定即此类）。
 - 纯文案/样式微调可只跑 `npm run build`。
@@ -52,7 +52,7 @@
 
 ## lint 现状
 
-全仓 eslint 有 **38 个历史告警**（BoardCard.tsx 的 react-hooks/refs + shadcn 模板噪音），未基线化，**暂不作合并门禁**；改动文件不要新增告警即可。
+全仓 eslint 有 **37 个历史告警**（BoardCard.tsx 的 react-hooks/refs + shadcn 模板噪音），未基线化，**暂不作合并门禁**；改动文件不要新增告警即可。
 
 ## 协作约定
 

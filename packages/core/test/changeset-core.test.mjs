@@ -608,3 +608,62 @@ describe('v2-M2 F3 统一分组模型：3 个 doc 级 op', () => {
     assert.ok(!('group_id' in r.doc.items[0]))
   })
 })
+
+// ---------------------------------------------------------------------------
+// v2-M3 F4 卡片关系：change-set create/patch 的 pre_ids 与 PATCH 同口径；
+// post_ids 镜像同事务维护；post_ids 直接写入 → 白名单外拒绝
+// ---------------------------------------------------------------------------
+describe('v2-M3 pre_ids / post_ids（change-set 同口径）', () => {
+  it('预校验：post_ids 不支持；pre_ids 格式校验；空数组清空语义保留', () => {
+    const bad = validateChangeSet({ operations: [{ op: 'patch', item_id: 's-01', changes: { post_ids: ['s-02'] } }] })
+    assert.match(bad.errors[0], /不支持修改的字段: post_ids/)
+    const badFmt = validateChangeSet({ operations: [{ op: 'patch', item_id: 's-01', changes: { pre_ids: 'x' } }] })
+    assert.match(badFmt.errors[0], /pre_ids 非法/)
+    const ok = validateChangeSet({ operations: [{ op: 'patch', item_id: 's-01', changes: { pre_ids: [] } }] })
+    assert.deepEqual(ok.errors, [])
+    assert.deepEqual(ok.normalized[0].changes.pre_ids, []) // 空数组清空语义不丢键
+  })
+  it('patch pre_ids → 写入 + 被引用卡 post_ids 镜像 + 审计两条', () => {
+    const r = applyChangeSet(doc(), [
+      { op: 'patch', item_id: 's-01', changes: { pre_ids: ['s-02', 's-03'] } },
+    ])
+    assert.deepEqual(r.errors, [])
+    const a = r.doc.items.find((it) => it.id === 's-01')
+    assert.deepEqual(a.pre_ids, ['s-02', 's-03'])
+    assert.deepEqual(r.doc.items.find((it) => it.id === 's-02').post_ids, ['s-01'])
+    assert.deepEqual(r.doc.items.find((it) => it.id === 's-03').post_ids, ['s-01'])
+    const mirrorAudit = r.changes.filter((c) => c.field === 'post_ids')
+    assert.equal(mirrorAudit.length, 2)
+  })
+  it('patch pre_ids 悬空 / 自环 → 全批拒绝零变化', () => {
+    const ghost = applyChangeSet(doc(), [{ op: 'patch', item_id: 's-01', changes: { pre_ids: ['ghost'] } }])
+    assert.match(ghost.errors[0], /pre_ids 指向不存在的卡片/)
+    assert.equal(ghost.doc, undefined)
+    const self = applyChangeSet(doc(), [{ op: 'patch', item_id: 's-01', changes: { pre_ids: ['s-01'] } }])
+    assert.match(self.errors[0], /不允许自环/)
+  })
+  it('create 携带 pre_ids → 新卡落字段 + 旧卡镜像；引用同 set 前序新建卡可见', () => {
+    const r = applyChangeSet(doc(), [
+      { op: 'create', client_ref: 'n1', item: { title: '新卡', publish_at: '2026-09-12T09:00', pre_ids: ['s-02'] } },
+    ])
+    assert.deepEqual(r.errors, [])
+    const createdId = r.created[0].id
+    const created = r.doc.items.find((it) => it.id === createdId)
+    assert.deepEqual(created.pre_ids, ['s-02'])
+    assert.deepEqual(r.doc.items.find((it) => it.id === 's-02').post_ids, [createdId])
+    // 同 set 先建后引用：第二张卡引用第一张的服务端分配 id
+    const first = r.created[0].id
+    const r2 = applyChangeSet(doc(), [
+      { op: 'create', client_ref: 'n1', item: { title: '新卡', publish_at: '2026-09-12T09:00' } },
+      { op: 'create', client_ref: 'n2', item: { title: '新卡2', publish_at: '2026-09-12T10:00', pre_ids: [newChangeSetItemId({ title: '新卡', type: '图文', publish_at: '2026-09-12T09:00', product_id: '' }, 'n1', 0)] } },
+    ])
+    assert.deepEqual(r2.errors, [])
+    assert.deepEqual(r2.doc.items.find((it) => it.id === r2.created[1].id).pre_ids, [first])
+    assert.deepEqual(r2.doc.items.find((it) => it.id === first).post_ids, [r2.created[1].id])
+    // create 引用不存在卡 → 全批拒绝
+    const bad = applyChangeSet(doc(), [
+      { op: 'create', item: { title: 'x', publish_at: '2026-09-12T09:00', pre_ids: ['ghost'] } },
+    ])
+    assert.match(bad.errors[0], /pre_ids 指向不存在的卡片/)
+  })
+})
