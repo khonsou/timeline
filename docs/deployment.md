@@ -115,3 +115,33 @@ pm2 restart timeline-board-api    # packages/server 或 packages/core 有变化�
 - **删除看板必须重新输密码**（不认 token），物理删除不可恢复，请依赖 §5 备份兜底。
 - token 存于浏览器 sessionStorage（按板一键），关标签页即失效；12h 后服务端过期。
 - 建议上 HTTPS（certbot）：看板密码与 token 均走网络明文传输，裸 HTTP 仅限内网/试用。
+
+## 8. Kubernetes test 集群部署
+
+`deploy/deploy.sh` 是唯一发布入口，交互选择发布哪一侧：
+
+```bash
+bash deploy/deploy.sh
+# 1) 更新服务端
+# 2) 更新客户端
+```
+
+脚本默认使用：
+
+- namespace：`angrymiao-test`
+- Kubernetes context：`kubernetes-admin-c72d7454d43804ccc87327b729e670ba4`
+- 镜像仓库：`registry.cn-shenzhen.aliyuncs.com/angrymiao/timeline`
+- 访问地址：`https://timeline.angrymiao.com/aVoSaywtHjXCA`
+
+首次部署先选择 `1` 发布服务端，再选择 `2` 发布客户端。首次发布服务端时需要提供固定的 Token 签名密钥；如果集群里还没有 `timeline-board-secret`，执行：
+
+```bash
+export BOARD_SECRET='生成并妥善保存的固定随机字符串'
+bash deploy/deploy.sh
+```
+
+已有 `timeline-board-secret` 时脚本会复用它，不会用新的环境变量覆盖线上密钥。镜像使用 Git 提交号作为 Tag；工作区有未提交改动时会追加时间戳，避免 K8s 因 Pod template 未变化而继续运行旧镜像。
+
+服务端是单副本 `Recreate` Deployment，SQLite PVC 挂载到 `/data`，运行时路径为 `/data/boards.sqlite`。PVC 使用集群已有的 NAS CSI `nasplugin.csi.alibabacloud.com`，挂载 NAS 子目录 `/timeline-board`，并使用 `Retain` 回收策略。不要扩展后端副本数，也不要让多个 Pod 共享 SQLite 文件。NAS 文件系统故障或数据删除仍可能导致数据不可恢复，应按集群运维规范定期使用 SQLite `.backup` 或 NAS 快照/备份；发布脚本不会自动执行备份/恢复。
+
+K8s 清单只通过发布脚本渲染镜像 Tag、域名和应用前缀后提交，验证和更新均使用 `kubectl apply`，不会采用 `finance-table` 旧脚本中的先删除再创建方式。脚本会执行镜像构建、镜像推送和所选资源的集群更新；实际发布前应确认 Docker 登录状态、镜像仓库权限和目标 context。

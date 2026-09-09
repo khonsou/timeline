@@ -1,0 +1,92 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: timeline-backend-deployment
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: timeline-backend
+  template:
+    metadata:
+      labels:
+        app: timeline-backend
+    spec:
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+        - name: prepare-board-data
+          image: __API_IMAGE__
+          imagePullPolicy: Always
+          command:
+            - sh
+            - -c
+            - chmod 0777 /data
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: board-data
+              mountPath: /data
+      containers:
+        - name: timeline-backend
+          image: __API_IMAGE__
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8787
+          env:
+            - name: API_PORT
+              value: "8787"
+            - name: BASE_PATH
+              value: __BASE_PATH__
+            - name: BOARD_DB
+              value: /data/boards.sqlite
+            - name: BOARD_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: timeline-board-secret
+                  key: BOARD_SECRET
+            - name: BOARD_TOKEN_HOURS
+              value: "12"
+            - name: BOARD_LOCK_SECONDS
+              value: "60"
+            - name: BOARD_AGENT_RPM
+              value: "120"
+          resources:
+            requests:
+              memory: 128Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+              cpu: 500m
+          readinessProbe:
+            httpGet:
+              path: __BASE_PATH__/api/health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: __BASE_PATH__/api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: board-data
+              mountPath: /data
+      imagePullSecrets:
+        - name: aliyun-reg-secret
+      volumes:
+        - name: board-data
+          persistentVolumeClaim:
+            claimName: timeline-board-data

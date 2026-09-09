@@ -4,6 +4,9 @@
  */
 import type { BoardDoc } from '@/lib/board-doc'
 
+const BASE_PATH = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '')
+export const apiPath = (path: string): string => `${BASE_PATH}${path}`
+
 export interface BoardSummary {
   board_id: string
   name: string
@@ -28,7 +31,7 @@ export class ApiError extends Error {
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   let res: Response
   try {
-    res = await fetch(path, init)
+    res = await fetch(apiPath(path), init)
   } catch (e) {
     // 网络层失败（断网 / server 未起）：status 0 供同步层判离线
     throw new ApiError(0, e instanceof Error ? e.message : String(e))

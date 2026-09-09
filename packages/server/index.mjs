@@ -62,6 +62,7 @@ import { normalizeRelationFields } from '@timeline/core/relation-core'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.API_PORT || 8787)
+const BASE_PATH = String(process.env.BASE_PATH || '').replace(/\/+$/, '')
 // 默认库文件落在 server 包目录内（packages/server/boards.sqlite）；生产用 BOARD_DB 指向数据目录
 const DB_PATH = process.env.BOARD_DB || path.join(path.dirname(fileURLToPath(import.meta.url)), 'boards.sqlite')
 const TOKEN_TTL_MS = Number(process.env.BOARD_TOKEN_HOURS || 12) * 3600_000
@@ -358,7 +359,10 @@ let putCompatWarned = false
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url, 'http://x')
-    const p = url.pathname
+    const p =
+      BASE_PATH && (url.pathname === BASE_PATH || url.pathname.startsWith(`${BASE_PATH}/`))
+        ? url.pathname.slice(BASE_PATH.length) || '/'
+        : url.pathname
 
     if (p === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true })
 
