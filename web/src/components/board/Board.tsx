@@ -577,14 +577,14 @@ export default function Board({
         </DragOverlay>
       </DndContext>
 
-      {/* v17 minimap：全跨度密度热力 + 月刻度 + 今天线 + 窗口框（可拖/可点）。
-          v2-M2：代码零改动，center 恒传 TODAY —— dim 遮罩 = 今天 ±30 天外，
-          与迁移窗口（61 个日期组）天然对齐 */}
+      {/* v2-M2 minimap（组数驱动，去日期化）：轨道 = 未分组列 + groups[] 共 N 列等分，
+          密度点按组卡数量化，视口框按列索引映射，点/拖 scrub 回调列 key（'' = 未分组）。
+          今天红点仅当存在组名 == TODAY 的组时渲染（BoardMinimap 内部判定） */}
       <BoardMinimap
         items={items}
-        center={TODAY}
+        groups={groups}
         scrollerRef={scrollerRef}
-        onScrub={(date) => scrollToDate(date, 'auto')}
+        onScrub={(key) => scrollToColumn(key, 'auto')}
       />
 
       {/* 回到今天 FAB：今天列不在视口内时才显示，箭头指向今天列方向 */}

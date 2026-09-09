@@ -12,6 +12,12 @@
  *   压暗 = 61 天加载窗口外左右两片遮罩（随窗口滑动；跨度 <61 天隐藏）；今天 = rose 红点；
  *   日期 tooltip：悬停读所指日期、拖框读框中心日期。
  *
+ * v2-M2 minimap 组数驱动去日期化（t03/t07/t08 重写 + t54–t56 适配）：
+ *   轨道 = 未分组列 + groups[] 共 N 列等分（迁移板恒 62 列）；密度点按组卡数量化、
+ *   daycol 带 data-group-key（未分组 = ''）；月刻度/压暗遮罩退役；今天红点仅当存在
+ *   组名==今天的组时落在该组列位；tooltip 读组名（未分组读「未分组」）；
+ *   点击/拖拽 scrub 回调列 key → Board.scrollToColumn。
+ *
  * v15 旧套件（工作区根 verification/e2e-check.mjs，37 项）全量移植为 t20–t53：
  *   首页建板直进/引导卡/内置产品目录/FAB 隐藏/CLI 导入接管建数据板/inline 编辑与 Esc 取消/
  *   数据板增卡删卡跨日拖/详情字段（指标、rate 反推、非法抖动、归属产品、改期）/类型切换/
@@ -21,7 +27,7 @@
  *   v16 窗口化适配：卡片计数一律按「窗口 [首列,末列] 内应渲染数」校验，不再假设全量渲染；
  *   样例锚点（examples/import-sample.json）不再直接使用：灌库前按 SAMPLE_SHIFT 平移全部
  *   publish_at（锚点 imp-0006 → 今天+2），任何运行日都落在 ±30 天窗口内且语义不变；
- *   规约：日期断言一律走 fmt/addDays/fmtTipDate 与 shiftDate/shiftAt，禁止字面量日期。
+ *   规约：日期断言一律走 fmt/addDays 与 shiftDate/shiftAt，禁止字面量日期。
  *
  * v19 碰撞判定修复（t57）：全局 closestCorners 下拖拽卡自身 rect 长期赢下判定、
  *   相邻日落点无高亮成功率低；修复为 pointerWithin 锁列 + 列内 closestCorners。
@@ -40,7 +46,8 @@
  *   hash 持久/直达、推进前线强调、拖拽连线建边、环降级断边、前序全发布点亮提示、
  *   删卡级联剔除、未连线卡片暂存带（折叠计数/展开/双向拖线建边/升入分层图/孤立卡定位升级）。
  *
- * 运行：node verification/e2e-check.mjs
+ * 运行：node verification/e2e-check.mjs [用例名前缀…]
+ *   - 过滤参数：node verification/e2e-check.mjs t03 t07 t08 → 只跑前缀匹配的用例（其余记 SKIP）；不带参数 = 全量
  *   - 自带 fixture：spawn API server（:5198，独立 tmp sqlite）+ vite（:5199，API_PORT=5198 反代）
  *   - 驱动本机 Chrome（headless）走真实 UI；跑完杀进程组 + 删 tmp sqlite + 删 CLI 产物 board.json
  *   - 截图存 verification/board-v16-*.png
@@ -48,6 +55,7 @@
  * 端口纪律：5198/5199 本脚本独占（启动前检查，被占则报错退出）；7100/7101/7102 永远不碰。
  */
 import { execSync, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -108,7 +116,7 @@ const dayDiff = (a, b) => {
 //   ② 最早卡 imp-0001 @08-05 平移后落 今天-28，距窗口左缘（-30）留 2 天余量；
 //   ③ imp-0005 @09-01 → 今天-1（恒为历史已发布，任意运行时刻安全）；
 //   ④ imp-0007 @09-10 → 今天+8（恒为未来 → 推导待发布），imp-0008 @09-20 → 今天+18（窗口内）。
-// 规约：日期断言一律走 fmt/addDays/fmtTipDate 与本节 shiftDate/shiftAt，禁止字面量日期。
+// 规约：日期断言一律走 fmt/addDays 与本节 shiftDate/shiftAt，禁止字面量日期。
 // ---------------------------------------------------------------------------
 const SAMPLE_ANCHOR_DATE = '2026-09-04' // imp-0006 原始 publish 日期
 const SAMPLE_SHIFT = dayDiff(addDays(TODAY, 2), SAMPLE_ANCHOR_DATE)
@@ -130,11 +138,8 @@ function writeShiftedSample() {
 
 const COLUMN_STEP = 248 // 236 列宽 + 12 间距
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
-/** 与 BoardMinimap.fmtTip 同口径：「9月15日 周二」 */
-const fmtTipDate = (date) => {
-  const [y, m, d] = date.split('-').map(Number)
-  return `${m}月${d}日 周${'日一二三四五六'[new Date(y, m - 1, d).getDay()]}`
-}
+/** 迁移日期组 id（与 core migrateGroupId 同口径：grp- + sha1('migrate|'+date) 前 12 位） */
+const migGrp = (date) => `grp-${createHash('sha1').update(`migrate|${date}`).digest('hex').slice(0, 12)}`
 
 function ok(cond, msg) {
   if (!cond) throw new Error(msg)
@@ -636,7 +641,14 @@ async function editCardTitleOn(pg, title, newTitle) {
 // 用例主流程
 // ---------------------------------------------------------------------------
 const results = []
+/** 用例过滤：node e2e-check.mjs t03 t07 …（参数 = 用例名前缀集合；空 = 全量）。SKIP 不计 pass/fail */
+const ONLY = new Set(process.argv.slice(2))
 async function t(name, fn) {
+  if (ONLY.size && ![...ONLY].some((p) => name.startsWith(p))) {
+    results.push(['SKIP', name])
+    console.log(`  - ${name}（过滤跳过）`)
+    return
+  }
   try {
     await fn()
     results.push(['PASS', name])
@@ -730,50 +742,51 @@ async function main() {
     await page.screenshot({ path: path.join(VDIR, 'board-v17-minimap.png') })
   })
 
-  // v17：span = 首卡 today-90 → 末卡 today+90 = 181 天；窗口 today±30 → 左右各遮 60 天
-  await t('t03 minimap v17 结构：量化圆点/视口框真实比例/今天点/压暗/月刻度', async () => {
+  // v2-M2 组数驱动 minimap（去日期化）：轨道 = 未分组列 + 61 日期组 = 62 列等分；
+  // 月刻度/压暗遮罩退役；今天红点 = 组名==今天的组列位；密度点按组卡数量化
+  await t('t03 minimap 组数驱动结构：62 列位/量化圆点/视口框真实比例/今天点/无月刻度无压暗', async () => {
+    // 自包含导航：过滤单跑（node e2e-check.mjs t03 …）时不依赖 t02 现场
+    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await waitFor(async () => (await colCount()) === 61, 9000, '主板渲染 61 列')
     ok(await ev(() => !!document.querySelector('[data-minimap]')), '轨道存在')
     ok(await ev(() => !!document.querySelector('[data-minimap-window]')), '视口框存在')
-    ok(await ev(() => !!document.querySelector('[data-minimap-today]')), '今天点存在')
+    ok(await ev(() => !!document.querySelector('[data-minimap-today]')), '今天点存在（存在组名==今天的组）')
     ok(await ev(() => !!document.querySelector('[data-minimap-viewport-tick]')), '框顶中心刻度存在')
-    const months = await ev(() => document.querySelectorAll('[data-minimap-month]').length)
-    ok(months >= 2, `月刻度 ${months} ≥ 2`)
-    // 14 张卡落在 13 个不同日期（今天 2 张同日）→ 13 列，每天 ≤2 张 → 各 1 点
-    eq(await ev(() => document.querySelectorAll('[data-minimap-daycol]').length), 13, '13 个日期列')
-    eq(await ev(() => document.querySelectorAll('[data-minimap-dot]').length), 13, '每天 1 点共 13 点')
-    const todayDots = await ev(
-      (d) => document.querySelector(`[data-minimap-daycol][data-date="${d}"]`)?.querySelectorAll('[data-minimap-dot]').length ?? -1,
-      TODAY,
-    )
-    eq(todayDots, 1, '今天列（2 张）= 1 点')
-    // 视口框宽 ≈ 可见视口天数 / 181（真实比例），且 ≥ 10px 最小宽
-    const fw = await ev(() => {
-      const t = document.querySelector('[data-minimap]').getBoundingClientRect()
-      const f = document.querySelector('[data-minimap-window]').getBoundingClientRect()
-      const s = document.querySelector('.h-full.overflow-auto')
-      return { ratio: f.width / t.width, expect: s.clientWidth / 248 / 181, px: f.width }
-    })
-    ok(fw.px >= 10, `视口框宽 ${fw.px.toFixed(1)}px ≥ 10px`)
+    // 退役元素：月刻度 / 压暗遮罩不再渲染
+    eq(await ev(() => document.querySelectorAll('[data-minimap-month]').length), 0, '月刻度退役（0 个）')
     ok(
-      Math.abs(fw.ratio - fw.expect) < 0.004,
-      `视口框宽比 ${(fw.ratio * 100).toFixed(2)}% ≈ ${(fw.expect * 100).toFixed(2)}%（真实比例）`,
+      await ev(() => !document.querySelector('[data-minimap-dim-left]') && !document.querySelector('[data-minimap-dim-right]')),
+      '压暗遮罩退役（元素不存在）',
     )
-    // 压暗：窗口 [today-30, today+30] 外各 60 天 → 左右遮罩宽比 ≈ 60/181
-    const dims = await ev(() => {
-      const t = document.querySelector('[data-minimap]').getBoundingClientRect()
-      const l = document.querySelector('[data-minimap-dim-left]')
-      const r = document.querySelector('[data-minimap-dim-right]')
-      return {
-        lw: l.getBoundingClientRect().width / t.width,
-        rw: r.getBoundingClientRect().width / t.width,
-        lv: getComputedStyle(l).visibility,
-        rv: getComputedStyle(r).visibility,
-      }
-    })
-    eq(dims.lv, 'visible', '左压暗可见')
-    eq(dims.rv, 'visible', '右压暗可见')
-    ok(Math.abs(dims.lw - 60 / 181) < 0.01, `左压暗宽比 ${(dims.lw * 100).toFixed(1)}% ≈ 33.1%（60/181）`)
-    ok(Math.abs(dims.rw - 60 / 181) < 0.01, `右压暗宽比 ${(dims.rw * 100).toFixed(1)}% ≈ 33.1%（60/181）`)
+    // 62 列等分：未分组 + 61 日期组，每列一个 daycol（含 0 点列也渲染列位）
+    eq(await ev(() => document.querySelectorAll('[data-minimap-daycol]').length), 62, '62 个列位（未分组 + 61 组）')
+    // 密度：窗口内 12 卡落 11 个日期（今天 2 张）→ 11 组各 1 点；未分组 2 张离群卡 → 1 点；共 12 点
+    eq(await ev(() => document.querySelectorAll('[data-minimap-dot]').length), 12, '量化点共 12（11 日期组×1 + 未分组×1）')
+    const ugDots = await ev(
+      () => document.querySelector('[data-minimap-daycol][data-group-key=""]')?.querySelectorAll('[data-minimap-dot]').length ?? -1,
+    )
+    eq(ugDots, 1, '未分组列（2 张离群卡）= 1 点')
+    const todayDots = await ev(
+      (k) => document.querySelector(`[data-minimap-daycol][data-group-key="${k}"]`)?.querySelectorAll('[data-minimap-dot]').length ?? -1,
+      migGrp(TODAY),
+    )
+    eq(todayDots, 1, '今天组（2 张）= 1 点')
+    // 今天红点落位 = 今天组列位（daycol 与红点的 style.left 均为列位百分比）
+    const pos = await ev((k) => ({
+      dot: parseFloat(document.querySelector('[data-minimap-today]').style.left),
+      col: parseFloat(document.querySelector(`[data-minimap-daycol][data-group-key="${k}"]`).style.left),
+    }), migGrp(TODAY))
+    ok(Math.abs(pos.dot - pos.col) < 0.01, `今天红点落在今天组列位（${pos.col.toFixed(2)}%）`)
+    // 视口框宽 ≈ 视口覆盖列数 / 62（真实比例），且 ≥ 10px 最小宽
+    await waitFor(async () => {
+      const fw = await ev(() => {
+        const t = document.querySelector('[data-minimap]').getBoundingClientRect()
+        const f = document.querySelector('[data-minimap-window]').getBoundingClientRect()
+        const s = document.querySelector('.h-full.overflow-auto')
+        return { ratio: f.width / t.width, expect: s.clientWidth / 248 / 62, px: f.width }
+      })
+      return fw.px >= 10 && Math.abs(fw.ratio - fw.expect) < 0.004
+    }, 5000, '视口框宽比 ≈ 视口列数/62（真实比例，≥10px）')
   })
 
   await t('t04 无滑动窗口：滚远后列集合不变，视觉位置随 scrollLeft 精确移动', async () => {
@@ -868,27 +881,27 @@ async function main() {
     ok(Math.abs(dayDiff(await midDate(), TODAY)) <= 1, 'T 后中线回到今天附近')
   })
 
-  await t('t07 minimap 点击跳转（窗口内目标）+ 出窗点击无操作（双向同步）', async () => {
+  await t('t07 minimap 点击跳转（按组列等分映射）+ 未分组列点击', async () => {
     const pt = await ev(() => {
       const r = document.querySelector('[data-minimap]').getBoundingClientRect()
       return { x: r.left, y: r.top + r.height / 2, w: r.width }
     })
-    // v2-M2：列 = 迁移窗口（today±30）；span 仍 = today-90 → today+90（181 天）
-    // 点 62% → floor(0.62×181)=112 → today+22（窗口内，有同名日期组列）
-    const expect1 = addDays(TODAY, -90 + Math.floor(0.62 * 181))
+    // 62 列等分（idx0=未分组，idx1..61 = today-30..today+30）：
+    // 点 62% → idx=floor(0.62×62)=38 → 组序 37 = today+7
     await page.mouse.click(pt.x + pt.w * 0.62, pt.y)
-    await waitFor(async () => Math.abs(dayDiff(await midDate(), expect1)) <= 2, 7000, `点击跳到 ${expect1} 附近`)
-    // 点回 50% → floor(0.5×181)=90 → today
+    await waitFor(async () => Math.abs(dayDiff(await midDate(), addDays(TODAY, 7))) <= 1, 7000, '点击跳到 today+7 组列附近')
+    // 点回 50% → idx=31 → 今天组
     await page.mouse.click(pt.x + pt.w * 0.5, pt.y)
-    await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 2, 7000, '点击回今天')
-    // 出窗点击（97% → today+85，无同名组列）→ 无操作（退化语义）
-    const before = await midDate()
-    await page.mouse.click(pt.x + pt.w * 0.97, pt.y)
-    await sleep(600)
-    eq(await midDate(), before, '出窗点击无操作（无同名日期组列）')
+    await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 1, 7000, '点击回今天')
+    // 点左缘 0.5% → idx=0 → 未分组列（key ''）滚入视口（ scrub 回调 '' 路径）
+    await page.mouse.click(pt.x + pt.w * 0.005, pt.y)
+    await waitFor(() => groupColVisible('ungrouped'), 7000, '未分组列滚入视口')
+    // 恢复现场：点回 50% 今天
+    await page.mouse.click(pt.x + pt.w * 0.5, pt.y)
+    await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 1, 7000, '恢复到今天')
   })
 
-  await t('t08 minimap 拖框先行 + tooltip 读数 + 窗口内大跳', async () => {
+  await t('t08 minimap 拖框先行 + tooltip 读组名 + 组列大跳', async () => {
     const pt = await ev(() => {
       const r = document.querySelector('[data-minimap]').getBoundingClientRect()
       return { x: r.left, y: r.top + r.height / 2, w: r.width }
@@ -897,8 +910,9 @@ async function main() {
       const r = document.querySelector('[data-minimap-window]').getBoundingClientRect()
       return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
     })
+    // 62 列等分：60% → idx=floor(37.2)=37 → today+6；64% → idx=floor(39.68)=39 → today+8
     const mid60 = pt.x + pt.w * 0.6
-    const target63 = pt.x + pt.w * 0.63 // floor(0.63×181)=113 → today+23（窗口内）
+    const target64 = pt.x + pt.w * 0.64
     await page.mouse.move(fr.x, fr.y)
     await page.mouse.down()
     try {
@@ -914,24 +928,24 @@ async function main() {
         })
         return Math.abs(d - mid60) <= 12
       }, 4000, '拖拽中框中心 ≈ 指针（框先行）')
-      // tooltip：拖框时读框中心日期（floor(0.6×181)=108 → today+18）
-      const tip60 = fmtTipDate(addDays(TODAY, -90 + Math.floor(0.6 * 181)))
+      // tooltip：拖框时读框中心组名（迁移日期组组名 = 日期串；idx37 = today+6）
+      const tip60 = addDays(TODAY, 6)
       const tipState = await ev(() => {
         const el = document.querySelector('[data-minimap-tooltip]')
         return { opacity: el.style.opacity, text: el.textContent }
       })
       eq(tipState.opacity, '1', '拖拽中 tooltip 显示')
-      eq(tipState.text, tip60, `拖拽中 tooltip 读框中心日期 ${tip60}`)
+      eq(tipState.text, tip60, `拖拽中 tooltip 读框中心组名 ${tip60}`)
       await page.screenshot({ path: path.join(VDIR, 'board-v17-drag-tooltip.png') })
       for (let i = 1; i <= 6; i++) {
-        await page.mouse.move(mid60 + ((target63 - mid60) * i) / 6, fr.y)
+        await page.mouse.move(mid60 + ((target64 - mid60) * i) / 6, fr.y)
         await sleep(45)
       }
     } finally {
       await page.mouse.up()
     }
-    const expectD = addDays(TODAY, -90 + Math.floor(0.63 * 181)) // ≈ today+23
-    await waitFor(async () => Math.abs(dayDiff(await midDate(), expectD)) <= 3, 8000, `拖拽大跳到 ${expectD} 附近`)
+    const expectD = addDays(TODAY, 8) // idx39 = today+8
+    await waitFor(async () => Math.abs(dayDiff(await midDate(), expectD)) <= 2, 8000, `拖拽大跳到 ${expectD} 附近`)
     // 松开后 tooltip 隐藏
     const tipGone = await ev(() => document.querySelector('[data-minimap-tooltip]').style.opacity)
     eq(tipGone, '0', '松开后 tooltip 隐藏')
@@ -940,7 +954,7 @@ async function main() {
     await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 2, 8000, '拖回今天')
   })
 
-  await t('t54 minimap 悬停 tooltip 读所指日期 + 移出隐藏', async () => {
+  await t('t54 minimap 悬停 tooltip 读所指组名 + 移出隐藏', async () => {
     const pt = await ev(() => {
       const r = document.querySelector('[data-minimap]').getBoundingClientRect()
       return { x: r.left, y: r.top + r.height / 2, w: r.width }
@@ -950,89 +964,93 @@ async function main() {
         const el = document.querySelector('[data-minimap-tooltip]')
         return { opacity: el.style.opacity, text: el.textContent }
       })
-    // 悬停 25% → floor(0.25×181)=45 → today-45
-    const tip25 = fmtTipDate(addDays(TODAY, -90 + Math.floor(0.25 * 181)))
+    // 62 列等分：悬停 25% → idx=floor(15.5)=15 → 组序 14 = today-16（迁移组组名 = 日期串）
+    const tip25 = addDays(TODAY, -16)
     await page.mouse.move(pt.x + pt.w * 0.25, pt.y)
     await waitFor(async () => (await readTip()).opacity === '1', 4000, '悬停 tooltip 显示')
     eq((await readTip()).text, tip25, `悬停 25% 读 ${tip25}`)
-    // 移到 75% → floor(0.75×181)=135 → today+45
-    const tip75 = fmtTipDate(addDays(TODAY, -90 + Math.floor(0.75 * 181)))
+    // 移到 75% → idx=floor(46.5)=46 → 组序 45 = today+15
+    const tip75 = addDays(TODAY, 15)
     await page.mouse.move(pt.x + pt.w * 0.75, pt.y)
     await waitFor(async () => (await readTip()).text === tip75, 4000, `悬停 75% 读 ${tip75}`)
+    // 移到左缘 0.5% → idx=0 → 未分组列读「未分组」
+    await page.mouse.move(pt.x + pt.w * 0.005, pt.y)
+    await waitFor(async () => (await readTip()).text === '未分组', 4000, '悬停左缘读「未分组」')
     // 移出轨道 → 隐藏
-    await page.mouse.move(pt.x + pt.w * 0.75, pt.y - 120)
+    await page.mouse.move(pt.x + pt.w * 0.5, pt.y - 120)
     await waitFor(async () => (await readTip()).opacity === '0', 4000, '移出轨道 tooltip 隐藏')
   })
 
-  await t('t55 minimap 压暗静态：无滑动窗口，滚动不改变遮罩', async () => {
-    // v2-M2：滑动窗口退役 → dim 遮罩恒 = 今天±30 窗口外两片（center 恒 TODAY），
-    // 滚动只移动视口框，遮罩宽度不再变化
+  await t('t55 minimap 压暗退役：无遮罩元素，滚动只移视口框位置、宽度恒定', async () => {
+    // v2-M2 组数驱动：dim 遮罩概念死亡——元素不再渲染；滚动只 translate 视口框，宽度不变
+    ok(
+      await ev(() => !document.querySelector('[data-minimap-dim-left]') && !document.querySelector('[data-minimap-dim-right]')),
+      'dim 遮罩元素不存在',
+    )
     const pt = await ev(() => {
       const r = document.querySelector('[data-minimap]').getBoundingClientRect()
       return { x: r.left, y: r.top + r.height / 2, w: r.width }
     })
     await page.mouse.click(pt.x + pt.w * 0.5, pt.y)
-    await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 2, 8000, '回今天')
-    const readDims = () =>
-      ev(() => ({
-        l: document.querySelector('[data-minimap-dim-left]').getBoundingClientRect().width,
-        r: document.querySelector('[data-minimap-dim-right]').getBoundingClientRect().width,
-      }))
-    const m1 = await readDims()
+    await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 1, 8000, '回今天')
+    const readFrame = () =>
+      ev(() => {
+        const f = document.querySelector('[data-minimap-window]').getBoundingClientRect()
+        return { l: f.left, w: f.width }
+      })
+    const f1 = await readFrame()
     const before = await firstDate()
     const left0 = await ev(() => document.querySelector('.h-full.overflow-auto').scrollLeft)
     await ev(() => {
       document.querySelector('.h-full.overflow-auto').scrollLeft += 12 * 248
     })
     await sleep(400)
-    eq(await firstDate(), before, '滚动后首列不变（无窗口滑动）')
+    eq(await firstDate(), before, '滚动后首列不变（列全量常驻）')
     ok(
       (await ev(() => document.querySelector('.h-full.overflow-auto').scrollLeft)) > left0,
       'scrollLeft 确实移动',
     )
-    const m2 = await readDims()
-    ok(Math.abs(m2.l - m1.l) <= 1, `左压暗恒定（${m1.l.toFixed(1)} → ${m2.l.toFixed(1)}px）`)
-    ok(Math.abs(m2.r - m1.r) <= 1, `右压暗恒定（${m1.r.toFixed(1)} → ${m2.r.toFixed(1)}px）`)
+    const f2 = await readFrame()
+    ok(Math.abs(f2.w - f1.w) <= 1, `视口框宽恒定（${f1.w.toFixed(1)} → ${f2.w.toFixed(1)}px）`)
+    ok(Math.abs(f2.l - f1.l) > 4, `视口框位置随滚动移动（${f1.l.toFixed(1)} → ${f2.l.toFixed(1)}px）`)
     // 回今天恢复现场
     await page.mouse.click(pt.x + pt.w * 0.5, pt.y)
-    await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 2, 8000, '回今天')
+    await waitFor(async () => Math.abs(dayDiff(await midDate(), TODAY)) <= 1, 8000, '回今天')
   })
 
-  await t('t56 小跨度板：量化点 1/2/3、无压暗、视口框大占比', async () => {
+  await t('t56 小跨度板：量化点 1/2/3、无压暗、62 列等分视口框', async () => {
     await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${smallId}`, smallToken)
     await page.goto(`${WEB}/b/${smallId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '小板渲染 61 列')
-    // 跨度 = today-5 → today+5（11 天）；3 个日期列，点级 1 / 2 / 3
-    eq(await ev(() => document.querySelectorAll('[data-minimap-daycol]').length), 3, '3 个日期列')
+    // 组数驱动：轨道恒 62 列位（未分组 + 61 迁移日期组）；卡 today-5×1 / today×3 / today+5×6 → 点级 1/2/3
+    eq(await ev(() => document.querySelectorAll('[data-minimap-daycol]').length), 62, '62 个列位（未分组 + 61 组）')
     eq(await ev(() => document.querySelectorAll('[data-minimap-dot]').length), 6, '总 6 点')
     const levels = await ev(() => {
       const out = {}
       for (const c of document.querySelectorAll('[data-minimap-daycol]')) {
-        out[c.dataset.date] = c.querySelectorAll('[data-minimap-dot]').length
+        out[c.dataset.groupKey] = c.querySelectorAll('[data-minimap-dot]').length
       }
       return out
     })
-    eq(levels[addDays(TODAY, -5)], 1, 'today-5（1 张）= 1 点')
-    eq(levels[TODAY], 2, 'today（3 张）= 2 点')
-    eq(levels[addDays(TODAY, 5)], 3, 'today+5（6 张）= 3 点')
-    // 跨度 11 < 61：全量已加载，无压暗
-    const dv = await ev(() => ({
-      l: getComputedStyle(document.querySelector('[data-minimap-dim-left]')).visibility,
-      r: getComputedStyle(document.querySelector('[data-minimap-dim-right]')).visibility,
-    }))
-    eq(dv.l, 'hidden', '左压暗隐藏（跨度 <61 天）')
-    eq(dv.r, 'hidden', '右压暗隐藏（跨度 <61 天）')
-    // 视口框宽比 ≈ (视口可见天数)/11 ≈ 58%
-    const fw = await ev(() => {
-      const t = document.querySelector('[data-minimap]').getBoundingClientRect()
-      const f = document.querySelector('[data-minimap-window]').getBoundingClientRect()
-      const s = document.querySelector('.h-full.overflow-auto')
-      return { ratio: f.width / t.width, expect: s.clientWidth / 248 / 11 }
-    })
+    eq(levels[migGrp(addDays(TODAY, -5))], 1, 'today-5 组（1 张）= 1 点')
+    eq(levels[migGrp(TODAY)], 2, '今天组（3 张）= 2 点')
+    eq(levels[migGrp(addDays(TODAY, 5))], 3, 'today+5 组（6 张）= 3 点')
+    eq(levels[''], 0, '未分组列 0 点')
+    // 压暗遮罩退役：元素不存在
     ok(
-      Math.abs(fw.ratio - fw.expect) < 0.03,
-      `视口框宽比 ${(fw.ratio * 100).toFixed(1)}% ≈ ${(fw.expect * 100).toFixed(1)}%`,
+      await ev(() => !document.querySelector('[data-minimap-dim-left]') && !document.querySelector('[data-minimap-dim-right]')),
+      '无压暗遮罩（dim 退役）',
     )
+    // 视口框宽比 ≈ 视口覆盖列数 / 62
+    await waitFor(async () => {
+      const fw = await ev(() => {
+        const t = document.querySelector('[data-minimap]').getBoundingClientRect()
+        const f = document.querySelector('[data-minimap-window]').getBoundingClientRect()
+        const s = document.querySelector('.h-full.overflow-auto')
+        return { ratio: f.width / t.width, expect: s.clientWidth / 248 / 62 }
+      })
+      return Math.abs(fw.ratio - fw.expect) < 0.004
+    }, 5000, '视口框宽比 ≈ 视口列数/62')
     ok(await ev(() => !!document.querySelector('[data-minimap-today]')), '今天点存在')
     await sleep(300)
     await page.screenshot({ path: path.join(VDIR, 'board-v17-small-span.png') })
@@ -3720,7 +3738,7 @@ async function main() {
 // ---------------------------------------------------------------------------
 // 入口：跑完/出错都清理（杀进程组 + 删 tmp sqlite）
 // ---------------------------------------------------------------------------
-console.log(`[e2e] v16 验证开始（今天 = ${TODAY}）`)
+console.log(`[e2e] v16 验证开始（今天 = ${TODAY}）${ONLY.size ? `；过滤用例：${[...ONLY].join(' ')}` : ''}`)
 let exitCode = 0
 try {
   await main()
@@ -3732,7 +3750,8 @@ try {
 }
 const passed = results.filter(([s]) => s === 'PASS').length
 const failed = results.filter(([s]) => s === 'FAIL').length
-console.log(`\n[e2e] 结果：${passed} PASS / ${failed} FAIL（共 ${results.length} 项）`)
+const skipped = results.filter(([s]) => s === 'SKIP').length
+console.log(`\n[e2e] 结果：${passed} PASS / ${failed} FAIL / ${skipped} SKIP（共 ${results.length} 项）`)
 if (failed > 0) {
   for (const [, name, e] of results.filter(([s]) => s === 'FAIL')) {
     console.error(`  ✗ ${name}: ${e instanceof Error ? e.message : String(e)}`)

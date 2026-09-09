@@ -264,7 +264,8 @@ export default function BoardGraph({ items, orders, apiRef, onOpenDetail, onAddR
   }
 
   return (
-    <div className="flex h-full flex-col">
+    // min-h-0 flex-1：与时间线容器对齐（h-full 会拿含 TopBar 的整页高度，把底缘滚动条顶出视口）
+    <div className="flex min-h-0 flex-1 flex-col">
       <div ref={scrollerRef} className="min-h-0 flex-1 overflow-auto" data-graph-view>
         <div
           ref={canvasRef}
