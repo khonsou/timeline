@@ -942,6 +942,10 @@ function SyncedBoard({
           apiRef={graphApiRef}
           onOpenDetail={openDetail}
           onAddRelation={addRelation}
+          onDelete={deleteCard}
+          onSetBgColor={setBgColor}
+          onToggleDimmed={toggleDimmed}
+          onCopyShareLink={(id) => void copyShareLink(id)}
         />
       )}
       <DetailDialog

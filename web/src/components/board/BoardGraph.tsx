@@ -4,8 +4,9 @@
  * - 布局：core layoutGraph（longest-path 分层：节点层 = 最长前序链长度；层内按 orders
  *   横排，只读反映——图视图内不做层内拖拽排序、不引入 dnd-kit；遇环降级断边标黄）
  * - 节点：复用 BoardCard 的 CardView 完整卡片面（类型胶囊/状态/指标/时间胶囊/产品名/
- *   bg_color 底色/dimmed 半透明——视觉与时间线完全一致；toolbar 关闭，仅有点击开详情 +
- *   边缘手柄拖拽连线）；仅「有关系的卡」进图（无 pre/post 的孤立卡不渲染——空板即空图）
+ *   bg_color 底色/dimmed 半透明——视觉与时间线完全一致；hover 工具条与时间线一致
+ *   （改色/置灰/分享链接/删除），另有右缘手柄拖拽连线）；仅「有关系的卡」进图
+ *   （无 pre/post 的孤立卡不渲染——空板即空图）
  * - 边：普通细线（slate）；「前序已发布 → 后续未发布」= 推进前线（强调色 indigo 加粗）；
  *   环降级断边 = 黄色虚线（amber，标黄提示）
  * - 视口：原生滚动条（overflow:auto），不做缩放、不做自定义平移（决策记录 #10）；
@@ -40,6 +41,11 @@ interface BoardGraphProps {
   onOpenDetail: (id: string) => void
   /** 建边 fromId → toId（from 是前序）；自环/重复/不存在由上层幂等处理 */
   onAddRelation: (fromId: string, toId: string) => void
+  // v2 卡片动作（工具条与时间线一致：改色 / 置灰 / 分享链接 / 删除）
+  onDelete: (id: string) => void
+  onSetBgColor: (id: string, hex: string | null) => void
+  onToggleDimmed: (id: string) => void
+  onCopyShareLink: (id: string) => void
 }
 
 // 画布几何常量（节点 = 完整卡片固定槽位，层 = 列、层内纵向排；槽位尺寸大于卡片自然高度上限，
@@ -52,15 +58,22 @@ const PAD = 48
 const HIGHLIGHT_MS = 1800
 const LIT_MS = 1300
 
-/** 关系图节点不挂卡片工具条：删除按钮不可达，传 noop 满足 CardView 必填签名 */
-const noopDelete = () => undefined
-
 interface Pos {
   x: number
   y: number
 }
 
-export default function BoardGraph({ items, orders, apiRef, onOpenDetail, onAddRelation }: BoardGraphProps) {
+export default function BoardGraph({
+  items,
+  orders,
+  apiRef,
+  onOpenDetail,
+  onAddRelation,
+  onDelete,
+  onSetBgColor,
+  onToggleDimmed,
+  onCopyShareLink,
+}: BoardGraphProps) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const canvasRef = useRef<HTMLDivElement>(null)
   const [highlightId, setHighlightId] = useState<string | null>(null)
@@ -311,7 +324,7 @@ export default function BoardGraph({ items, orders, apiRef, onOpenDetail, onAddR
           )}
         </svg>
 
-        {/* 节点层：复用 BoardCard CardView 完整卡片面（视觉与时间线一致；toolbar 关闭，
+        {/* 节点层：复用 BoardCard CardView 完整卡片面（视觉与时间线一致，hover 工具条同源；
             不挂 sortable——无层内排序拖拽；定位高亮/dimmed/bg_color 均由 CardView 承担） */}
         {layout.nodes.map((n) => {
           const it = itemById.get(n.id)
@@ -331,9 +344,11 @@ export default function BoardGraph({ items, orders, apiRef, onOpenDetail, onAddR
               <CardView
                 card={it}
                 onOpenDetail={() => onOpenDetail(n.id)}
-                onDelete={noopDelete}
+                onDelete={() => onDelete(n.id)}
+                onSetBgColor={(hex) => onSetBgColor(n.id, hex)}
+                onToggleDimmed={() => onToggleDimmed(n.id)}
+                onCopyShareLink={() => onCopyShareLink(n.id)}
                 highlighted={highlightId === n.id}
-                toolbar={false}
                 style={{ height: '100%' }}
               />
               {/* 右缘连线手柄（hover 显现；拖拽 = 以本卡为前序建边） */}

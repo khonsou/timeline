@@ -33,7 +33,7 @@ interface CardViewProps {
   onCopyShareLink?: () => void
   /** F5/F6 定位高亮：一次性淡入淡出，不循环 */
   highlighted?: boolean
-  /** v2-M3 关系视图复用：false = 不渲染 hover 工具条（图视图只保留开详情 + 拖拽连线） */
+  /** 是否渲染 hover 工具条（默认渲染；DragOverlay 浮动副本等非交互模式天然不渲染） */
   toolbar?: boolean
   // 渲染模式
   placeholder?: boolean // 拖拽中在原位置渲染虚线占位
