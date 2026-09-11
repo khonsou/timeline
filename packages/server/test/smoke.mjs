@@ -6,7 +6,10 @@
  * orders 联动 / If-Match）→ audit → 无变化幂等 →
  * v19 change-set 全流程（创建/预校验 400/GET/commit/审计五字段/幂等重试/键复用 409/
  * 版本冲突 conflicted/校验失败 rejected/cancel/惰性 expired/2000 上限全批拒绝）→
- * PUT If-Match → 删板。随后换 BOARD_AGENT_RPM=3 低上限实例补测限速 429。
+ * PUT If-Match → 删板。随后换 BOARD_AGENT_RPM=3 低上限实例补测限速 429；
+ * 再补 v19.1 自发现三件套：主实例测 meta/agent-doc 免鉴权 + X-Protocol-Version 头，
+ * 限速实例测 agent-doc 读不到文档的内置降级，第三个实例（BOARD_DISCOVERY_RPM=3）
+ * 测 meta 配置反射、发现桶 429 与业务桶隔离。
  * 跑完杀进程组、删临时库。
  *
  * 端口纪律：仅用 5197；不碰 5198/5199（e2e）与 7100/7101/7102/8787。
@@ -102,6 +105,33 @@ try {
   const auth = await api('POST', `/boards/${bid}/auth`, { password: 'pw' })
   ok(auth.status === 200 && auth.body.token, '密码换 token')
   const tk = auth.body.token
+
+  // ------------------------------------------------------------------
+  // v19.1 自发现三件套：meta / agent-doc 免鉴权 + X-Protocol-Version 全站注入
+  // ------------------------------------------------------------------
+  const meta = await api('GET', '/meta')
+  ok(
+    meta.status === 200 &&
+      meta.body.protocol_version === '19.2' &&
+      typeof meta.body.server_version === 'string' &&
+      Array.isArray(meta.body.capabilities) && meta.body.capabilities.includes('change_sets') &&
+      meta.body.features?.groups === true && meta.body.features?.relations === true && meta.body.features?.card_styling === true &&
+      typeof meta.body.limits?.board_item_limit === 'number' &&
+      meta.body.enums?.status?.length === 3 && meta.body.enums?.type?.length > 0 &&
+      meta.body.doc === '/api/agent-doc',
+    'GET /api/meta 免鉴权 200，六字段齐（capabilities 含 change_sets；v19.2 features 三键全 true）',
+    JSON.stringify(meta.body),
+  )
+  const docRes = await fetch(`${API}/agent-doc`)
+  const docText = await docRes.text()
+  ok(
+    docRes.status === 200 && (docRes.headers.get('content-type') ?? '').includes('text/markdown') && docText.includes('Agent API'),
+    'GET /api/agent-doc 免鉴权 200（text/markdown，正文为协议文档）',
+  )
+  const listHdr = await api('GET', `/boards/${bid}/items`, undefined, tk)
+  ok(listHdr.status === 200 && listHdr.headers.get('x-protocol-version') === '19.2', '带 token GET /items 响应带 X-Protocol-Version: 19.2')
+  const noTokHdr = await api('GET', `/boards/${bid}/items`)
+  ok(noTokHdr.status === 401 && noTokHdr.headers.get('x-protocol-version') === '19.2', '401 错误响应同样带 X-Protocol-Version')
 
   const list = await api('GET', `/boards/${bid}/items`, undefined, tk)
   ok(list.status === 200 && list.body.items.length === 3, 'items 列表 3 张')
@@ -573,7 +603,14 @@ try {
   for (const f of [DB2, `${DB2}-wal`, `${DB2}-shm`]) rmSync(f, { force: true })
   proc2 = spawn(process.execPath, [SERVER], {
     detached: true,
-    env: { ...process.env, API_PORT: String(PORT), BOARD_DB: DB2, BOARD_SECRET: 'smoke-secret', BOARD_AGENT_RPM: '3' },
+    env: {
+      ...process.env,
+      API_PORT: String(PORT),
+      BOARD_DB: DB2,
+      BOARD_SECRET: 'smoke-secret',
+      BOARD_AGENT_RPM: '3',
+      BOARD_AGENT_DOC_PATH: path.join(os.tmpdir(), `nonexistent-agent-doc-${process.pid}.md`), // 指不存在文件 → 触发内置降级
+    },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
   for (let i = 0; ; i++) {
@@ -596,6 +633,10 @@ try {
   // change-sets 计入同一限速桶
   const rl5 = await api('POST', `/boards/${rlBid}/change-sets`, { base_version: 1, operations: [{ op: 'create', item: { title: 'x', publish_at: '2026-09-10T09:00' } }] }, rlTk)
   ok(rl5.status === 429, 'change-sets 端点计入同一限速桶')
+  // v19.1：BOARD_AGENT_DOC_PATH 指不存在文件 → /api/agent-doc 降级为内置最小摘要（仍 200）
+  const fbRes = await fetch(`${API}/agent-doc`)
+  const fbText = await fbRes.text()
+  ok(fbRes.status === 200 && fbText.includes('内置降级版'), 'agent-doc 读不到文档 → 200 返回内置降级摘要')
 } catch (e) {
   failed++
   console.error('  ✗ 限速用例异常：', e)
@@ -609,6 +650,61 @@ try {
   }
   await sleep(200)
   for (const f of [DB, `${DB}-wal`, `${DB}-shm`, DB2, `${DB2}-wal`, `${DB2}-shm`]) rmSync(f, { force: true })
+}
+
+// ---------------------------------------------------------------------------
+// v19.1 发现端点限速：BOARD_DISCOVERY_RPM=3 + BOARD_AGENT_RPM=7（配置反射 +
+// 发现桶 429 + 发现桶与业务桶/鉴权流程隔离；同端口重启，换独立临时库）
+// ---------------------------------------------------------------------------
+let proc3 = null
+const DB3 = `${DB}-disc`
+try {
+  for (const f of [DB3, `${DB3}-wal`, `${DB3}-shm`]) rmSync(f, { force: true })
+  proc3 = spawn(process.execPath, [SERVER], {
+    detached: true,
+    env: {
+      ...process.env,
+      API_PORT: String(PORT),
+      BOARD_DB: DB3,
+      BOARD_SECRET: 'smoke-secret',
+      BOARD_AGENT_RPM: '7',
+      BOARD_DISCOVERY_RPM: '3',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  for (let i = 0; ; i++) {
+    try {
+      const r = await fetch(`${API}/health`, { signal: AbortSignal.timeout(500) })
+      if (r.ok) break
+    } catch {}
+    if (i > 40) throw new Error('发现限速实例启动超时')
+    await sleep(250)
+  }
+  const dm1 = await api('GET', '/meta')
+  ok(dm1.status === 200 && dm1.body.limits?.agent_rpm === 7, 'meta limits 反射运行配置（BOARD_AGENT_RPM=7）', JSON.stringify(dm1.body))
+  await api('GET', '/meta')
+  await api('GET', '/meta')
+  const dm4 = await api('GET', '/meta')
+  ok(dm4.status === 429 && dm4.body.retry_after > 0, '发现桶第 4 次 429 + retry_after（BOARD_DISCOVERY_RPM=3）', JSON.stringify(dm4.body))
+  // 发现桶打满后：建板/鉴权/业务接口不受影响（独立桶）
+  const mkD = await api('POST', '/boards', { name: '发现隔离', password: 'pw' })
+  const dBid = mkD.body.board_id
+  const dTk = (await api('POST', `/boards/${dBid}/auth`, { password: 'pw' })).body.token
+  const dItems = await api('GET', `/boards/${dBid}/items`, undefined, dTk)
+  ok(dItems.status === 200, '发现桶打满后业务接口仍 200（桶隔离）', JSON.stringify(dItems.body))
+} catch (e) {
+  failed++
+  console.error('  ✗ 发现限速用例异常：', e)
+} finally {
+  if (proc3 && !proc3.killed) {
+    try {
+      process.kill(-proc3.pid, 'SIGKILL')
+    } catch {
+      try { proc3.kill('SIGKILL') } catch {}
+    }
+  }
+  await sleep(200)
+  for (const f of [DB3, `${DB3}-wal`, `${DB3}-shm`]) rmSync(f, { force: true })
 }
 
 console.log(`\n[server-smoke] ${passed} PASS / ${failed} FAIL`)

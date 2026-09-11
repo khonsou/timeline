@@ -10,6 +10,7 @@
 | `packages/server`（路由/鉴权/存储） | `npm run test:server` |
 | `packages/server` change-sets 端点 / If-Match / 审计扩列 / 幂等键 | `npm run test:server`（smoke.mjs 的 change-set 全流程段） |
 | `packages/server` 整板 PUT / POST 建板（v2-M3 关系规范化入口） | `npm run test:server`（smoke.mjs 的 v2-M3 规范化段） |
+| `packages/server` 自发现三件套（`/api/meta` / `/api/agent-doc` / `X-Protocol-Version` 头） | `npm run test:server`（smoke.mjs 的 v19.1 段） |
 | `packages/cli`（解析/校验参数/远端模式组装） | `npm run test:core` + 真实 server 联调（CLI 本身无单测） |
 | `web/` 纯样式、文案微调 | `npm run build` |
 | `web/` 交互（拖拽 / 编辑 / minimap / 同步 / 鉴权门） | `npm run build` + `npm run test:e2e` |

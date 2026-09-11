@@ -70,6 +70,8 @@ curl http://127.0.0.1:8787/api/health   # → {"ok":true}
 | `BOARD_LOCK_SECONDS` | `60` | 同板连续 5 次密码失败后的锁定时长（秒） |
 | `BOARD_AGENT_RPM` | `120` | item 级与 change-set 端点限速（每 board 每 IP 次/分钟，同一限速桶） |
 | `BOARD_CS_TTL_HOURS` | `24` | change-set 有效期（小时；到期惰性标记 expired 不得提交，允许小数值便于测试） |
+| `BOARD_DISCOVERY_RPM` | `30` | 自发现端点（`/api/meta`、`/api/agent-doc`）限速（每 IP 次/分钟，独立于 board 级 agent 桶） |
+| `BOARD_AGENT_DOC_PATH` | 仓库根 `docs/agent-api.md` | `/api/agent-doc` 返回的协议文档路径；读不到时降级为内置最小摘要（记 warn 日志，仍 200） |
 
 ## 4. nginx 反代
 

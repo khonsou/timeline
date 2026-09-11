@@ -7,6 +7,48 @@
 > M2 统一分组模型（`groups[]` / `group_id` + 三个分组 op）、M3 卡片前后关系（`pre_ids` / `post_ids`）。
 > 上手示例脚本见 [examples/agent-quickstart.mjs](../examples/agent-quickstart.mjs)（零依赖直跑）。
 
+## 0. 运行时自发现（v19.1；v19.2 起 meta 追加 features）
+
+实例级三件套，**免鉴权、无 404 板检查、不占 board 级 agent 配额**
+（独立限速桶 `BOARD_DISCOVERY_RPM`，默认 30 次/IP/分钟，超限 `429 + retry_after`）：
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/meta` | 实例自描述：`protocol_version` / `server_version` / `capabilities` / `features`（v19.2，见下）/ `limits`（反射运行配置）/ `enums`（type、status）/ `doc` |
+| GET | `/api/agent-doc` | 本文档全文（`text/markdown`；启动时读盘缓存，运行期不重读）。读不到文档时降级为内置最小摘要并记 warn 日志，仍返回 200；路径可用 `BOARD_AGENT_DOC_PATH` 覆盖 |
+| — | 响应头 `X-Protocol-Version` | **所有** `/api/` 响应（含 4xx/5xx）统一携带，值如 `19.2`；客户端可据此校验协议大版本 |
+
+`GET /api/meta` 完整响应形态（v19.2）：
+
+```json
+{
+  "protocol_version": "19.2",
+  "server_version": "1.0.0",
+  "capabilities": ["items.read", "items.patch", "change_sets", "audit.read"],
+  "features": {
+    "groups": true,
+    "relations": true,
+    "card_styling": true
+  },
+  "limits": {"agent_rpm": 120, "board_item_limit": 2000, "body_bytes": 8388608},
+  "enums": {
+    "type": ["图文", "视频", "音频", "直播", "数据"],
+    "status": ["待执行", "待发布", "已发布"]
+  },
+  "doc": "/api/agent-doc"
+}
+```
+
+- `capabilities` 是**端点级**能力（固定四项）；`features` 是**字段/op 级**的 v2 能力宣告：
+  - `groups`：统一分组模型——`groups[]` / `group_id` 字段 + change-set 分组 op（第 4.2 / 6 节）
+  - `relations`：卡片前后关系——`pre_ids` 唯一写入源 / `post_ids` 只读镜像（第 5 / 7 节）
+  - `card_styling`：卡片表现——`bg_color` / `dimmed` 字段（第 5 节）
+- `enums` 只列真正的枚举；`bg_color` 是自由 hex（`#rrggbb`，UI 的 8 预设色仅为写入快捷值），不在其列。
+
+用途：**探测先行，不要硬编码**——agent 启动时先 `GET /api/meta` 探明能力与限额，
+LLM agent 可再 `GET /api/agent-doc` 拉取与对面部署版本严格一致的协议全文。
+接入侧完整纪律见 [agent-integration-guide.md](agent-integration-guide.md)。
+
 ## 1. 鉴权
 
 ```bash
@@ -29,7 +71,9 @@ curl -X POST http://<host>:8787/api/boards/<board_id>/auth \
 创建 change-set 时带 `actor` / `source` 字段，服务端原样透传记录，不做真实性校验
 （防君子不防小人）。未来如引入带身份的 agent token，端点形状不变。
 
-## 2. 端点一览（11 个）
+## 2. 端点一览（11 个 board 级 + 2 个实例级）
+
+> 实例级自发现端点 `GET /api/meta` / `GET /api/agent-doc`（免鉴权）见 §0，下表为 board 级端点。
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

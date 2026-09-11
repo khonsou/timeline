@@ -549,3 +549,28 @@ curl -s "$API/api/boards/$BOARD/audit?limit=50" -H "Authorization: Bearer $TOKEN
   （运行态可见；卡片 id 为确定性内容哈希，可复算——卡片引用无 client_ref 别名，
   分组引用才有）。
 - 关系视图 / 未连线卡片暂存带 / 点亮提示等均为前端表现层能力，**无协议变更**。
+
+### 13.4 自发现三件套（v19.1）
+
+discovery 正式进协议：实例级能力自描述，让「探测先行、不硬编码」成为可执行的接入纪律。
+
+- **`GET /api/meta`**（免鉴权）：实例自描述，六字段——`protocol_version`（`"19.1"`）、
+  `server_version`（读 server package.json）、`capabilities`（`items.read` / `items.patch` /
+  `change_sets` / `audit.read`）、`limits`（反射运行配置：`agent_rpm` / `board_item_limit` /
+  `body_bytes`）、`enums`（`type` / `status`，从 core 单一事实源反射）、`doc`（指向
+  `/api/agent-doc`）。
+- **`GET /api/agent-doc`**（免鉴权）：`text/markdown` 返回 `docs/agent-api.md` 全文——
+  协议文档与部署版本严格一致（随代码包发布），LLM agent 可运行时拉取喂进上下文。
+  启动时读盘缓存（运行期不重读）；读不到时降级为内置最小摘要（记 warn 日志，仍 200），
+  路径可用 `BOARD_AGENT_DOC_PATH` 覆盖。
+- **`X-Protocol-Version` 响应头**：所有 `/api/` 响应（含 4xx/5xx）统一携带；
+  客户端按大版本校验，低则告警、高则忽略。
+- 两端点独立限速桶 `BOARD_DISCOVERY_RPM`（默认 30 次/IP/分钟，超限 `429 + retry_after`），
+  不占 board 级 agent 配额、无 404 板检查。
+- **只追加铁律不变**：v19.1 全部为新增端点 / 新增响应头，未改动任何既有端点形状与语义；
+  v18 老实例无此三件套（`meta` 404）即视为无 change-set 能力的信号，接入侧据此降级或退出
+  （参考实现 `examples/agent-quickstart.mjs` 的自发现前置）。
+- **v19.2 追加**：`meta` 新增 `features` 块作 v2 能力级宣告（`capabilities` 是端点级，
+  `features` 是字段/op 级）——`groups`（§13.2 分组模型）、`relations`（§13.3 卡片关系）、
+  `card_styling`（§13.1 `bg_color` / `dimmed`）；仍属只追加，老客户端忽略新键即可。
+  `enums` 不变：`bg_color` 是自由 hex 而非枚举，不列入。

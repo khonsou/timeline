@@ -39,26 +39,36 @@
  *   audit_log 扩列 actor / source / change_set_id / request_id（历史行允许 null）；
  *   直接 PATCH 的审计三者记 null，change-set 提交逐条复制 change-set 的 actor/source。
  *
+ * v19.1 自发现三件套（实例级、免鉴权、独立限速桶 BOARD_DISCOVERY_RPM 默认 30/IP/分钟）：
+ *   GET /api/meta        → 实例自描述（protocol_version / server_version / capabilities /
+ *                          v19.2 features 能力级宣告 / limits 反射运行值 / enums 引 core 枚举 /
+ *                          doc 指针）
+ *   GET /api/agent-doc   → text/markdown 协议文档全文（启动时读盘缓存；读不到降级内置摘要 + warn）
+ *   全部 /api/ 响应（含 4xx/5xx）统一带 X-Protocol-Version 头（在 send/sendText 出口注入）。
+ *
  * 环境变量：API_PORT（默认 8787）/ BOARD_DB（默认 packages/server/boards.sqlite）/
  *   BOARD_SECRET（token 签名密钥；缺省生成随机并警告，重启后 token 全失效）/
  *   BOARD_TOKEN_HOURS（默认 12）/ BOARD_LOCK_SECONDS（默认 60）/ BOARD_AGENT_RPM（默认 120）/
- *   BOARD_CS_TTL_HOURS（默认 24，change-set 有效期；允许小数值便于测试）
+ *   BOARD_CS_TTL_HOURS（默认 24，change-set 有效期；允许小数值便于测试）/
+ *   BOARD_DISCOVERY_RPM（默认 30）/ BOARD_AGENT_DOC_PATH（默认 仓库根 docs/agent-api.md）
  */
 import http from 'node:http'
 import crypto from 'node:crypto'
 import path from 'node:path'
-import { mkdirSync } from 'node:fs'
+import { mkdirSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 // v18+：PATCH 校验/合并规则下沉 @timeline/core/patch-core（Node 24 strip-types 经
 // workspaces 软链直引包内 .ts——realpath 不在 node_modules 内，类型擦除生效，零构建）
 import { applyItemPatch } from '@timeline/core/patch-core'
 // v19：change-set 预校验与按序应用（协议 §5.4–5.7 的 core 全量校验一步）同方式引用
-import { applyChangeSet, validateChangeSet } from '@timeline/core/changeset-core'
+import { applyChangeSet, validateChangeSet, BOARD_ITEM_LIMIT } from '@timeline/core/changeset-core'
 // v2-M3 完整性补强：整板覆盖入口（PUT / POST 带 doc 建板）同样强制关系规范化——
 // pre_ids 去重/剔悬空/剔自环 + 按 pre_ids 全量重建 post_ids 镜像；确定性幂等，
 // 对合法 doc 是 no-op（引用稳定，不动 groups——分组迁移仍保持客户端职责）
 import { normalizeRelationFields } from '@timeline/core/relation-core'
+// v19.1：/api/meta 的枚举反射从 core 引（单一事实源，不内联副本）
+import { STATUSES, TYPES } from '@timeline/core/import-core'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PORT = Number(process.env.API_PORT || 8787)
@@ -73,6 +83,92 @@ const MAX_BODY = 8 * 1024 * 1024 // 单板几百卡片，8MB 绰绰有余
 const AGENT_RPM = Number(process.env.BOARD_AGENT_RPM || 120)
 // v19：change-set 有效期（协议 §4.2 默认 24 小时；允许小数值便于测试短 TTL）
 const CS_TTL_MS = Number(process.env.BOARD_CS_TTL_HOURS || 24) * 3600_000
+// v19.1：自发现三件套——协议版本头 / GET /api/meta / GET /api/agent-doc
+// v19.2：meta 追加 features 块——v2 能力级宣告（groups / relations / card_styling）
+const PROTOCOL_VERSION = '19.2'
+// 发现端点独立限速桶（每 IP 次/分钟；不占 board 级 agent 配额）
+const DISCOVERY_RPM = Number(process.env.BOARD_DISCOVERY_RPM || 30)
+
+// server 自身版本（meta.server_version）：读 packages/server/package.json
+const SERVER_DIR = path.dirname(fileURLToPath(import.meta.url))
+const SERVER_VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8')).version ?? '0.0.0'
+  } catch {
+    return '0.0.0'
+  }
+})()
+
+/** 内置最小协议摘要（agent-doc 读不到盘时的降级；指向仓库文档） */
+const FALLBACK_AGENT_DOC = `# Timeline Agent 协议摘要（内置降级版）
+
+> 完整协议文档未能从磁盘加载（BOARD_AGENT_DOC_PATH），以下为最小可用摘要；
+> 全文见仓库 docs/agent-api.md。
+
+## 稳定语义（六句话）
+
+外部 Agent 执行 —— Server 不执行、不调度、不生成、不抓取
+Change Set 负责提案和确认
+base_version 负责并发控制
+commit 负责原子提交
+core 负责最终校验
+audit 负责完整溯源
+
+## 端点清单
+
+POST  /api/boards/:id/auth                    密码换 token（Bearer，默认 12h）
+GET   /api/boards/:id/items                   卡片列表（date/product_id/member/status/q 过滤）
+GET   /api/boards/:id/items/:item_id          单卡详情
+PATCH /api/boards/:id/items/:item_id          单卡局部更新（白名单，可选 If-Match）
+POST  /api/boards/:id/change-sets             创建变更集（提案）
+GET   /api/boards/:id/change-sets/:csid       查询变更集（惰性过期判定）
+POST  /api/boards/:id/change-sets/:csid/commit  原子提交（支持 Idempotency-Key）
+POST  /api/boards/:id/change-sets/:csid/cancel  人工取消
+GET   /api/boards/:id/products                产品目录
+GET   /api/boards/:id/members                 成员目录
+GET   /api/boards/:id/audit                   审计（倒序，limit ≤200）
+GET   /api/meta                               实例能力自描述（免鉴权）
+GET   /api/agent-doc                          协议文档全文（免鉴权）
+
+枚举：type = 图文/视频/音频/直播/数据；status = 待执行/待发布/已发布。
+写操作一律走 change-set（create/patch），commit 带幂等键；指标与 status 同帧。
+`
+
+// 启动时读入协议文档缓存（运行期不重读盘；BOARD_AGENT_DOC_PATH 可覆盖路径）
+const AGENT_DOC_PATH =
+  process.env.BOARD_AGENT_DOC_PATH || path.resolve(SERVER_DIR, '..', '..', 'docs', 'agent-api.md')
+const AGENT_DOC = (() => {
+  try {
+    return readFileSync(AGENT_DOC_PATH, 'utf8')
+  } catch {
+    console.warn(
+      `[boards] ⚠ 协议文档读不到（${AGENT_DOC_PATH}），/api/agent-doc 降级为内置最小摘要；可用 BOARD_AGENT_DOC_PATH 指定路径`,
+    )
+    return FALLBACK_AGENT_DOC
+  }
+})()
+
+/** GET /api/meta 的实例自描述（limits 反射运行值；启动后不变） */
+const META = {
+  protocol_version: PROTOCOL_VERSION,
+  server_version: SERVER_VERSION,
+  capabilities: ['items.read', 'items.patch', 'change_sets', 'audit.read'],
+  // v19.2：v2 能力级宣告（capabilities 是端点级；features 是字段/op 级）。
+  // 每键对应真实代码能力，术语与 docs/agent-api.md §5–§7 对齐：
+  features: {
+    // v2-M2 统一分组模型：groups[] / group_id 字段（PATCH 白名单）+
+    // change-set 分组 op（group_create / group_patch / group_delete，set 内 client_ref 先建后引用）
+    groups: true,
+    // v2-M3 卡片前后关系：pre_ids 唯一写入源（PATCH 白名单 + change-set create 可携带），
+    // post_ids 为 core 镜像只读（直接写 → 400）
+    relations: true,
+    // v2-M1 卡片表现：bg_color（hex，归一化落盘）/ dimmed（boolean），均在 PATCH 白名单
+    card_styling: true,
+  },
+  limits: { agent_rpm: AGENT_RPM, board_item_limit: BOARD_ITEM_LIMIT, body_bytes: MAX_BODY },
+  enums: { type: [...TYPES], status: [...STATUSES] },
+  doc: '/api/agent-doc',
+}
 
 let SECRET = process.env.BOARD_SECRET
 if (!SECRET) {
@@ -245,6 +341,22 @@ function agentRateLimited(boardId, ip) {
 }
 
 // ---------------------------------------------------------------------------
+// v19.1 发现端点限速：独立桶（每 IP 每分钟，默认 30），不占 board 级 agent 配额
+// ---------------------------------------------------------------------------
+const discoveryHits = new Map() // ip -> number[]（时间戳升序）
+function discoveryRateLimited(ip) {
+  const now = Date.now()
+  const hits = (discoveryHits.get(ip) ?? []).filter((t) => t > now - 60_000)
+  if (hits.length >= DISCOVERY_RPM) {
+    discoveryHits.set(ip, hits)
+    return Math.max(1, Math.ceil((hits[0] + 60_000 - now) / 1000))
+  }
+  hits.push(now)
+  discoveryHits.set(ip, hits)
+  return 0
+}
+
+// ---------------------------------------------------------------------------
 // v18 PATCH：白名单/逐字段校验/负责人解析/指标联动/跨日 orders 已下沉
 // @timeline/core/patch-core（applyItemPatch），此处仅保留审计序列化（审计属 server 职责）
 // ---------------------------------------------------------------------------
@@ -290,11 +402,21 @@ function lazyExpireCs(r) {
 }
 
 // ---------------------------------------------------------------------------
-// HTTP 辅助
+// HTTP 辅助（send / sendText 是全站仅有的两个响应出口：统一注入 X-Protocol-Version，
+// 含 4xx/5xx 错误响应——协议 §v19.1：客户端据此做版本相容判断）
 // ---------------------------------------------------------------------------
 function send(res, status, body, headers = {}) {
   const text = body === undefined ? '' : JSON.stringify(body)
-  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', ...headers })
+  res.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'x-protocol-version': PROTOCOL_VERSION,
+    ...headers,
+  })
+  res.end(text)
+}
+/** 纯文本响应（agent-doc 的 text/markdown）；版本头与 send 同口径注入 */
+function sendText(res, status, text, contentType) {
+  res.writeHead(status, { 'content-type': contentType, 'x-protocol-version': PROTOCOL_VERSION })
   res.end(text)
 }
 function readBody(req) {
@@ -365,6 +487,17 @@ const server = http.createServer(async (req, res) => {
         : url.pathname
 
     if (p === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true })
+
+    // ------------------------------------------------------------------
+    // v19.1 自发现三件套：实例级端点（免鉴权，无 404 板检查；独立限速桶，
+    // 不占 board 级 agent 配额）
+    // ------------------------------------------------------------------
+    if ((p === '/api/meta' || p === '/api/agent-doc') && req.method === 'GET') {
+      const retry = discoveryRateLimited(req.socket.remoteAddress ?? '?')
+      if (retry > 0) return send(res, 429, { error: `请求过于频繁，请 ${retry} 秒后重试`, retry_after: retry })
+      if (p === '/api/meta') return send(res, 200, META)
+      return sendText(res, 200, AGENT_DOC, 'text/markdown; charset=utf-8')
+    }
 
     // GET /api/boards —— 列表（不含 doc 与密码）
     if (p === '/api/boards' && req.method === 'GET') {

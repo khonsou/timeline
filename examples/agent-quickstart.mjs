@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
- * 拾光轴 · Timeline Board —— 第三方 agent 接入参考实现（change-set 协议，v19）
+ * 拾光轴 · Timeline Board —— 第三方 agent 接入参考实现（change-set 协议，v19.1）
  *
  * 零依赖、Node ≥ 22 直跑。演示两个典型 Use Case（协议细节见 docs/agent-api.md）：
  *
+ *   自发现（v19.1，两个 Use Case 公共前置）：GET /api/meta 探明实例能力
+ *     → 老实例（v18，端点 404）或无 change_sets 能力时明确提示并退出；
+ *     各响应的 X-Protocol-Version 与本脚本预期大版本不一致时告警一次。
+ *
  *   Use Case A（默认）：策划方案 → 生成卡片（人工确认后写入）
  *     node examples/agent-quickstart.mjs --board <board_id> --password <密码>
- *       → auth → GET version → 创建 pending change-set（create op，带 source/actor）→ 打印待 review 信息
+ *       → meta 自发现 → auth → GET version → 创建 pending change-set（create op，带 source/actor）→ 打印待 review 信息
  *     node examples/agent-quickstart.mjs --board <board_id> --password <密码> --commit
  *       → 同上，随后带 Idempotency-Key 提交，打印 client_ref → 服务端 id 映射
  *
@@ -46,9 +50,12 @@ if (!BOARD) die('缺少看板 id：--board <board_id> 或环境变量 BOARD')
 if (!PASSWORD) die('缺少看板密码：--password <密码> 或环境变量 PASSWORD')
 
 // ---------------------------------------------------------------------------
-// HTTP 辅助：统一中文报错；429 按 retry_after 退避一次
+// HTTP 辅助：统一中文报错；429 按 retry_after 退避一次；
+// 检查 X-Protocol-Version 响应头，大版本不一致时告警一次（v19.1）
 // ---------------------------------------------------------------------------
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const EXPECTED_PROTOCOL_MAJOR = '19' // 本脚本按 v19.x 协议编写
+let versionWarned = false
 
 async function api(method, p, { token, body, headers } = {}) {
   for (let attempt = 0; ; attempt++) {
@@ -66,6 +73,11 @@ async function api(method, p, { token, body, headers } = {}) {
     } catch (e) {
       die(`无法连接 ${API}（${e.cause?.code ?? e.message}）——请确认 server 已启动、--api 地址正确`)
     }
+    const pv = res.headers.get('x-protocol-version')
+    if (!versionWarned && pv && pv.split('.')[0] !== EXPECTED_PROTOCOL_MAJOR) {
+      versionWarned = true
+      console.warn(`⚠ 实例协议版本 ${pv} 与本脚本预期 ${EXPECTED_PROTOCOL_MAJOR}.x 不一致，行为可能出入（详见 ${API}/api/agent-doc）`)
+    }
     const json = await res.json().catch(() => null)
     if (res.status === 429 && attempt === 0) {
       const wait = Number(json?.retry_after ?? 1)
@@ -73,8 +85,26 @@ async function api(method, p, { token, body, headers } = {}) {
       await sleep(wait * 1000)
       continue
     }
-    return { status: res.status, body: json }
+    return { status: res.status, body: json, headers: res.headers }
   }
+}
+
+/**
+ * v19.1 自发现：正式通信前 GET /api/meta（免鉴权）探明实例能力。
+ * 对面是 v18 老实例时该端点 404；本脚本全流程依赖 change-set，明确提示后退出。
+ */
+async function selfDiscovery() {
+  const r = await api('GET', '/meta')
+  if (r.status !== 200 || !Array.isArray(r.body?.capabilities)) {
+    die(
+      `自发现失败：GET /api/meta 返回 HTTP ${r.status}——对面可能是 v18 老实例（无 change-set 能力）。\n` +
+        '  本脚本基于 change-set 协议（v19+），请升级 server 后再试',
+    )
+  }
+  if (!r.body.capabilities.includes('change_sets')) {
+    die(`实例未声明 change_sets 能力（capabilities: ${r.body.capabilities.join(', ')}），本脚本无法运行`)
+  }
+  console.log(`✓ 自发现：协议 ${r.body.protocol_version} / server ${r.body.server_version} / 能力: ${r.body.capabilities.join('、')}（完整文档: ${API}${r.body.doc}）`)
 }
 
 /** 密码换 token（鉴权与人同一套，无独立 agent key） */
@@ -216,6 +246,7 @@ async function useCaseB(token) {
 }
 
 // ---------------------------------------------------------------------------
+await selfDiscovery() // v19.1：先探明实例能力，老实例/无 change_sets 明确退出
 const token = await auth()
 if (METRICS_MODE) await useCaseB(token)
 else await useCaseA(token)
