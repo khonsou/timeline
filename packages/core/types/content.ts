@@ -33,6 +33,23 @@ export const BG_COLOR_PRESETS: BgColorPreset[] = [
   { token: 'slate', label: '石灰', hex: '#64748b' },
 ]
 
+/**
+ * 匿名评论（v2-M4，可缺省）：无用户体系，author 为客户端自报署名
+ * （沿用 ChangeSetActor 的自报身份语义——防君子不防小人，未来 OAuth 实装后替换来源）。
+ * 空串 author = 未署名（UI 显示「匿名」）；created_at 为 ISO 字符串（与 publish_at 风格一致）。
+ * 演进铁律同上：只追加字段，不改变已有字段语义（注意 comment 是「备注/复盘」，与本类型无关）。
+ */
+export interface CardComment {
+  /** 评论条目 id（卡片内唯一即可，客户端 crypto.randomUUID() 生成） */
+  id: string
+  /** 自报署名；空串 = 未署名 */
+  author: string
+  /** 评论正文（保留换行，不 trim） */
+  body: string
+  /** 创建时刻（ISO 字符串，如 new Date().toISOString()） */
+  created_at: string
+}
+
 /** 旧色板 token → hex（向后兼容：v2-M1b 前数据/调用可能还带 token） */
 export const BG_TOKEN_HEX: Record<string, string> = Object.fromEntries(
   BG_COLOR_PRESETS.map((p) => [p.token, p.hex]),
@@ -196,6 +213,14 @@ export interface ContentItem {
    * 直接 patch post_ids → 400；加载兜底按 pre_ids 重建（悬空 id 剔除）。
    */
   post_ids?: string[]
+
+  /**
+   * 匿名评论数组（v2-M4，可缺省）：**整组替换语义**（与 links 同），PATCH / change-set
+   * 白名单可写；空数组 = 清空（移除字段）。并发合并策略在 web 同步层（pending-patch
+   * 409 重放按 id 键控 union，同 id 以远端为准，按 created_at 升序）。
+   * 与 `comment`（备注/复盘，字符串）是两个完全不同的字段，UI 分区展示。
+   */
+  comments?: CardComment[]
 }
 
 // ---------------------------------------------------------------------------

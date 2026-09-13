@@ -10,6 +10,7 @@
  * 再补 v19.1 自发现三件套：主实例测 meta/agent-doc 免鉴权 + X-Protocol-Version 头，
  * 限速实例测 agent-doc 读不到文档的内置降级，第三个实例（BOARD_DISCOVERY_RPM=3）
  * 测 meta 配置反射、发现桶 429 与业务桶隔离。
+ * v2-M4 段：comments（匿名评论）PATCH 写入/读回/审计/清空 + change-set create·patch 落盘。
  * 跑完杀进程组、删临时库。
  *
  * 端口纪律：仅用 5197；不碰 5198/5199（e2e）与 7100/7101/7102/8787。
@@ -112,14 +113,14 @@ try {
   const meta = await api('GET', '/meta')
   ok(
     meta.status === 200 &&
-      meta.body.protocol_version === '19.2' &&
+      meta.body.protocol_version === '19.3' &&
       typeof meta.body.server_version === 'string' &&
       Array.isArray(meta.body.capabilities) && meta.body.capabilities.includes('change_sets') &&
-      meta.body.features?.groups === true && meta.body.features?.relations === true && meta.body.features?.card_styling === true &&
+      meta.body.features?.groups === true && meta.body.features?.relations === true && meta.body.features?.card_styling === true && meta.body.features?.comments === true &&
       typeof meta.body.limits?.board_item_limit === 'number' &&
       meta.body.enums?.status?.length === 3 && meta.body.enums?.type?.length > 0 &&
       meta.body.doc === '/api/agent-doc',
-    'GET /api/meta 免鉴权 200，六字段齐（capabilities 含 change_sets；v19.2 features 三键全 true）',
+    'GET /api/meta 免鉴权 200，六字段齐（capabilities 含 change_sets；features 四键全 true：v19.3 追加 comments）',
     JSON.stringify(meta.body),
   )
   const docRes = await fetch(`${API}/agent-doc`)
@@ -129,9 +130,9 @@ try {
     'GET /api/agent-doc 免鉴权 200（text/markdown，正文为协议文档）',
   )
   const listHdr = await api('GET', `/boards/${bid}/items`, undefined, tk)
-  ok(listHdr.status === 200 && listHdr.headers.get('x-protocol-version') === '19.2', '带 token GET /items 响应带 X-Protocol-Version: 19.2')
+  ok(listHdr.status === 200 && listHdr.headers.get('x-protocol-version') === '19.3', '带 token GET /items 响应带 X-Protocol-Version: 19.3')
   const noTokHdr = await api('GET', `/boards/${bid}/items`)
-  ok(noTokHdr.status === 401 && noTokHdr.headers.get('x-protocol-version') === '19.2', '401 错误响应同样带 X-Protocol-Version')
+  ok(noTokHdr.status === 401 && noTokHdr.headers.get('x-protocol-version') === '19.3', '401 错误响应同样带 X-Protocol-Version')
 
   const list = await api('GET', `/boards/${bid}/items`, undefined, tk)
   ok(list.status === 200 && list.body.items.length === 3, 'items 列表 3 张')
@@ -331,6 +332,44 @@ try {
   ok(csExpGet2.body.status === 'expired', 'expired 已落库（非每次重算）')
   const commitExp = await api('POST', `/boards/${bid}/change-sets/${csExp.body.change_set_id}/commit`, {}, tk)
   ok(commitExp.status === 409 && commitExp.body.status === 'expired', '过期 commit → 409')
+
+  // ------------------------------------------------------------------
+  // v2-M4 匿名评论：comments 进 PATCH 白名单 + change-set create/patch（整组替换语义）
+  // ------------------------------------------------------------------
+  const cmts = [
+    { id: 'c-1', author: '小李', body: '这个素材数据很好', created_at: '2026-09-10T09:00:00.000Z' },
+    { id: 'c-2', author: '', body: '匿名路过', created_at: '2026-09-10T09:05:00.000Z' },
+  ]
+  const pCmts = await api('PATCH', `/boards/${bid}/items/s-02`, { comments: cmts }, tk)
+  ok(pCmts.status === 200 && pCmts.body.item.comments?.length === 2, 'PATCH 写 comments（author 空串允许）', JSON.stringify(pCmts.body))
+  const oneCmts = await api('GET', `/boards/${bid}/items/s-02`, undefined, tk)
+  ok(JSON.stringify(oneCmts.body.item.comments) === JSON.stringify(cmts), 'GET 单卡读回 comments 一致')
+  const pCmtsBad = await api('PATCH', `/boards/${bid}/items/s-02`, { comments: [{ id: 'c-x', body: '缺 created_at' }] }, tk)
+  ok(pCmtsBad.status === 400 && /comments\[0\] 非法/.test(pCmtsBad.body.error), 'PATCH 非法 comments → 400')
+  const pCmtsType = await api('PATCH', `/boards/${bid}/items/s-02`, { comments: '不是数组' }, tk)
+  ok(pCmtsType.status === 400 && /comments 须为数组/.test(pCmtsType.body.error), 'PATCH 非数组 comments → 400')
+  const auditCmts = await api('GET', `/boards/${bid}/audit?limit=1`, undefined, tk)
+  ok(auditCmts.body.entries[0]?.field === 'comments', 'comments 变更写逐字段审计')
+
+  // change-set：create 携带 comments + patch op 改写 comments → 一次事务提交后读回一致
+  const verCmts = (await api('GET', `/boards/${bid}`, undefined, tk)).body.version
+  const csCmts = await api('POST', `/boards/${bid}/change-sets`, {
+    base_version: verCmts,
+    operations: [
+      { op: 'create', client_ref: 'row-cmts', item: { title: '带评论新卡', publish_at: `${day(0)}T22:00`, comments: [cmts[0]] } },
+      { op: 'patch', item_id: 's-02', changes: { comments: [cmts[1]] } },
+    ],
+  }, tk)
+  ok(csCmts.status === 201, 'change-set 含 comments 创建 201', JSON.stringify(csCmts.body))
+  const commitCmts = await api('POST', `/boards/${bid}/change-sets/${csCmts.body.change_set_id}/commit`, {}, tk)
+  ok(commitCmts.status === 200 && commitCmts.body.status === 'committed', 'comments change-set commit 成功', JSON.stringify(commitCmts.body))
+  const docCmts = (await api('GET', `/boards/${bid}`, undefined, tk)).body.doc
+  const idCmts = commitCmts.body.items[0].id
+  ok(JSON.stringify(docCmts.items.find((it) => it.id === idCmts).comments) === JSON.stringify([cmts[0]]), 'create op 携带 comments 落盘')
+  ok(JSON.stringify(docCmts.items.find((it) => it.id === 's-02').comments) === JSON.stringify([cmts[1]]), 'patch op 写 comments 提交后一致')
+  // 清空语义：空数组 = 移除字段
+  const pCmtsClear = await api('PATCH', `/boards/${bid}/items/s-02`, { comments: [] }, tk)
+  ok(pCmtsClear.status === 200 && !('comments' in pCmtsClear.body.item), 'comments 空数组 = 清空（字段移除）')
 
   // ------------------------------------------------------------------
   // v2-M2 F3 统一分组模型（3 个 doc 级 op + group_id 写入严格 + 写入时归属解析 + 61 上限）

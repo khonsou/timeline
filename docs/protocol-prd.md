@@ -574,3 +574,6 @@ discovery 正式进协议：实例级能力自描述，让「探测先行、不�
   `features` 是字段/op 级）——`groups`（§13.2 分组模型）、`relations`（§13.3 卡片关系）、
   `card_styling`（§13.1 `bg_color` / `dimmed`）；仍属只追加，老客户端忽略新键即可。
   `enums` 不变：`bg_color` 是自由 hex 而非枚举，不列入。
+- **v19.3 追加**：`features` 新增 `comments`——卡片匿名评论（`comments` 数组进 PATCH
+  白名单与 change-set create/patch，整组替换语义，`author` 为客户端自报署名、空串 = 匿名）；
+  只追加，老客户端忽略新键即可。

@@ -53,13 +53,14 @@ describe('字段白名单', () => {
     assert.deepEqual(r.changes, [])
     assert.equal(r.orderUpdate, null)
   })
-  it('PATCH_FIELDS 恰为 16 个字段且不含只读字段（v19+ 追加 links；v2-M1 追加 bg_color/dimmed；v2-M2 追加 group_id；v2-M3 追加 pre_ids）', () => {
-    assert.equal(PATCH_FIELDS.length, 16)
+  it('PATCH_FIELDS 恰为 17 个字段且不含只读字段（v19+ 追加 links；v2-M1 追加 bg_color/dimmed；v2-M2 追加 group_id；v2-M3 追加 pre_ids；v2-M4 追加 comments）', () => {
+    assert.equal(PATCH_FIELDS.length, 17)
     assert.ok(PATCH_FIELDS.includes('links'))
     assert.ok(PATCH_FIELDS.includes('bg_color'))
     assert.ok(PATCH_FIELDS.includes('dimmed'))
     assert.ok(PATCH_FIELDS.includes('group_id'))
     assert.ok(PATCH_FIELDS.includes('pre_ids'))
+    assert.ok(PATCH_FIELDS.includes('comments')) // v2-M4：匿名评论可 PATCH（agent 同口径）
     assert.ok(!PATCH_FIELDS.includes('post_ids')) // v2-M3：post_ids 是 core 镜像，外部只读
     assert.ok(!PATCH_FIELDS.includes('id'))
     assert.ok(!PATCH_FIELDS.includes('orders'))
@@ -369,6 +370,46 @@ describe('group_id（v2-M2 F3：自定义分组写入，严格分层）', () => 
     }
     // 未分组卡再归未分组 = 幂等无 changes
     assert.deepEqual(applyItemPatch({ group_id: null }, item(), ctx({ groups: GROUPS })).changes, [])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// v2-M4 匿名评论：comments 可 PATCH（白名单），整组替换语义；空数组 = 清空（移除字段）；
+// 逐项严格校验见 comment-core.test.mjs
+// ---------------------------------------------------------------------------
+describe('comments（v2-M4 匿名评论）', () => {
+  const cmts = [
+    { id: 'c-1', author: '小李', body: '这个素材数据很好', created_at: '2026-09-10T09:00:00.000Z' },
+    { id: 'c-2', author: '', body: '匿名路过', created_at: '2026-09-10T09:05:00.000Z' },
+  ]
+  it('合法数组写入并计入 changes；author 空串允许', () => {
+    const r = applyItemPatch({ comments: cmts }, item(), ctx())
+    assert.deepEqual(r.errors, [])
+    assert.deepEqual(r.next.comments, cmts)
+    assert.deepEqual(r.changes, [{ field: 'comments', old_value: undefined, new_value: cmts }])
+  })
+  it('非数组 / 缺字段 → 400 级校验错误，拒绝写入', () => {
+    const bad1 = applyItemPatch({ comments: 'x' }, item(), ctx())
+    assert.equal(bad1.errors.length, 1)
+    assert.match(bad1.errors[0], /^comments 须为数组/)
+    assert.equal(bad1.next, undefined)
+    const bad2 = applyItemPatch({ comments: [{ id: 'c-1', body: '缺 created_at' }] }, item(), ctx())
+    assert.match(bad2.errors[0], /comments\[0\] 非法/)
+    assert.equal(bad2.next, undefined)
+  })
+  it('空数组 / null → 清空（移除字段）并计入 changes', () => {
+    const cur = item({ comments: cmts })
+    for (const v of [[], null]) {
+      const r = applyItemPatch({ comments: v }, cur, ctx())
+      assert.deepEqual(r.errors, [])
+      assert.ok(!('comments' in r.next))
+      assert.deepEqual(r.changes, [{ field: 'comments', old_value: cmts, new_value: undefined }])
+    }
+  })
+  it('同值补丁幂等（数组按内容比较，无审计）；本来无评论时清空无 changes', () => {
+    const cur = item({ comments: cmts })
+    assert.deepEqual(applyItemPatch({ comments: cmts.map((x) => ({ ...x })) }, cur, ctx()).changes, [])
+    assert.deepEqual(applyItemPatch({ comments: [] }, item(), ctx()).changes, [])
   })
 })
 

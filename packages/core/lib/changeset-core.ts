@@ -37,6 +37,7 @@ import { nextOrder, publishDateOf } from './board-view.ts'
 import { newChangeSetGroupId, resolveWriteTimeGroup } from './group-core.ts'
 import { PATCH_FIELDS, applyItemPatch, resolveOwnerPatch } from './patch-core.ts'
 import { applyMirrorUpdates, diffPostMirror, normalizePreIds, validatePreIdRefs } from './relation-core.ts'
+import { normalizeComments } from './comment-core.ts'
 import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt, sha1Hex } from './import-core.ts'
 
 /** 单板卡片数硬上限（协议 §9：change-set commit 时校验，超限全批拒绝） */
@@ -195,6 +196,12 @@ function normalizeCreateItem(
     const n = normalizePreIds(raw.pre_ids)
     if (n.error) errors.push(`${label}: ${n.error}`)
     else if (n.value!.length > 0) item.pre_ids = n.value
+  }
+  // comments（v2-M4 匿名评论）：严格校验同 patch-core；空数组 = 无评论（create 不写字段）
+  if ('comments' in raw) {
+    const r = normalizeComments(raw.comments)
+    if (r.error) errors.push(`${label}: ${r.error}`)
+    else if (r.value.length > 0) item.comments = r.value
   }
 
   if (errors.length > 0) return { errors }
@@ -621,6 +628,8 @@ export function applyChangeSet(
         ...(groupId ? { group_id: groupId } : {}),
         // v2-M3：create 支持 pre_ids（存在性已校验；post_ids 镜像在下方同事务维护）
         ...(preIds ? { pre_ids: preIds } : {}),
+        // v2-M4：create 支持 comments（校验在 normalizeCreateItem；缺省/空数组不写字段）
+        ...(f.comments ? { comments: f.comments as ContentItem['comments'] } : {}),
       }
       // 同日多张新卡按 ops 顺序追加当日列尾（对运行态取 nextOrder）；已有卡片顺序不动
       orders[id] = nextOrder(items, orders, publishDateOf(item))

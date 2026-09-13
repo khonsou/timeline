@@ -43,6 +43,7 @@
 | `status` | `待执行 / 待发布 / 已发布`；**状态是指标开关**：≠已发布 → 三个指标恒 null |
 | `roi` | 发布后 7 天归因销售额 ÷ 广告花费（存结果，1 位小数） |
 | `comment` | 备注 / 复盘文案，无字数限制 |
+| `comments`（v2-M4） | 匿名评论数组（可缺省，`CardComment { id, author, body, created_at }`）：`author` 客户端自报、空串 = 匿名；整组替换写入，409 重放按 id 键控合并；与 `comment`（备注）是两个字段 |
 | `product_id` | 产品目录 id；`''` = 未归属 |
 | `content_owner_id` / `delivery_owner_id` | 内容 / 投放负责人（成员目录 id；`''` = 未分配） |
 | `propagation_4h` / `engagement_4h` | 发布后 4 小时曝光量 / 互动量（点赞+评论+分享+收藏） |

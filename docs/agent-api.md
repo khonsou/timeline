@@ -4,10 +4,11 @@
 > 提案（创建 pending）→ 人工 review（GET）→ 原子提交（commit）→ 逐字段审计溯源。
 > 鉴权与人完全同一套：**看板 URL + 密码 → 换 12h token**，没有独立的 agent key 体系。
 > v2 追加（语义详见第 6 / 7 节）：M1 卡片表现字段（`bg_color` / `dimmed`）、
-> M2 统一分组模型（`groups[]` / `group_id` + 三个分组 op）、M3 卡片前后关系（`pre_ids` / `post_ids`）。
+> M2 统一分组模型（`groups[]` / `group_id` + 三个分组 op）、M3 卡片前后关系（`pre_ids` / `post_ids`）、
+> M4 匿名评论（`comments` 数组，整组替换，v19.3 起进 PATCH 白名单与 change-set create/patch）。
 > 上手示例脚本见 [examples/agent-quickstart.mjs](../examples/agent-quickstart.mjs)（零依赖直跑）。
 
-## 0. 运行时自发现（v19.1；v19.2 起 meta 追加 features）
+## 0. 运行时自发现（v19.1；v19.2 起 meta 追加 features；v19.3 features 追加 comments）
 
 实例级三件套，**免鉴权、无 404 板检查、不占 board 级 agent 配额**
 （独立限速桶 `BOARD_DISCOVERY_RPM`，默认 30 次/IP/分钟，超限 `429 + retry_after`）：
@@ -16,19 +17,20 @@
 |---|---|---|
 | GET | `/api/meta` | 实例自描述：`protocol_version` / `server_version` / `capabilities` / `features`（v19.2，见下）/ `limits`（反射运行配置）/ `enums`（type、status）/ `doc` |
 | GET | `/api/agent-doc` | 本文档全文（`text/markdown`；启动时读盘缓存，运行期不重读）。读不到文档时降级为内置最小摘要并记 warn 日志，仍返回 200；路径可用 `BOARD_AGENT_DOC_PATH` 覆盖 |
-| — | 响应头 `X-Protocol-Version` | **所有** `/api/` 响应（含 4xx/5xx）统一携带，值如 `19.2`；客户端可据此校验协议大版本 |
+| — | 响应头 `X-Protocol-Version` | **所有** `/api/` 响应（含 4xx/5xx）统一携带，值如 `19.3`；客户端可据此校验协议大版本 |
 
-`GET /api/meta` 完整响应形态（v19.2）：
+`GET /api/meta` 完整响应形态（v19.3）：
 
 ```json
 {
-  "protocol_version": "19.2",
+  "protocol_version": "19.3",
   "server_version": "1.0.0",
   "capabilities": ["items.read", "items.patch", "change_sets", "audit.read"],
   "features": {
     "groups": true,
     "relations": true,
-    "card_styling": true
+    "card_styling": true,
+    "comments": true
   },
   "limits": {"agent_rpm": 120, "board_item_limit": 2000, "body_bytes": 8388608},
   "enums": {
@@ -43,6 +45,7 @@
   - `groups`：统一分组模型——`groups[]` / `group_id` 字段 + change-set 分组 op（第 4.2 / 6 节）
   - `relations`：卡片前后关系——`pre_ids` 唯一写入源 / `post_ids` 只读镜像（第 5 / 7 节）
   - `card_styling`：卡片表现——`bg_color` / `dimmed` 字段（第 5 节）
+  - `comments`（v19.3）：卡片匿名评论——`comments` 数组可 PATCH / change-set create·patch（第 5 节）
 - `enums` 只列真正的枚举；`bg_color` 是自由 hex（`#rrggbb`，UI 的 8 预设色仅为写入快捷值），不在其列。
 
 用途：**探测先行，不要硬编码**——agent 启动时先 `GET /api/meta` 探明能力与限额，
@@ -102,7 +105,8 @@ curl -H "authorization: Bearer $TOKEN" \
 #                  status, content_owner_id, delivery_owner_id,
 #                  propagation_4h, engagement_4h, links?,
 #                  bg_color?, dimmed?, group_id?,      // v2-M1 / v2-M2，可缺省
-#                  pre_ids?, post_ids? }, ... ] }      // v2-M3，可缺省（post_ids 为只读镜像）
+#                  pre_ids?, post_ids?,               // v2-M3，可缺省（post_ids 为只读镜像）
+#                  comments? }, ... ] }               // v2-M4，可缺省（匿名评论数组）
 
 # 过滤（均可选、可叠加、AND 语义）：
 #   date=YYYY-MM-DD   按日列（publish_at 日期前缀匹配）
@@ -164,7 +168,7 @@ pending
 | `group_patch`（v2-M2） | `{ "op":"group_patch", "group_id":"grp-…", "changes": {"name": "…", "before_group_id": "grp-…" \| null} }` | 重命名 / 调列序（`before_group_id` = 移到该分组之前；`null` = 移到末尾；不可指向自身）；组改名**不影响卡片**（卡片落盘恒为 group_id 引用，不跟随改名） |
 | `group_delete`（v2-M2） | `{ "op":"group_delete", "group_id":"grp-…", "move_to": "grp-…"（可缺省） }` | 删组；`move_to` 缺省 = 组内卡片归「未分组」（移除 `group_id` 字段）；显式给出时须指向已存在分组（不能是被删分组自身；同 set 新建分组的 client_ref 可引用） |
 
-- 卡片 `item` / `changes` 的可用字段 = PATCH 白名单 16 字段（第 5 节）；create 时
+- 卡片 `item` / `changes` 的可用字段 = PATCH 白名单 17 字段（第 5 节）；create 时
   `title` / `publish_at` 必填，其余缺省按新建卡片默认（type=图文、status=待执行、
   指标 null、负责人未分配、product 未归属、未分组）。
 - **不支持卡片 `delete`**（破坏审计链、误删代价高；v2-M3 起 agent 删卡走整板 PUT，
@@ -241,7 +245,7 @@ curl -X POST http://<host>:8787/api/boards/<board_id>/change-sets/cs-3f9a…/can
 
 ## 5. 改卡片（单卡 PATCH）
 
-body 为字段补丁对象，只允许以下白名单字段（**16 个**），其余键一律
+body 为字段补丁对象，只允许以下白名单字段（**17 个**），其余键一律
 `400 { "error": "不支持修改的字段: xxx" }`（v2-M3 起含 `post_ids`——它是只读镜像，见第 7 节）：
 
 | 字段 | 规则 |
@@ -255,6 +259,7 @@ body 为字段补丁对象，只允许以下白名单字段（**16 个**），�
 | `roi` / `propagation_4h` / `engagement_4h` | 空/null → null；须为非负数字 |
 | `comment` | 字符串；**人工备注，不是机器协议**——结构化数据一律走 `links` 等结构化字段 |
 | `links` | **结构化链接数组**（v19 新增），见第 8 节 |
+| `comments`（v2-M4） | **匿名评论数组**（整组替换，同 `links`）：元素为 `{ id, author, body, created_at }`——`id` / `body` / `created_at` 必填非空字符串，`author` 为自报署名（空串 = 匿名，缺省视为空串）；`[]` / `null` = 清空（移除字段）。与 `comment`（备注/复盘）是两个字段，勿混用 |
 | `bg_color`（v2-M1） | 卡片背景色 hex `#rrggbb`（`#rgb` 与大写输入归一化为小写 `#rrggbb`；UI 色板的 8 预设色只是写入快捷值，落盘恒为 hex；旧色板 token 如 `amber` 写入时收敛为对应 hex）。`null` / 空串 = 恢复默认（移除字段） |
 | `dimmed`（v2-M1） | 严格 boolean：`true` = 置灰（卡片半透明退到背景），`false` = 点亮（移除字段）。**系统不做任何自动置灰/解除，完全由用户/agent 控制** |
 | `group_id`（v2-M2） | 分组 id（指向 `groups[]` 已有分组）；非法引用 → `400`；`null` / 空串 = 归「未分组」（移除字段）。未显式给但改了 `publish_at` → 写入时归属解析（见 4.2） |
@@ -381,7 +386,8 @@ curl -H "authorization: Bearer $TOKEN" \
   `change_set_id`、`request_id`（每次写请求生成，同一次提交共用同一 ts 与 request_id）。
 - **直接 PATCH → `change_set_id` / `actor` / `source` 为 `null`**（自报身份只走 change-set 创建入参）；
   历史条目（v19 之前）这四列同样为 `null`——消费方必须容忍 null。
-- v2 起 `field` 新增取值：`bg_color` / `dimmed` / `group_id` / `pre_ids`（M1–M3 卡片字段）；
+- v2 起 `field` 新增取值：`bg_color` / `dimmed` / `group_id` / `pre_ids`（M1–M3 卡片字段）、
+  `comments`（M4 匿名评论；old/new 为整组 JSON 序列化）；
   关系镜像联动会在被引用卡片上写 `field: "post_ids"` 条目（item_id = 被改镜像的卡片）；
   分组 op（M2）写：`group`（`item_id` = 分组 id；create 时 old=null / delete 时 new=null）、
   `group.name`、`group.order`（old/new 为列序下标）、`group_id`（删组迁移逐卡一条）。

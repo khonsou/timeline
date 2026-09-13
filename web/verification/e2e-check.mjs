@@ -46,6 +46,9 @@
  *   hash 持久/直达、推进前线强调、拖拽连线建边、环降级断边、前序全发布点亮提示、
  *   删卡级联剔除、未连线卡片暂存带（折叠计数/展开/双向拖线建边/升入分层图/孤立卡定位升级）。
  *
+ * v2-M4（t74）：卡片匿名评论——详情「评论」区发送（「署名:内容」前缀解析）/ 条数 / 落盘 /
+ *   删除清空；物理位置紧随 t37（共享数据板 + 锚点卡 v6Title 上下文）。
+ *
  * 运行：node verification/e2e-check.mjs [用例名前缀…]
  *   - 过滤参数：node verification/e2e-check.mjs t03 t07 t08 → 只跑前缀匹配的用例（其余记 SKIP）；不带参数 = 全量
  *   - 自带 fixture：spawn API server（:5198，独立 tmp sqlite）+ vite（:5199，API_PORT=5198 反代）
@@ -1854,6 +1857,60 @@ async function main() {
     await closeDialog()
     ok(rendered === LONG, `重开渲染完整（${rendered?.length} 字）`)
     ok(link === 'A', '备注内 URL 渲染为可点链接')
+  })
+
+  await t('t74 卡片匿名评论（v2-M4）：发送 → 列表出现（署名解析）→ 落盘 → 删除 → 清空', async () => {
+    ok(v6Title, '前置 t37 就绪')
+    await openCard(v6Title)
+    await waitFor(() => ev(() => !!document.querySelector('[data-comments-input]')), 4000, '评论输入框')
+    // 初始空态
+    ok(
+      await ev(() => document.querySelectorAll('[data-comments-item]').length === 0),
+      '初始无评论',
+    )
+    // 单输入框 + placeholder 引导：「署名:内容」前缀解析为 author（全角冒号）
+    await ev(() => {
+      const el = document.querySelector('[data-comments-input]')
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+      setter.call(el, '小李：这个素材数据很好')
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await sleep(150)
+    await ev(() => document.querySelector('[data-comments-send]')?.click())
+    await waitFor(
+      () =>
+        ev(() => {
+          const items = [...document.querySelectorAll('[data-comments-item]')]
+          return items.length === 1 && (items[0].textContent ?? '').includes('这个素材数据很好')
+        }),
+      4000,
+      '评论出现在列表',
+    )
+    const meta = await ev(() => ({
+      author: document.querySelector('[data-comments-author]')?.textContent ?? null,
+      head: document.querySelector('[data-comments]')?.textContent ?? '',
+    }))
+    ok(meta.author === '小李', '署名前缀解析为 author')
+    ok(meta.head.includes('1 条'), '标题行显示条数')
+    // 写入缓存 doc（同步层 effect 落盘）
+    await waitFor(async () => {
+      const it = await storedItem(dataId, v6Title)
+      return (
+        it?.comments?.length === 1 &&
+        it.comments[0].author === '小李' &&
+        it.comments[0].body === '这个素材数据很好' &&
+        typeof it.comments[0].id === 'string' &&
+        typeof it.comments[0].created_at === 'string'
+      )
+    }, 6000, '评论写入缓存 doc（id/created_at 由页面生成）')
+    // 删除（hover 出现的 ×；JS click 不受 opacity 影响）→ 列表与缓存都清空
+    await ev(() => document.querySelector('[data-comments-delete]')?.click())
+    await waitFor(() => ev(() => document.querySelectorAll('[data-comments-item]').length === 0), 4000, '删除后列表为空')
+    await waitFor(async () => {
+      const it = await storedItem(dataId, v6Title)
+      return !it?.comments || it.comments.length === 0
+    }, 6000, '缓存 doc 评论清空（字段移除）')
+    await closeDialog()
   })
 
   await t('t38 持久化：reload 后全部改动保持（旧 persistence；t15 之外的 DOM 层核验）', async () => {

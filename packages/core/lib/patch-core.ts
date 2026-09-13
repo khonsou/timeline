@@ -22,8 +22,9 @@ import { nextOrderInColumn } from './board-view.ts'
 import { resolveWriteTimeGroup } from './group-core.ts'
 import { diffPostMirror, normalizePreIds, validatePreIdRefs, type MirrorUpdate } from './relation-core.ts'
 import { STATUSES, TYPES, normalizeLinks, normalizeMetric, normalizePublishAt } from './import-core.ts'
+import { normalizeComments } from './comment-core.ts'
 
-/** PATCH 允许修改的字段白名单（v19+ 追加 links；v2-M1 追加 bg_color / dimmed；v2-M2 追加 group_id；v2-M3 追加 pre_ids） */
+/** PATCH 允许修改的字段白名单（v19+ 追加 links；v2-M1 追加 bg_color / dimmed；v2-M2 追加 group_id；v2-M3 追加 pre_ids；v2-M4 追加 comments） */
 export const PATCH_FIELDS = [
   'title',
   'type',
@@ -41,6 +42,7 @@ export const PATCH_FIELDS = [
   'dimmed',
   'group_id',
   'pre_ids',
+  'comments',
   // v2-M3 F4 单一写入源铁律：post_ids 是 core 镜像（外部只读），不在白名单内——
   // 直接 patch post_ids 走 unknownFields → 400「不支持修改的字段」
 ] as const
@@ -235,6 +237,15 @@ export function applyItemPatch(
         else delete next.pre_ids
       }
     }
+    // comments（v2-M4 匿名评论）：整组替换语义（同 links）——数组逐项严格校验；
+    // null / 空串 / 空数组 = 清空（移除字段，保持 doc 干净）。并发合并在 web 同步层
+    // （pending-patch 409 重放按 id 键控 union），此处只负责单写入口径。
+    if ('comments' in body) {
+      const r = normalizeComments(body.comments)
+      if (r.error) errors.push(r.error)
+      else if (r.value.length > 0) next.comments = r.value
+      else delete next.comments
+    }
   }
 
   if (unknownFields.length > 0 || errors.length > 0) {
@@ -248,9 +259,9 @@ export function applyItemPatch(
 
   const changes: ItemPatchChange[] = []
   for (const f of PATCH_FIELDS) {
-    // links / pre_ids 是数组，引用比较恒不等 → 按内容（JSON 序）比较，保证同值补丁幂等无审计
+    // links / pre_ids / comments 是数组，引用比较恒不等 → 按内容（JSON 序）比较，保证同值补丁幂等无审计
     const changed =
-      f === 'links' || f === 'pre_ids'
+      f === 'links' || f === 'pre_ids' || f === 'comments'
         ? JSON.stringify(next[f] ?? null) !== JSON.stringify(item[f] ?? null)
         : next[f] !== item[f]
     if (changed) changes.push({ field: f, old_value: item[f], new_value: next[f] })

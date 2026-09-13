@@ -18,6 +18,7 @@
 | `web/` v2-M1 卡片表现（背景色 / 置灰 / 搜索 / 分享链接） | `npm run build` + `npm run test:e2e`（t59–t62） |
 | `web/` v2-M2 分组管理（列头改名 / 排序 / 删除 / 跨组拖拽） | `npm run build` + `npm run test:e2e`（t63–t66） |
 | `web/` v2-M3 关系视图（前后关系小节 / 图视图 / 暂存带 / 拖拽连线） | `npm run build` + `npm run test:e2e`（t67–t73） |
+| 卡片匿名评论（v2-M4：core comment-core / PATCH 白名单 / 详情页评论区） | `npm run test:core`（comment-core + patch-core）+ `npm run test:server`（smoke.mjs v2-M4 段）+ `npm run build` + `npm run test:e2e`（t74） |
 | Agent API（item 级端点/change-sets/审计/限速） | `npm run test:server` + Agent 相关 e2e |
 | 跨层契约（core 字段、doc 结构、端点签名） | `test:core` + `test:server` + `test:e2e` |
 
