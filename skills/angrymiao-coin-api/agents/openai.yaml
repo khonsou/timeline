@@ -1,0 +1,4 @@
+interface:
+  display_name: "AngryMiao Coin API CLI"
+  short_description: "Query AngryMiao permissions and tags with auth"
+  default_prompt: "Use $angrymiao-coin-api to query current-user permissions and tag data through the TypeScript CLI."

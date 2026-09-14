@@ -1,0 +1,16 @@
+{
+  "name": "@timeline/angrymiao-coin-api-skill",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "TypeScript skill CLI for AngryMiao Coin permission and tag APIs",
+  "bin": {
+    "angrymiao-coin": "./bin/angrymiao-coin.mjs"
+  },
+  "scripts": {
+    "test": "node --no-warnings --experimental-strip-types --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
