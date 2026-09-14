@@ -28,13 +28,14 @@ GET {API}/api/meta        # 免鉴权
 
 ```json
 {
-  "protocol_version": "19.2",
+  "protocol_version": "19.3",
   "server_version": "1.0.0",
   "capabilities": ["items.read", "items.patch", "change_sets", "audit.read"],
   "features": {
     "groups": true,
     "relations": true,
-    "card_styling": true
+    "card_styling": true,
+    "comments": true
   },
   "limits": {"agent_rpm": 120, "board_item_limit": 2000, "body_bytes": 8388608},
   "enums": {
@@ -46,7 +47,7 @@ GET {API}/api/meta        # 免鉴权
 ```
 
 - `capabilities` 是端点级能力；`features`（v19.2 起）是字段/op 级的 v2 能力宣告——
-  `groups`（分组 op + `group_id`）、`relations`（`pre_ids` / `post_ids`）、`card_styling`（`bg_color` / `dimmed`）。
+  `groups`（分组 op + `group_id`）、`relations`（`pre_ids` / `post_ids`）、`card_styling`（`bg_color` / `dimmed`）、`comments`（v19.3，匿名评论 `comments` 字段）。
   老实例可能不带 `features` 块：缺省按 false 处理，别假设存在。
 
 按结果分支你的写路径：

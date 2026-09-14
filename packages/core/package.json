@@ -19,7 +19,9 @@
     "./group-core": "./lib/group-core.ts",
     "./lib/group-core.ts": "./lib/group-core.ts",
     "./relation-core": "./lib/relation-core.ts",
-    "./lib/relation-core.ts": "./lib/relation-core.ts"
+    "./lib/relation-core.ts": "./lib/relation-core.ts",
+    "./comment-core": "./lib/comment-core.ts",
+    "./lib/comment-core.ts": "./lib/comment-core.ts"
   },
   "scripts": {
     "test": "node --test \"test/*.test.mjs\""

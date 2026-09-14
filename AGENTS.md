@@ -37,9 +37,9 @@
 
 | 命令 | 覆盖 | 规模 |
 |---|---|---|
-| `npm run test:core` | core 纯函数单测（node:test） | 128 项，秒级 |
-| `npm run test:server` | server 全链路冒烟（临时端口 5197 + 临时库自建自删） | 103 断言 |
-| `npm run test:e2e` | 真实 Chrome 全量回归（`web/verification/e2e-check.mjs`，自含起停 API :5198 + vite :5199） | 73 项 |
+| `npm run test:core` | core 纯函数单测（node:test） | 144 项，秒级 |
+| `npm run test:server` | server 全链路冒烟（临时端口 5197 + 临时库自建自删） | 121 断言 |
+| `npm run test:e2e` | 真实 Chrome 全量回归（`web/verification/e2e-check.mjs`，自含起停 API :5198 + vite :5199） | 74 项 |
 
 - **交互/拖拽/同步/鉴权类 UI 改动必须跑 e2e**：`npm run build` 抓不到运行时接线错误（v19 拖拽碰撞判定即此类）。
 - 纯文案/样式微调可只跑 `npm run build`。

@@ -17,6 +17,7 @@
  * 刷新/重开页面后首次拉取仍可把未推送编辑重放到最新快照，不静默丢编辑。
  */
 import type { ContentItem, Group, Member } from '@timeline/core/types'
+import { mergeCommentsById } from '@timeline/core/comment-core'
 import type { Orders } from '@timeline/core/board-view'
 import type { BoardDoc } from '@/lib/board-doc'
 import type { Product } from '@/lib/content-data'
@@ -149,7 +150,20 @@ export function applyPatch(base: BoardDoc, patch: DocPatch): BoardDoc {
   for (const it of base.items) {
     if (removed.has(it.id)) continue
     const pt = patch.patched[it.id]
-    items.push(pt ? { ...it, ...pt.fields } : it)
+    if (!pt) {
+      items.push(it)
+      continue
+    }
+    const merged = { ...it, ...pt.fields }
+    // v2-M4：comments 是数组——字段级整体覆盖（LWW）会让「两人同时评论同一张卡」丢一条；
+    // 重放时按 id 键控 union（双方独有都保留，同 id 以远端/base 为准，按 created_at 升序）。
+    // 其余字段保持字段级覆盖语义。diff 侧不动（仍是整组字段级比较）。
+    if ('comments' in pt.fields) {
+      const mc = mergeCommentsById(it.comments, pt.fields.comments)
+      if (mc) merged.comments = mc
+      else delete merged.comments
+    }
+    items.push(merged)
   }
   const present = new Set(items.map((it) => it.id))
   for (const it of patch.added) {

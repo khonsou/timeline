@@ -20,6 +20,7 @@ import {
 import { nextOrder, publishDateOf, type Orders } from '@timeline/core/board-view'
 import { migrateLegacyGroups } from '@timeline/core/group-core'
 import { normalizeRelationFields } from '@timeline/core/relation-core'
+import { sanitizeComments } from '@timeline/core/comment-core'
 import { STATUSES, mergeMembers, mergeProducts } from '@timeline/core/import-core'
 
 export interface BoardDoc {
@@ -102,6 +103,11 @@ export function validateItemsOrders(parsed: unknown): { items: ContentItem[]; or
         delete next.bg_color
       }
       if (next.dimmed !== true) delete next.dimmed
+      // v2-M4 评论兜底：非数组 / 非法项 → sanitizeComments 逐条清洗（非法项丢弃），
+      // 清洗后为空 → 移除字段（保持 doc 干净；规则在 core comment-core，web 不定义）
+      const cleanedComments = sanitizeComments(next.comments)
+      if (cleanedComments) next.comments = cleanedComments
+      else delete next.comments
       return next
     })
     // v2-M3 F4 读取兜底：pre_ids/post_ids 悬空 id 剔除 + 按 pre_ids 重建 post_ids 镜像

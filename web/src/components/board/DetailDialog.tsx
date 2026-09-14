@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import { Textarea } from '@/components/ui/textarea'
+import { Button } from '@/components/ui/button'
 import TypePicker from '@/components/board/TypePicker'
 import type { ContentItem } from '@timeline/core/types'
 import {
@@ -40,6 +42,9 @@ interface DetailDialogProps {
   onSetPreIds: (id: string, preIds: string[]) => void
   /** chip 点击跳转定位（复用 F5/F6 定位机制；两视图通用，由 BoardPage 路由） */
   onLocateCard: (id: string) => void
+  /** v2-M4 匿名评论：新增（id / created_at 由 BoardPage 生成）与删除（匿名场景全员可删，与看板密码=全量写权限一致） */
+  onAddComment: (cardId: string, draft: { author: string; body: string }) => void
+  onDeleteComment: (cardId: string, commentId: string) => void
 }
 
 const INPUT_BASE =
@@ -67,6 +72,33 @@ function linkify(text: string): React.ReactNode[] {
       seg
     ),
   )
+}
+
+// ---------------------------------------------------------------------------
+// v2-M4 匿名评论小工具：时间显示 + 署名前缀解析（单输入框方案——placeholder 引导
+// 「署名:内容」，解析出 author；无前缀 = 匿名，author 为空串）
+// ---------------------------------------------------------------------------
+
+/** 评论时间：24h 内相对时间，更早显示「M月D日 HH:mm」；非法时间原样显示 */
+function formatCommentTime(iso: string): string {
+  const t = new Date(iso).getTime()
+  if (!Number.isFinite(t)) return iso
+  const diff = Date.now() - t
+  if (diff >= 0 && diff < 60_000) return '刚刚'
+  if (diff >= 0 && diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前`
+  if (diff >= 0 && diff < 86400_000) return `${Math.floor(diff / 3600_000)} 小时前`
+  const d = new Date(t)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+/** 「署名:正文」前缀（半角/全角冒号皆可；署名 ≤12 字且不含空白/冒号）；正文可跨行 */
+const AUTHOR_PREFIX_RE = /^([^\s:：]{1,12})\s*[:：]\s*([\s\S]+)$/
+/** 草稿 → { author, body }；前缀正文为空时不按署名解析（整段作为匿名正文） */
+function parseCommentDraft(raw: string): { author: string; body: string } {
+  const m = AUTHOR_PREFIX_RE.exec(raw)
+  if (m && m[2].trim()) return { author: m[1], body: m[2].trim() }
+  return { author: '', body: raw }
 }
 
 // ---------------------------------------------------------------------------
@@ -232,11 +264,16 @@ export default function DetailDialog({
   orders,
   onSetPreIds,
   onLocateCard,
+  onAddComment,
+  onDeleteComment,
 }: DetailDialogProps) {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
   const [editingComment, setEditingComment] = useState(false)
   const [draftComment, setDraftComment] = useState('')
+  // v2-M4 匿名评论：输入草稿 + 聚焦态（聚焦时 Esc 不关弹窗，纳入弹窗层拦截）
+  const [commentDraft, setCommentDraft] = useState('')
+  const [commentFocus, setCommentFocus] = useState(false)
   // 6 项字段的统一 inline 编辑状态
   const [editingField, setEditingField] = useState<EditField | null>(null)
   const [draft, setDraft] = useState('')
@@ -252,6 +289,7 @@ export default function DetailDialog({
     setEditingField(null)
     setInvalid(false)
     setTypePickerOpen(false)
+    setCommentDraft('') // v2-M4：切卡清评论草稿
     if (cardId && autoEditTitle) {
       setDraftTitle('')
       setEditingTitle(true)
@@ -294,6 +332,16 @@ export default function DetailDialog({
     setEditingComment(false)
   }
   const cancelComment = () => setEditingComment(false)
+
+  // ---------------- v2-M4 匿名评论 ----------------
+  const comments = useMemo(() => card?.comments ?? [], [card?.comments])
+  const sendComment = () => {
+    if (!card) return
+    const raw = commentDraft.trim()
+    if (!raw) return
+    onAddComment(card.id, parseCommentDraft(raw))
+    setCommentDraft('')
+  }
 
   // ---------------- 6 项字段编辑 ----------------
   const startField = (field: EditField, initial: string) => {
@@ -451,10 +499,11 @@ export default function DetailDialog({
         <DialogPrimitive.Content
           data-slot="dialog-content"
           onEscapeKeyDown={(e) => {
-            // 任意 inline 编辑态 / 类型选择器展开时，Esc 只取消编辑（或只关选择器）、不关弹窗：
-            // Radix 在 document 监听 Escape，输入框内的 stopPropagation 挡不住，
-            // 必须在弹窗层 preventDefault（读到的是当前渲染的编辑态，先于取消生效）
-            if (editingTitle || editingComment || editingField || typePickerOpen) e.preventDefault()
+            // 任意 inline 编辑态 / 类型选择器展开 / 评论输入框聚焦时，Esc 只取消编辑
+            // （或只关选择器 / 只blur 评论框）、不关弹窗：Radix 在 document 监听 Escape，
+            // 输入框内的 stopPropagation 挡不住，必须在弹窗层 preventDefault
+            // （读到的是当前渲染的编辑态，先于取消生效）
+            if (editingTitle || editingComment || editingField || typePickerOpen || commentFocus) e.preventDefault()
           }}
           className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none"
         >
@@ -820,6 +869,84 @@ export default function DetailDialog({
                     {card.comment ? linkify(card.comment) : '添加备注…'}
                   </p>
                 )}
+              </div>
+
+              {/* 5.4 评论（v2-M4 匿名评论，doc 内嵌 comments[]）：列表 + 单输入框
+                  （placeholder 引导「署名:内容」）；与上方「备注/复盘」明确分区，命名不复用 comment */}
+              <div className="mt-4" data-comments>
+                <p className="text-[10px] text-slate-400">
+                  评论
+                  {comments.length > 0 && <span className="ml-1 tabular-nums">· {comments.length} 条</span>}
+                </p>
+                {comments.length === 0 ? (
+                  <p className="mt-1.5 text-[12px] text-slate-300">还没有评论，来发第一条</p>
+                ) : (
+                  <ul className="mt-1.5 space-y-2">
+                    {comments.map((c) => (
+                      <li key={c.id} data-comments-item className="group/cmt rounded-lg bg-slate-50 px-2.5 py-1.5">
+                        <div className="flex items-baseline gap-2">
+                          <span
+                            data-comments-author
+                            className={`text-[12px] font-medium ${c.author ? 'text-slate-600' : 'text-slate-400'}`}
+                          >
+                            {c.author || '匿名'}
+                          </span>
+                          <span data-comments-time className="text-[10px] tabular-nums text-slate-300">
+                            {formatCommentTime(c.created_at)}
+                          </span>
+                          <button
+                            type="button"
+                            data-comments-delete={c.id}
+                            aria-label="删除评论"
+                            title="删除评论"
+                            onClick={() => onDeleteComment(card.id, c.id)}
+                            className="ml-auto flex h-4 w-4 items-center justify-center rounded-full text-slate-300 opacity-0 transition-opacity hover:bg-rose-100 hover:text-rose-500 group-hover/cmt:opacity-100"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <p data-comments-body className="mt-0.5 whitespace-pre-line text-[13px] leading-relaxed text-slate-600">
+                          {c.body}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="mt-2 flex items-end gap-2">
+                  <Textarea
+                    data-comments-input
+                    rows={2}
+                    value={commentDraft}
+                    onChange={(e) => setCommentDraft(e.target.value)}
+                    onFocus={() => setCommentFocus(true)}
+                    onBlur={() => setCommentFocus(false)}
+                    onKeyDown={(e) => {
+                      // Enter 发送 / Shift+Enter 换行；Esc 清草稿并 blur（弹窗层按聚焦态拦截 Esc）
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        sendComment()
+                      }
+                      if (e.key === 'Escape') {
+                        e.stopPropagation()
+                        setCommentDraft('')
+                        e.currentTarget.blur()
+                      }
+                    }}
+                    placeholder="你是谁？想说什么？—— 例：小李：这个素材数据很好"
+                    className="min-h-9 flex-1 resize-none rounded-lg border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[13px] leading-relaxed text-slate-700 focus-visible:bg-white"
+                  />
+                  <Button
+                    type="button"
+                    data-comments-send
+                    variant="outline"
+                    size="sm"
+                    disabled={!commentDraft.trim()}
+                    onClick={sendComment}
+                    className="shrink-0"
+                  >
+                    发送
+                  </Button>
+                </div>
               </div>
 
               {/* 5.5 前后关系（v2-M3 F4 建边主入口）：前序可编辑 / 后续镜像只读 + 选择器添加 */}

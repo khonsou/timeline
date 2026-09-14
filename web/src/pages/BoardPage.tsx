@@ -31,6 +31,7 @@ import ImportResultDialog, { type ImportReport } from '@/components/board/Import
 import SearchPalette from '@/components/board/SearchPalette'
 import { Button } from '@/components/ui/button'
 import type { ContentItem, Group, Member } from '@timeline/core/types'
+import type { CardComment } from '@timeline/core/types'
 import { MAX_GROUPS } from '@timeline/core/types'
 import {
   MAX_CARDS,
@@ -677,6 +678,29 @@ function SyncedBoard({
   }
 
   // ------------------------------------------------------------------
+  // v2-M4 匿名评论：走 updateCard 写 comments 数组（整组替换；id/created_at 在此生成，
+  // author 为客户端自报署名——防君子不防小人，未来 OAuth 实装后替换来源）。
+  // 删除置 undefined = 移除字段（updateCard 已有 undefined 删键逻辑，保持 doc 干净）。
+  // ------------------------------------------------------------------
+  const addComment = (id: string, draft: { author: string; body: string }) => {
+    const c = items.find((x) => x.id === id)
+    if (!c) return
+    const comment: CardComment = {
+      id: crypto.randomUUID(),
+      author: draft.author,
+      body: draft.body,
+      created_at: new Date().toISOString(),
+    }
+    updateCard(id, { comments: [...(c.comments ?? []), comment] })
+  }
+  const deleteComment = (id: string, commentId: string) => {
+    const c = items.find((x) => x.id === id)
+    if (!c) return
+    const rest = (c.comments ?? []).filter((x) => x.id !== commentId)
+    updateCard(id, { comments: rest.length > 0 ? rest : undefined })
+  }
+
+  // ------------------------------------------------------------------
   // v2-M2 F3 统一分组模型：分组管理（groups 数组序 = 列顺序；
   // 「未分组」是虚拟列：group_id 缺省 = 未分组，不占 groups[] 数据）
   // ------------------------------------------------------------------
@@ -961,6 +985,8 @@ function SyncedBoard({
           closeDetail()
           revealCardAny(id)
         }}
+        onAddComment={addComment}
+        onDeleteComment={deleteComment}
       />
       <ProductManagerDialog
         open={productsOpen}

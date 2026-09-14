@@ -22,7 +22,8 @@
  * v18 item 级端点（第三方 agent 读写；同一套 Bearer token，无独立 agent key）：
  *   GET   /api/boards/:id/items?date=&product_id=&member=&status=&q=  卡片列表（过滤可叠加，按 publish_at 排序）
  *   GET   /api/boards/:id/items/:itemId                               单张卡片（404 处理）
- *   PATCH /api/boards/:id/items/:itemId  白名单字段补丁（校验复用 patch-core 规则；逐字段审计）
+ *   PATCH /api/boards/:id/items/:itemId  白名单字段补丁（校验复用 patch-core 规则；逐字段审计；
+ *                                        v19.3 起白名单含 comments——卡片匿名评论数组，整组替换）
  *   GET   /api/boards/:id/products       产品目录
  *   GET   /api/boards/:id/members        成员目录
  *   GET   /api/boards/:id/audit?limit=50 PATCH 审计（倒序，limit ≤200）
@@ -85,7 +86,8 @@ const AGENT_RPM = Number(process.env.BOARD_AGENT_RPM || 120)
 const CS_TTL_MS = Number(process.env.BOARD_CS_TTL_HOURS || 24) * 3600_000
 // v19.1：自发现三件套——协议版本头 / GET /api/meta / GET /api/agent-doc
 // v19.2：meta 追加 features 块——v2 能力级宣告（groups / relations / card_styling）
-const PROTOCOL_VERSION = '19.2'
+// v19.3：features 追加 comments——卡片匿名评论（comments 进 PATCH 白名单 / change-set create·patch）
+const PROTOCOL_VERSION = '19.3'
 // 发现端点独立限速桶（每 IP 次/分钟；不占 board 级 agent 配额）
 const DISCOVERY_RPM = Number(process.env.BOARD_DISCOVERY_RPM || 30)
 
@@ -132,6 +134,7 @@ GET   /api/agent-doc                          协议文档全文（免鉴权）
 
 枚举：type = 图文/视频/音频/直播/数据；status = 待执行/待发布/已发布。
 写操作一律走 change-set（create/patch），commit 带幂等键；指标与 status 同帧。
+v19.3：comments（卡片匿名评论数组，整组替换，author 自报可空串）进 PATCH 白名单与 change-set create/patch。
 `
 
 // 启动时读入协议文档缓存（运行期不重读盘；BOARD_AGENT_DOC_PATH 可覆盖路径）
@@ -164,6 +167,9 @@ const META = {
     relations: true,
     // v2-M1 卡片表现：bg_color（hex，归一化落盘）/ dimmed（boolean），均在 PATCH 白名单
     card_styling: true,
+    // v2-M4 匿名评论：comments（CardComment[]，整组替换）在 PATCH 白名单 + change-set create/patch；
+    // author 为客户端自报署名（空串 = 匿名），校验口径在 core comment-core
+    comments: true,
   },
   limits: { agent_rpm: AGENT_RPM, board_item_limit: BOARD_ITEM_LIMIT, body_bytes: MAX_BODY },
   enums: { type: [...TYPES], status: [...STATUSES] },
