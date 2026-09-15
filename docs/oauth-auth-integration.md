@@ -188,6 +188,182 @@ code_verifier=<code_verifier>
 
 第一期建议纯 SPA 只把 access token 放在内存中；refresh token 不落 localStorage。页面刷新后重新登录是可接受行为。若以后要求跨刷新保持登录，应新增 Timeline BFF，由服务端用 Secure、HttpOnly Cookie 保存会话。
 
+### 7.3 Coin backend JWT 解析与校验规则
+
+本节按 `E:/code/angrymiao-coin/backend` 当前源码描述 Auth JWT 的处理方式，不适用于
+Timeline 看板自身的 HMAC token。看板 token 仍由 `BoardPage` 的密码门管理，不能把两种
+token 混用。
+
+#### 解析后的 claims 字段
+
+Coin backend 的 `backend/app/auth/jwt.go` 定义：
+
+```go
+type JWTClaims struct {
+    jwt.StandardClaims
+    UserID int    `json:"user_id"`
+    Role   string `json:"role,omitempty"`
+}
+```
+
+因此 `auth.ParseToken` 返回的 `*JWTClaims` 包含以下字段：
+
+| 字段 | 来源 | 类型 | 用途 |
+| --- | --- | --- | --- |
+| `UserID` / `user_id` | Coin 自定义 claims | `int` | 当前用户 ID；handler 通过它查询用户权限、用户标签等数据 |
+| `Role` / `role` | Coin 自定义 claims | `string` | admin middleware 判断是否为 `admin` |
+| `Audience` / `aud` | `jwt.StandardClaims` | `string` | 标准 JWT 字段；Coin 当前 `ParseToken` 不单独校验 |
+| `ExpiresAt` / `exp` | `jwt.StandardClaims` | `int64` | Unix 秒过期时间 |
+| `Id` / `jti` | `jwt.StandardClaims` | `string` | JWT ID，当前 Coin middleware 不使用 |
+| `IssuedAt` / `iat` | `jwt.StandardClaims` | `int64` | 签发时间，当前 Coin middleware 不使用 |
+| `Issuer` / `iss` | `jwt.StandardClaims` | `string` | 与服务配置的 issuer 比较 |
+| `NotBefore` / `nbf` | `jwt.StandardClaims` | `int64` | 生效时间，当前 Coin `ParseToken` 不单独处理 |
+| `Subject` / `sub` | `jwt.StandardClaims` | `string` | subject，当前 Coin middleware 不使用 |
+
+OAuth JWT 可能还携带 `client_id`、`token_type`、`scope`、`user_name` 等额外 claims，
+但 Coin 的 `JWTClaims` 结构只映射上表字段；未声明的 claims 不参与当前 Coin middleware
+的用户身份和角色判断。
+
+#### `auth.ParseToken` 方法
+
+函数签名：
+
+```go
+func ParseToken(tokenString string) (*JWTClaims, error)
+```
+
+`auth.Init(config)` 启动时先读取 `config.Conf.JWT.PublicKeyPath`，使用
+`jwt.ParseRSAPublicKeyFromPEM` 初始化包级 RSA 公钥 `verifyKey`，同时将
+`config.Conf.JWT.Issuer` 保存到包级 issuer 变量 `issue`。
+
+`ParseToken` 的处理顺序：
+
+1. 调用 `jwt.ParseWithClaims(tokenString, &JWTClaims{}, keyFunc)` 解析 JWT。
+2. `keyFunc` 返回 Coin backend 启动时加载的 RSA 公钥，用于签名验证。
+3. 要求解析结果的 claims 类型为 `*JWTClaims` 且 `token.Valid == true`。
+4. 调用 `isExpire(claims.ExpiresAt)`，以 `ExpiresAt - time.Now().Unix() < 0` 判断过期。
+5. 要求 `claims.Issuer == issue`。
+6. 校验通过后返回 `*JWTClaims`，供 middleware 写入 Gin context。
+
+当前实现没有在 `keyFunc` 中显式限制 JWT `alg`；它依赖 JWT 库配合 RSA 公钥完成解析和
+验签。若将这段逻辑移植到客户端或新服务，建议显式要求预期算法后再验签，并对空 token、
+缺失 `exp`、`user_id <= 0` 和 issuer 不匹配统一返回明确错误。
+
+当前源码在过期或 issuer 不匹配的手动分支中使用 `return nil, err`，而此时 `err` 可能已为
+`nil`。因此调用方不能只依赖该分支的返回错误来判断身份有效性；应以“成功解析、签名有效、
+claims 完整且业务字段合法”为成功条件。Coin middleware 当前主要通过后续的 context 和
+admin role 判断阻止无效或非 admin 请求。
+
+#### Authorization header 与 context 参数
+
+`backend/app/middleware/auth/jwt.go` 的 `BaseJWTAuthMiddleware` 接收：
+
+```go
+func BaseJWTAuthMiddleware(
+    c *gin.Context,
+    isForce bool,
+    ruleFunc func(*gin.Context, *auth.JWTClaims) bool,
+)
+```
+
+处理规则：
+
+1. 读取 `Authorization` header。
+2. 无 header 时，`isForce=true` 返回未授权；`isForce=false` 将 `user_id` 设为 `0`，继续按非强制链路处理。
+3. 使用 `strings.SplitN(header, " ", 2)` 拆出 scheme 和 token。
+4. scheme 必须等于 `config.Conf.JWT.Key`。生产 customer/admin 配置均为 `Bearer`，所以请求格式是 `Authorization: Bearer <JWT>`。
+5. 将拆出的 JWT 传给 `auth.ParseToken`；解析失败返回未授权。
+6. `setDefaultUserKey` 将 `claims.UserID` 写入 context 的 `user_id`，将 `claims.Role` 写入 context 的 `user_role`。
+7. 如果传入 `ruleFunc`，执行额外规则；通过后调用 `c.Next()`。
+
+handler 读取 context 的方法是：
+
+```go
+func CurrentUserID(c *gin.Context) (int, error)
+func CurrentUserRole(c *gin.Context) (string, error)
+```
+
+其中 `CurrentUserID` 读取 `user_id`，`CurrentUserRole` 读取 `user_role`。因此
+`permission/current-user` 和当前用户 tag 查询最终使用的是解析后的 `user_id`，不是
+客户端自行传入的用户 ID。
+
+Coin backend 提供三种 middleware 封装：
+
+| 方法 | 行为 |
+| --- | --- |
+| `JWTAuthMiddleware()` | 强制要求 JWT，适合必须登录的 customer API |
+| `JWTAuthNotForceMiddleware()` | 非强制模式；无 header 时使用匿名用户 ID `0` |
+| `JWTAuthMiddlewareForAdmin()` | 强制要求 JWT，并执行 `adminRule` |
+
+`adminRule` 只接受 `claims.Role == "admin"`。虽然 mapping 中还定义了 `user`、
+`coin_admin`、`anonymous` 等角色，当前 admin middleware 并不会把它们视为 admin。
+
+本次涉及的接口在 Coin router 中的实际授权方式为：
+
+| 接口 | 路由 middleware | 解析后使用 |
+| --- | --- | --- |
+| `GET /api/permission/current-user` | customer `JWTAuthNotForceMiddleware()` | `user_id` |
+| `GET /api/task-tag` | customer `JWTAuthMiddleware()` | `user_id` |
+| `GET /api/tags` | admin 路由组 `JWTAuthMiddlewareForAdmin()` | `user_id`、`role` |
+
+### 7.4 Access token 刷新规则
+
+Coin backend 只实现 JWT 的解析和校验，不实现 refresh endpoint。刷新由
+`angrymiao-auth` 提供，Timeline 需要调用：
+
+```http
+POST https://auth.angrymiao.com/api/jwt/refresh-token
+Content-Type: application/json
+```
+
+```json
+{
+  "refresh_token": "<refresh-token>"
+}
+```
+
+成功响应：
+
+```json
+{
+  "access_token": "<new-access-token>",
+  "expire_at": 1776335061
+}
+```
+
+Auth 刷新服务会先使用同一套 RSA 公钥和 issuer 解析 refresh token，再根据 refresh
+token 的过期时间限制新 access token 的结束时间：
+
+```text
+access_expire_at = min(now + JWTExpireDuration, refresh_token.exp)
+```
+
+刷新成功后只替换 access token；原 refresh token 不因该接口调用而轮换。Timeline 应在
+真正调用 Coin API 前保留并检查两类 token：
+
+- access token 有效且未过期：直接带 `Authorization: Bearer <access-token>` 请求；
+- access token 过期或即将过期：用 refresh token 调 Auth 刷新接口，校验新 access token 后再请求；
+- Coin API 返回 `401`：刷新一次并只重试原业务请求一次；重试仍失败则要求重新登录；
+- refresh 接口返回认证失败：清理本地会话并要求重新登录；网络错误或临时 `5xx` 不应被误判为 refresh token 无效。
+
+Auth 还提供 OAuth Token Endpoint 的标准 refresh grant，但它与上面的 JWT refresh 接口
+不是同一个请求协议：
+
+```http
+POST https://auth.angrymiao.com/api/oauth/token
+Content-Type: application/x-www-form-urlencoded
+```
+
+```text
+grant_type=refresh_token
+client_id=timeline
+refresh_token=<refresh-token>
+```
+
+如果使用该 OAuth Endpoint，响应里的 `expires_in` 和 `refresh_token_expires_in` 是 TTL
+秒数；而 `/api/jwt/refresh-token` 响应里的 `expire_at` 是绝对 Unix 秒时间戳。两者不能
+混作同一种过期时间处理。
+
 ## 8. 与现有看板密码的关系
 
 第一期不得做以下事情：
