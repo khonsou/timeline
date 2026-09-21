@@ -3860,19 +3860,26 @@ async function main() {
     }
   })
 
-  await t('t76 完整登录流程：深链 → 点登录 → return_to 回落深链（query 保留、地址栏无 code/state）', async () => {
+  await t('t76 完整登录流程：深链（含 hash）→ 点登录 → return_to 回落深链（query+hash 保留、地址栏无 code/state）→ 进板 hash 被消费', async () => {
     const ctx = await browser.createBrowserContext()
     const pg = await ctx.newPage()
     await pg.setViewport(VIEW)
     try {
-      const deep = `${WEB}/b/${boardId}?poll=1000&push=200`
+      const deep = `${WEB}/b/${boardId}?poll=1000&push=200#view=graph`
       await pg.goto(deep, { waitUntil: 'domcontentloaded' })
       await pg.waitForFunction(() => !!document.querySelector('[data-oauth-login]'), { timeout: 10000 })
       await ensureOauthLogin(pg) // 点登录 → mock authorize 302 → code exchange → replaceLocation(return_to)
       await pg.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
       const url = pg.url()
       ok(url.startsWith(`${WEB}/b/${boardId}?poll=1000&push=200`), `回落深链保留 query（${url}）`)
+      ok(url.includes('#view=graph'), `OAuth 往返后 hash 完整（${url}）`)
       ok(!/[?&](code|state)=/.test(url), '地址栏不留 code/state')
+      // 过密码门进板：hash 须真正被消费（直达关系视图，而非仅躺在地址栏）
+      await clearAndTypeOn(pg, '[data-gate-password]', MAIN_PASS)
+      await pg.waitForFunction(() => document.querySelector('[data-gate-submit]')?.disabled === false, { timeout: 8000 })
+      await pg.click('[data-gate-submit]')
+      await pg.waitForFunction(() => !!document.querySelector('[data-graph-view]'), { timeout: 12000 })
+      ok(true, '进板后 #view=graph 直达关系视图')
     } finally {
       await ctx.close()
     }

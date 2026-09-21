@@ -68,13 +68,14 @@ export function parseBoardHash(hash: string): BoardHashParams {
   return out
 }
 
-/** 构造看板分享 URL（参数缺省则不出现；顺序固定 view → card 便于阅读） */
+/** 构造看板分享 URL（参数缺省则不出现；顺序固定 view → card 便于阅读）。
+ *  必须带 BASE_PATH：生产部署在 /<base>/ 下，丢前缀的 URL 会被边缘层直接 404。 */
 export function buildBoardUrl(boardId: string, params: BoardHashParams = {}): string {
   const q = new URLSearchParams()
   if (params.view) q.set('view', params.view)
   if (params.card) q.set('card', params.card)
   const h = q.toString()
-  return `${window.location.origin}/b/${boardId}${h ? `#${h}` : ''}`
+  return `${window.location.origin}${withBasePath(`/b/${boardId}`)}${h ? `#${h}` : ''}`
 }
 
 export function useRoute(): Route {
