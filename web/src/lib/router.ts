@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from 'react'
 
-export type Route = { view: 'home' } | { view: 'board'; boardId: string }
+export type Route = { view: 'home' } | { view: 'board'; boardId: string } | { view: 'authCallback' }
 
 const NAV_EVENT = 'timeline-board:navigate'
 const BASE_PATH = import.meta.env.BASE_URL === '/' ? '' : import.meta.env.BASE_URL.replace(/\/$/, '')
@@ -22,13 +22,25 @@ function withBasePath(pathname: string): string {
 }
 
 export function parseRoute(pathname: string): Route {
-  const m = /^\/b\/([0-9a-f]{16})\/?$/.exec(stripBasePath(pathname))
+  const stripped = stripBasePath(pathname)
+  // OAuth Phase 0：统一登录回调（在 stripBasePath 后识别，生产 base path 下同样命中）
+  if (stripped === '/oauth/callback' || stripped === '/oauth/callback/') return { view: 'authCallback' }
+  const m = /^\/b\/([0-9a-f]{16})\/?$/.exec(stripped)
   if (m) return { view: 'board', boardId: m[1] }
   return { view: 'home' }
 }
 
 export function navigate(to: string) {
   window.history.pushState(null, '', withBasePath(to))
+  window.dispatchEvent(new Event(NAV_EVENT))
+}
+
+/**
+ * 原样替换地址栏并通知路由（不加 base path）：供 OAuth 回调页用已校验的
+ * return_to（本身含 base path 与 query/hash）替换掉带 code/state 的回调 URL。
+ */
+export function replaceLocation(url: string) {
+  window.history.replaceState(null, '', url)
   window.dispatchEvent(new Event(NAV_EVENT))
 }
 

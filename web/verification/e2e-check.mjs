@@ -49,13 +49,24 @@
  * v2-M4（t74）：卡片匿名评论——详情「评论」区发送（「署名:内容」前缀解析）/ 条数 / 落盘 /
  *   删除清空；物理位置紧随 t37（共享数据板 + 锚点卡 v6Title 上下文）。
  *
+ * OAuth Phase 0 全站登录门适配（t75–t79 新增，共 79 项）：
+ *   会话是纯模块内存（docs/oauth-auth-integration.md §7.2），任何整页跳转/reload 都会丢会话，
+ *   因此套件内所有整页导航统一走 gotoApp/reloadApp → ensureOauthLogin：检测 [data-oauth-login]
+ *   则点登录、经 mock Auth 302 回调 + code exchange 建立会话后继续；已有会话则直接放行。
+ *   mock Auth（verification/mock-oauth.mjs，:5196，进程内起）实现 authorize 302 + token exchange
+ *   最小契约并计数，vite 以 VITE_AUTH_ORIGIN=http://127.0.0.1:5196 注入。
+ *   专项用例：t75 未登录门挡（首页+深链）、t76 完整登录流程 + return_to 深链回跳、
+ *   t77 错误 state 拒绝且不交换 code、t78 error/无 pending 分支不调 token endpoint、
+ *   t79 登录后看板密码门照旧 + 退出登录门复现。
+ *
  * 运行：node verification/e2e-check.mjs [用例名前缀…]
  *   - 过滤参数：node verification/e2e-check.mjs t03 t07 t08 → 只跑前缀匹配的用例（其余记 SKIP）；不带参数 = 全量
- *   - 自带 fixture：spawn API server（:5198，独立 tmp sqlite）+ vite（:5199，API_PORT=5198 反代）
+ *   - 自带 fixture：进程内 mock Auth（:5196）+ spawn API server（:5198，独立 tmp sqlite）
+ *     + vite（:5199，API_PORT=5198 反代、VITE_AUTH_ORIGIN=:5196）
  *   - 驱动本机 Chrome（headless）走真实 UI；跑完杀进程组 + 删 tmp sqlite + 删 CLI 产物 board.json
  *   - 截图存 verification/board-v16-*.png
  *
- * 端口纪律：5198/5199 本脚本独占（启动前检查，被占则报错退出）；7100/7101/7102 永远不碰。
+ * 端口纪律：5196/5198/5199 本脚本独占（启动前检查，被占则报错退出）；7100/7101/7102 永远不碰。
  */
 import { execSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -63,6 +74,7 @@ import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, rmdirSy
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import puppeteer from 'puppeteer-core'
+import { getMockOauthStats, startMockOauth } from './mock-oauth.mjs'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') // web 包根
 const REPO_ROOT = path.resolve(ROOT, '..') // 仓库根（server/cli/examples/node_modules 所在）
@@ -71,8 +83,10 @@ mkdirSync(VDIR, { recursive: true })
 
 const API_PORT = 5198
 const WEB_PORT = 5199
+const MOCK_PORT = 5196
 const API = `http://localhost:${API_PORT}`
 const WEB = `http://localhost:${WEB_PORT}`
+const MOCK_ORIGIN = `http://127.0.0.1:${MOCK_PORT}`
 const DB = path.join(VDIR, 'tmp-e2e.sqlite')
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const VIEW = { width: 1600, height: 900 }
@@ -288,6 +302,7 @@ function fillerItems(n, startIdx, orders) {
 // ---------------------------------------------------------------------------
 let apiProc = null
 let webProc = null
+let mockServer = null
 let browser = null
 let page = null
 
@@ -316,6 +331,8 @@ async function waitHttp(url, timeout = 25000) {
 
 async function startServers() {
   for (const f of [DB, `${DB}-wal`, `${DB}-shm`]) rmSync(f, { force: true })
+  // OAuth Phase 0：mock Auth 进程内起（页面经 VITE_AUTH_ORIGIN 指向它）
+  mockServer = await startMockOauth(MOCK_PORT)
   // 上轮残留的 CLI 导入产物会污染「本机初始化」用例（t20/t24/t40），启动前清掉
   rmSync(BOARD_JSON, { force: true })
   try {
@@ -345,7 +362,7 @@ async function startServers() {
     {
       cwd: ROOT, // vite 在 web 包内跑（index.html / vite.config.ts 所在）
       detached: true,
-      env: { ...process.env, API_PORT: String(API_PORT) },
+      env: { ...process.env, API_PORT: String(API_PORT), VITE_AUTH_ORIGIN: MOCK_ORIGIN },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   )
@@ -378,6 +395,14 @@ async function teardown() {
   }
   killProcGroup(webProc)
   killProcGroup(apiProc)
+  if (mockServer) {
+    try {
+      await new Promise((resolve) => mockServer.close(resolve))
+    } catch {
+      // ignore
+    }
+    mockServer = null
+  }
   await sleep(300)
   for (const f of [DB, `${DB}-wal`, `${DB}-shm`]) rmSync(f, { force: true })
   // 清理 CLI 导入产物：仓库默认体验保持「两张引导卡」（旧套件同款纪律）
@@ -400,6 +425,47 @@ async function teardown() {
 // 页面操作 helpers
 // ---------------------------------------------------------------------------
 const ev = (fn, ...args) => page.evaluate(fn, ...args)
+
+// ---------------------------------------------------------------------------
+// OAuth Phase 0 兼容层：会话是纯模块内存，整页跳转/reload 后必然丢会话。
+// 所有整页导航统一走 gotoApp/reloadApp → ensureOauthLogin：
+//   出现 [data-oauth-login] 则点登录，经 mock Auth 302 回调 + code exchange 后再返回；
+//   已有会话则直接放行。Node 侧轮询 + try/catch 实现，天然免疫跳转期 ExecutionContext 销毁。
+// ---------------------------------------------------------------------------
+async function ensureOauthLogin(pg) {
+  const state = async () => {
+    try {
+      return await pg.evaluate(() => {
+        const root = document.getElementById('root')
+        if (!root || root.childElementCount === 0) return 'loading'
+        if (document.querySelector('[data-oauth-login]')) return 'gate'
+        if (document.querySelector('[data-auth-gate]') || document.querySelector('[data-oauth-callback]')) return 'busy'
+        return 'ready'
+      })
+    } catch {
+      return 'nav' // 跳转途中（authorize → 302 → callback）：继续等
+    }
+  }
+  const t0 = Date.now()
+  let s = 'loading'
+  while (s !== 'gate' && s !== 'ready') {
+    if (Date.now() - t0 > 20000) throw new Error('ensureOauthLogin：等待首渲染/登录门超时')
+    await sleep(150)
+    s = await state()
+  }
+  if (s === 'ready') return
+  await pg
+    .evaluate(() => document.querySelector('[data-oauth-login]')?.click())
+    .catch(() => {})
+  const t1 = Date.now()
+  for (;;) {
+    if (Date.now() - t1 > 25000) throw new Error('ensureOauthLogin：OAuth 登录回跳超时（门/回调页未解除）')
+    await sleep(200)
+    if ((await state()) === 'ready') return
+  }
+}
+const gotoApp = (pg, url, opts) => pg.goto(url, opts ?? { waitUntil: 'domcontentloaded' }).then(() => ensureOauthLogin(pg))
+const reloadApp = (pg) => pg.reload({ waitUntil: 'domcontentloaded' }).then(() => ensureOauthLogin(pg))
 
 async function waitFor(fn, timeout = 9000, label = '') {
   const t0 = Date.now()
@@ -663,14 +729,14 @@ async function t(name, fn) {
 }
 
 async function main() {
-  // 端口纪律：5198/5199 被占则直接退出（不杀别人的进程）
-  if ((await portBusy(API_PORT)) || (await portBusy(WEB_PORT))) {
-    throw new Error(`端口 ${API_PORT}/${WEB_PORT} 被占用，请先释放再跑 e2e`)
+  // 端口纪律：5196/5198/5199 被占则直接退出（不杀别人的进程）
+  if ((await portBusy(MOCK_PORT)) || (await portBusy(API_PORT)) || (await portBusy(WEB_PORT))) {
+    throw new Error(`端口 ${MOCK_PORT}/${API_PORT}/${WEB_PORT} 被占用，请先释放再跑 e2e`)
   }
   if (!existsSync(CHROME)) throw new Error(`找不到本机 Chrome：${CHROME}`)
 
   await startServers()
-  console.log('[e2e] API :5198 + vite :5199 已就绪')
+  console.log('[e2e] mock Auth :5196 + API :5198 + vite :5199 已就绪')
 
   // fixture 建板：主板（14 卡，含 ±90 出窗离群卡 2 张）+ 空板（密码门/删除用例）
   const mainDoc = fixtureDoc('E2E 主板')
@@ -706,13 +772,13 @@ async function main() {
   page.on('pageerror', (e) => console.error('  [pageerror]', String(e).slice(0, 200)))
 
   // 预置主板 token，随后各用例在同一标签页内导航
-  await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+  await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
   await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${boardId}`, token)
 
   // v2-M2：离群卡（today±90）归「未分组」列，t02/t61/t62 断言见各用例
 
   await t('t01 密码门：错误密码报错 → 正确密码进板', async () => {
-    await page.goto(`${WEB}/b/${gateId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${gateId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => !!document.querySelector('[data-gate]')), 8000, '密码门出现')
     await clearAndType('[data-gate-password]', 'wrong-pass')
     await waitFor(() => ev(() => document.querySelector('[data-gate-submit]')?.disabled === false), 8000, '看板名加载')
@@ -727,7 +793,7 @@ async function main() {
   })
 
   await t('t02 首屏：迁移后 61 日期列 = 今天 ±30，今天列可见，全量 14 卡渲染', async () => {
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '渲染 61 日期列')
     eq(await firstDate(), addDays(TODAY, -30), '首列 = 今天-30')
     const last = await ev(() => {
@@ -749,7 +815,7 @@ async function main() {
   // 月刻度/压暗遮罩退役；今天红点 = 组名==今天的组列位；密度点按组卡数量化
   await t('t03 minimap 组数驱动结构：62 列位/量化圆点/视口框真实比例/今天点/无月刻度无压暗', async () => {
     // 自包含导航：过滤单跑（node e2e-check.mjs t03 …）时不依赖 t02 现场
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '主板渲染 61 列')
     ok(await ev(() => !!document.querySelector('[data-minimap]')), '轨道存在')
     ok(await ev(() => !!document.querySelector('[data-minimap-window]')), '视口框存在')
@@ -1023,7 +1089,7 @@ async function main() {
 
   await t('t56 小跨度板：量化点 1/2/3、无压暗、62 列等分视口框', async () => {
     await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${smallId}`, smallToken)
-    await page.goto(`${WEB}/b/${smallId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${smallId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '小板渲染 61 列')
     // 组数驱动：轨道恒 62 列位（未分组 + 61 迁移日期组）；卡 today-5×1 / today×3 / today+5×6 → 点级 1/2/3
     eq(await ev(() => document.querySelectorAll('[data-minimap-daycol]').length), 62, '62 个列位（未分组 + 61 组）')
@@ -1058,7 +1124,7 @@ async function main() {
     await sleep(300)
     await page.screenshot({ path: path.join(VDIR, 'board-v17-small-span.png') })
     // 回主板，恢复 t09 现场
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '回主板渲染 61 列')
     await waitFor(() => dateVisible(TODAY), 8000, '主板今天列可见')
     // 即刻删除小板：t20 起的移植用例假设库内仅主板，不能留下污染
@@ -1404,7 +1470,7 @@ async function main() {
   })
 
   await t('t19 首页删除看板（确认框 + 重输密码）', async () => {
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => !!document.querySelector('[data-board-table]')), 8000, '看板列表加载')
     await ev((id) => {
       document.querySelector(`[data-board-row][data-board-id="${id}"] [data-board-delete]`)?.click()
@@ -1437,7 +1503,7 @@ async function main() {
   const dataUrl = () => `${WEB}/b/${dataId}?poll=1000&push=200`
 
   await t('t20 首页建板直进（旧 v15CreateBoard；适配：库内已有主板，断言非空列表态）', async () => {
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => !!document.querySelector('[data-home]')), 8000, '首页加载')
     await sleep(800) // loadLegacyLocal 异步（无 board.json → null）
     const home = await ev(() => ({
@@ -1517,7 +1583,7 @@ async function main() {
     const { importedAt } = JSON.parse(readFileSync(BOARD_JSON, 'utf8'))
     await waitViteServes(importedAt)
 
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
     await waitFor(
       () =>
         ev(() => {
@@ -1535,7 +1601,7 @@ async function main() {
     dataId = await ev(() => /\/b\/([0-9a-f]{16})/.exec(window.location.pathname)?.[1] ?? null)
     ok(dataId, '捕获数据板 id')
 
-    await page.goto(dataUrl(), { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, dataUrl())
     await waitFor(async () => (await colCount()) === 61, 9000, '数据板渲染 61 列')
     const doc = await waitFor(() => storedDoc(dataId), 9000, '缓存 doc 落盘')
     eq(doc.items.length, 9, '初始化合并 9 卡（数据层）')
@@ -1915,7 +1981,7 @@ async function main() {
 
   await t('t38 持久化：reload 后全部改动保持（旧 persistence；t15 之外的 DOM 层核验）', async () => {
     ok(editedDate && v6Title && v6ToDate && v7Type, '前置链路就绪')
-    await page.reload({ waitUntil: 'domcontentloaded' })
+    await reloadApp(page)
     await waitFor(async () => (await colCount()) === 61, 9000, '重载渲染 61 列')
     await waitFor(
       () => ev(() => document.querySelector('[data-sync-status]')?.dataset.syncStatus === 'synced'),
@@ -2026,7 +2092,7 @@ async function main() {
     await waitFor(() => ev(() => !document.querySelector('[data-products-dialog]')), 5000, '产品弹窗关闭')
     const face = await cardFaceProduct('耳机降噪地铁实测')
     eq(face?.text, '不明', '引用卡降级「不明」')
-    await page.reload({ waitUntil: 'domcontentloaded' })
+    await reloadApp(page)
     await waitFor(async () => (await colCount()) === 61, 9000, '重载渲染')
     await sleep(1000)
     const keptDoc = await storedDoc(dataId)
@@ -2048,7 +2114,7 @@ async function main() {
     ok(j.products.some((p) => p.id === 'P-2002' && p.name === '深海降噪耳机'), '未提及保留')
 
     // UI 层：初始化建产品板（board.json 无 items → 引导卡 2 张；目录 内置 1 + 9 = 10；成员内置 2）
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
     await waitFor(
       () =>
         ev(() => {
@@ -2084,7 +2150,7 @@ async function main() {
     ok(opts.some((o) => o.value === 'P-2002' && o.text.includes('深海降噪耳机')), '未提及在选择器')
 
     // 回数据板继续后续用例
-    await page.goto(dataUrl(), { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, dataUrl())
     await waitFor(async () => (await colCount()) === 61, 9000, '回数据板')
     await sleep(1000)
   })
@@ -2120,7 +2186,7 @@ async function main() {
     const faceB = await cardFaceProduct(v6Title)
     ok(faceB && faceB.text === '不明' && faceB.title === null, '清空后卡面「不明」且无 tooltip')
     eq((await storedItem(dataId, v6Title))?.product_id, '', '落库空 product_id')
-    await page.reload({ waitUntil: 'domcontentloaded' })
+    await reloadApp(page)
     await waitFor(async () => (await colCount()) === 61, 9000, '重载渲染')
     await sleep(1000)
     eq((await cardFaceProduct(v6Title))?.text, '不明', 'reload 保持「不明」')
@@ -2463,7 +2529,7 @@ async function main() {
     const pg = await ctx.newPage()
     await pg.setViewport(VIEW)
     try {
-      await pg.goto(`${WEB}/b/${guideId}`, { waitUntil: 'domcontentloaded' })
+      await gotoApp(pg, `${WEB}/b/${guideId}`)
       await pg.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
       await pg.waitForFunction((n) => document.querySelector('[data-gate-name]')?.textContent === n, { timeout: 10000 }, GUIDE_NAME)
       await pg.screenshot({ path: path.join(VDIR, 'board-v15-gate.png') })
@@ -2497,7 +2563,7 @@ async function main() {
     const pageB = await ctxB.newPage()
     await pageB.setViewport(VIEW)
     try {
-      await pageB.goto(dataUrl(), { waitUntil: 'domcontentloaded' })
+      await gotoApp(pageB, dataUrl())
       await pageB.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
       await pageB.waitForFunction((n) => document.querySelector('[data-gate-name]')?.textContent === n, { timeout: 10000 }, DATA_NAME)
       await clearAndTypeOn(pageB, '[data-gate-password]', DATA_PASS)
@@ -2522,7 +2588,7 @@ async function main() {
     const pageB = await ctxB.newPage()
     await pageB.setViewport(VIEW)
     try {
-      await pageB.goto(dataUrl(), { waitUntil: 'domcontentloaded' })
+      await gotoApp(pageB, dataUrl())
       await pageB.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
       await clearAndTypeOn(pageB, '[data-gate-password]', DATA_PASS)
       await pageB.click('[data-gate-submit]')
@@ -2579,7 +2645,7 @@ async function main() {
     let step = 'init'
     try {
       step = 'B 进板'
-      await pageB.goto(dataUrl(), { waitUntil: 'domcontentloaded' })
+      await gotoApp(pageB, dataUrl())
       await pageB.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
       await clearAndTypeOn(pageB, '[data-gate-password]', DATA_PASS)
       await pageB.click('[data-gate-submit]')
@@ -2707,7 +2773,7 @@ async function main() {
 
   await t('t53 删除看板全链路（旧 v15DeleteBoard；t19 之外补 403/404/不存在页）', async () => {
     ok(prodId, '前置 t40 就绪')
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => document.querySelectorAll('[data-board-row]').length === 4), 8000, '列表 4 块板（主/引导/数据/产品）')
     await sleep(500)
     await page.screenshot({ path: path.join(VDIR, 'board-v15-home.png') })
@@ -2745,7 +2811,7 @@ async function main() {
     eq(got.status, 404, 'GET 已删板 404')
 
     // 旧链接（本标签 sessionStorage 留有建板 token → 全量 GET 404 → 不存在页）
-    await page.goto(`${WEB}/b/${prodId}`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${prodId}`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => !!document.querySelector('[data-board-notfound]')), 10000, '看板不存在页')
     prodId = null // 已物理删除，清理段跳过
   })
@@ -2754,7 +2820,7 @@ async function main() {
   // v2-M1：F1 背景色 / F2 置灰·点亮 / F5 搜索 / F6 分享链接（共用定位机制）
   // ------------------------------------------------------------------
   await t('t59 F1 背景色：色板设置 sky → 落盘为 hex；选「默认」移除字段', async () => {
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '主板渲染 61 列')
     // 取窗口内第一张渲染卡作为操作对象（前序用例可能挪过日期，标题不变）
     const title = await ev(
@@ -2941,8 +3007,8 @@ async function main() {
 
     // 带 #card= 打开（先回列表再进板，避免同 URL 仅 hash 变化不触发整页重载）：
     // 目标是未分组列的离群卡 e2e-c01（today-90）——视野应滚到未分组列并高亮
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200#card=e2e-c01`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200#card=e2e-c01`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '看板正常打开（61 日期列）')
     await waitFor(() => groupColVisible('ungrouped'), 9000, '未分组列滚入视口')
     await waitFor(
@@ -2952,8 +3018,8 @@ async function main() {
     )
 
     // 已删除/不存在的卡片 → 正常开板 + toast「卡片不存在或已删除」
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200#card=e2e-c99`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200#card=e2e-c99`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '看板正常打开（不白屏）')
     await waitFor(
       () => ev(() => document.querySelector('[data-toast]')?.textContent === '卡片不存在或已删除'),
@@ -2977,7 +3043,7 @@ async function main() {
     const auth2 = await api('POST', `/boards/${migId}/auth`, { password: MAIN_PASS })
     const migToken = auth2.body.token
     await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${migId}`, migToken)
-    await page.goto(`${WEB}/b/${migId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${migId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '迁移后 61 日期列')
     // 未分组虚拟列恒第一（无 data-date）
     const firstCol = await ev(() => {
@@ -3010,7 +3076,7 @@ async function main() {
     )
     // 幂等：reload 后 groups id 集合不变（确定性 migrateGroupId + 已落盘不再重迁）
     const ids0 = d1.groups.map((g) => g.id).join(',')
-    await page.goto(`${WEB}/b/${migId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${migId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, 'reload 后仍 61 列')
     const d2 = await getDoc()
     eq(d2.groups.map((g) => g.id).join(','), ids0, '迁移幂等：组 id 集合不变')
@@ -3024,7 +3090,7 @@ async function main() {
   })
 
   await t('t64 统一分组：列头行内改名 / Esc 取消 / grip 整列排序 / 删除确认归未分组 / 新建上限', async () => {
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '主板 61 日期列')
     const sd0 = await storedDoc(boardId)
     eq(sd0.groups.length, 61, '迁移组已随同步落盘（61）')
@@ -3143,7 +3209,7 @@ async function main() {
     const victimTitle = victim.title
     victim.group_id = 'grp-ghost'
     await api('PUT', `/boards/${boardId}`, { doc: dd }, token)
-    await page.goto(`${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${boardId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => !!document.querySelector('[data-group-column="ungrouped"]')), 9000, '看板重载')
     await waitFor(async () => (await cardGroupKey(victimTitle)) === 'ungrouped', 6000, '悬空卡归未分组列')
     await waitFor(
@@ -3418,7 +3484,7 @@ async function main() {
     relId = mk.body.board_id
     relToken.v = (await api('POST', `/boards/${relId}/auth`, { password: MAIN_PASS })).body.token
     await ev((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${relId}`, relToken.v)
-    await page.goto(`${WEB}/b/${relId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${relId}?poll=1000&push=200`, { waitUntil: 'domcontentloaded' })
     await waitFor(async () => (await colCount()) === 61, 9000, '关系板加载 61 列')
 
     // 前序添加：E2E 卡 06 ← E2E 卡 05（点击候选）
@@ -3534,12 +3600,12 @@ async function main() {
     )
 
     // hash 直达：#view=graph 刷新保持关系视图（先回列表避免同 URL 仅 hash 变化不重载）
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
-    await page.goto(`${WEB}/b/${relId}?poll=1000&push=200#view=graph`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${relId}?poll=1000&push=200#view=graph`, { waitUntil: 'domcontentloaded' })
     await waitFor(() => ev(() => !!document.querySelector('[data-graph-view]')), 9000, '#view=graph 直达关系视图')
     // #view=graph&card= 定位节点一次性高亮
-    await page.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
-    await page.goto(`${WEB}/b/${relId}?poll=1000&push=200#view=graph&card=e2e-c08`, {
+    await gotoApp(page, `${WEB}/`, { waitUntil: 'domcontentloaded' })
+    await gotoApp(page, `${WEB}/b/${relId}?poll=1000&push=200#view=graph&card=e2e-c08`, {
       waitUntil: 'domcontentloaded',
     })
     await waitFor(
@@ -3770,6 +3836,126 @@ async function main() {
       return d?.items.find((i) => i.id === 'e2e-c04')?.pre_ids?.includes('e2e-c05')
     }, 6000, '节点→暂存卡建边落盘（c05 为 c04 前序）')
     await waitFor(() => ev(() => !!document.querySelector('[data-graph-node="e2e-c04"]')), 4000, 'c04 升入分层图')
+  })
+
+  // ---------------------------------------------------------------------------
+  // OAuth Phase 0 专项（t75–t79）：统一账号登录门（mock Auth :5196；docs/oauth-auth-integration.md）
+  // 全部用独立浏览器上下文（主 page 已有内存会话，看不到门）；raw goto 观察门，gotoApp 走登录。
+  // ---------------------------------------------------------------------------
+  await t('t75 未登录门挡：首页与 /b/:id 深链都先显示统一登录页', async () => {
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      await pg.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+      await pg.waitForFunction(() => !!document.querySelector('[data-oauth-login]'), { timeout: 10000 })
+      ok(await pg.evaluate(() => !!document.querySelector('[data-auth-gate]')), '首页显示登录门')
+      ok(await pg.evaluate(() => !document.querySelector('[data-home]')), '未登录不渲染首页内容')
+      await pg.goto(`${WEB}/b/${boardId}`, { waitUntil: 'domcontentloaded' })
+      await pg.waitForFunction(() => !!document.querySelector('[data-oauth-login]'), { timeout: 10000 })
+      ok(await pg.evaluate(() => !!document.querySelector('[data-auth-gate]')), '深链显示登录门')
+      ok(await pg.evaluate(() => !document.querySelector('[data-gate]')), '未登录到不了看板密码门')
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  await t('t76 完整登录流程：深链 → 点登录 → return_to 回落深链（query 保留、地址栏无 code/state）', async () => {
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      const deep = `${WEB}/b/${boardId}?poll=1000&push=200`
+      await pg.goto(deep, { waitUntil: 'domcontentloaded' })
+      await pg.waitForFunction(() => !!document.querySelector('[data-oauth-login]'), { timeout: 10000 })
+      await ensureOauthLogin(pg) // 点登录 → mock authorize 302 → code exchange → replaceLocation(return_to)
+      await pg.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
+      const url = pg.url()
+      ok(url.startsWith(`${WEB}/b/${boardId}?poll=1000&push=200`), `回落深链保留 query（${url}）`)
+      ok(!/[?&](code|state)=/.test(url), '地址栏不留 code/state')
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  await t('t77 错误 state：拒绝回调且不交换 code（token 计数不变）', async () => {
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      await pg.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+      await pg.waitForFunction(() => !!document.querySelector('[data-oauth-login]'), { timeout: 10000 })
+      // 手写 pending（state 与回调不符）：模拟 CSRF / 串会话回调
+      await pg.evaluate(() => {
+        sessionStorage.setItem(
+          'timeline:oauth:pending',
+          JSON.stringify({ state: 'expected-state', code_verifier: 'mock-verifier', return_to: '/' }),
+        )
+      })
+      const before = getMockOauthStats().token
+      await pg.goto(`${WEB}/oauth/callback?code=mock-code-x&state=wrong-state`, { waitUntil: 'domcontentloaded' })
+      await pg.waitForFunction(() => !!document.querySelector('[data-oauth-error]'), { timeout: 10000 })
+      const msg = await pg.evaluate(() => document.querySelector('[data-oauth-error]')?.textContent ?? '')
+      ok(msg.includes('登录状态校验失败'), `state 不匹配文案（${msg}）`)
+      eq(getMockOauthStats().token, before, 'state 错误不调 token endpoint')
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  await t('t78 error 分支与无 pending 回调：直接失败且不调 token endpoint', async () => {
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      const before = getMockOauthStats().token
+      await pg.goto(`${WEB}/oauth/callback?error=access_denied`, { waitUntil: 'domcontentloaded' })
+      await pg.waitForFunction(() => !!document.querySelector('[data-oauth-error]'), { timeout: 10000 })
+      const msg = await pg.evaluate(() => document.querySelector('[data-oauth-error]')?.textContent ?? '')
+      eq(msg, '已取消登录', 'access_denied 文案')
+      ok(await pg.evaluate(() => !!document.querySelector('[data-oauth-retry]')), '提供重新登录入口')
+      // 无 pending 的 code 回调同样失败（pending 缺失 / 已被一次性消费）
+      await pg.goto(`${WEB}/oauth/callback?code=mock-code-99&state=no-pending`, { waitUntil: 'domcontentloaded' })
+      await pg.waitForFunction(() => !!document.querySelector('[data-oauth-error]'), { timeout: 10000 })
+      const msg2 = await pg.evaluate(() => document.querySelector('[data-oauth-error]')?.textContent ?? '')
+      ok(msg2.includes('登录状态已过期'), `无 pending 文案（${msg2}）`)
+      eq(getMockOauthStats().token, before, '两个失败分支均不调 token endpoint')
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  await t('t79 登录后看板密码门照旧 + 退出登录后门复现', async () => {
+    // 自建专用空板：gateId 已被 t19 删除、smallId 被 t56 删除、boardId 列结构被 t64 改过，
+    // 套件末尾没有可复用的「61 列空板」；tmp sqlite 随 teardown 整删，无需单独清理
+    const doc = { items: [], orders: {}, products: [], members: [], meta: { name: 'E2E OAuth 板', created_at: new Date().toISOString() } }
+    const mk = await api('POST', '/boards', { name: 'E2E OAuth 板', password: GATE_PASS, doc })
+    eq(mk.status, 201, '创建 OAuth 专用板')
+    const oauthBoardId = mk.body.board_id
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      await gotoApp(pg, `${WEB}/b/${oauthBoardId}?poll=1000&push=200`)
+      await pg.waitForFunction(() => !!document.querySelector('[data-gate]'), { timeout: 10000 })
+      await pg.waitForSelector('[data-gate-password]', { timeout: 10000 })
+      await clearAndTypeOn(pg, '[data-gate-password]', GATE_PASS)
+      await pg.waitForFunction(() => document.querySelector('[data-gate-submit]')?.disabled === false, { timeout: 10000 })
+      await pg.click('[data-gate-submit]')
+      await pg.waitForFunction(
+        () => document.querySelectorAll('.h-full.overflow-auto [data-date]').length === 61,
+        { timeout: 30000 },
+      )
+      await gotoApp(pg, `${WEB}/`)
+      await pg.waitForFunction(() => !!document.querySelector('[data-home]'), { timeout: 10000 })
+      ok(await pg.evaluate(() => !!document.querySelector('[data-oauth-logout]')), '首页有退出入口')
+      await pg.evaluate(() => document.querySelector('[data-oauth-logout]')?.click())
+      await pg.waitForFunction(() => !!document.querySelector('[data-auth-gate]'), { timeout: 5000 })
+      ok(await pg.evaluate(() => !!document.querySelector('[data-oauth-login]')), '退出后登录门复现')
+      ok(await pg.evaluate(() => !document.querySelector('[data-home]')), '退出后不渲染首页内容')
+    } finally {
+      await ctx.close()
+    }
   })
 
   // 清掉全部测试板（不留测试数据；产品板已被 t53 删除）
