@@ -1,5 +1,6 @@
-# DAO 认证能力开发需求（Timeline 看板 tag ACL 项目）v3
+# DAO 认证能力开发需求（Timeline 看板 tag ACL 项目）v3.1
 
+> 日期：2026-09-22（v3.1：新增 §11 场景澄清——第三方 agent 已接 DAO 登录时能否复用其 token）
 > 日期：2026-09-22（v3 定稿，移交 DAO 开发团队）
 > 发起方：Timeline 团队
 > 背景：Timeline 看板实施「OAuth 统一主体 + tag ACL」方案（oauth-tag-acl-plan.md v4 已定稿）。agent 认证部分经多轮评审收敛为**单一 Token Delegation 模型**：任何 agent 执行时背后都有一个人类授权，agent 的访问范围 = 授权人的范围。本文档列出需要 DAO（angrymiao-auth）提供的能力。
@@ -145,3 +146,42 @@ Timeline 侧无硬性期限，请 DAO 给出各项的可联调时间。
 - audit_log：记录 agent id + 授权人 id 双字段；
 - agent 收到 401/403：引导授权人重新授权的交互流程；
 - 其余（AND 不变量、纯选择制 tag 编辑、fail-closed、TTL 缓存）零改动。
+
+
+## 11. 场景澄清：第三方 agent 已接入 DAO 登录，能否直接复用其 token 操作 Timeline？
+
+**结论：不能。必须取得针对 Timeline 的独立授权，再通过 token exchange 换取专用 delegation token。**
+
+### 场景
+
+第三方 agent X 自身已接入 DAO OAuth（员工在 agent X 上通过 DAO 登录，agent X 持有员工的 access token）。此时 agent X 要操作 Timeline 卡片。
+
+### 为什么直接挪用不成立
+
+1. **同意语义不匹配**：员工在 agent X 登录时的 consent 是「允许 agent X 知道我是谁」（scope = profile/phone，aud = agent X），不包含「允许它操作我的 Timeline 看板」。挪用等于把登录身份的同意静默升级为操作数据的权力。
+2. **audience 校验会拒绝**：Timeline 按 R1.6 校验 `aud`，为 agent X 铸造的 token 在 Timeline 门口被拒。若 Timeline 不校验 aud，则**每一个接过 DAO OAuth 的应用**都能静默以员工身份读写 Timeline——Timeline 沦为 confused deputy。
+3. **撤销粒度崩溃**：挪用时「agent X 的 Timeline 权限」与「员工在 agent X 的登录态」是同一个 token，收回 Timeline 权限就得杀掉整个登录会话。独立授权后员工可在 DAO 单独撤销「agent X 代我操作 Timeline」（R1.5）。
+
+### 正确流程
+
+```text
+首次（一次性 consent）：
+  员工在 agent X 点击「连接 Timeline」
+    → DAO 出示 consent：「agent X 请求代你操作 Timeline 看板」
+    → 员工同意 → DAO 存授权记录（员工 × agent X × timeline scope）
+
+之后每次（自动，员工无感知）：
+  agent X 持注册凭证 + 员工的 subject token
+    → 调 DAO token exchange（R1.1 认证调用方、校验授权记录）
+    → 换取 aud=timeline、sub=agent:X、act.sub=user:员工 的 delegation token
+    → 调 Timeline API，Timeline 按该员工的 task-tag 集合裁决
+```
+
+### 对应防线的需求条目
+
+| 防线 | 条目 |
+|---|---|
+| 换取端点认证调用方 + 校验授权记录 | R1.1 |
+| token 受众限定 Timeline，防止跨服务重放 | R1.6 |
+| 员工可单独撤销对某 agent 的 Timeline 授权 | R1.5 |
+| 审计可区分「员工本人」与「agent X 代行」 | R1.3（agent 身份保留在 `sub`） |
