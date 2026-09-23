@@ -33,6 +33,8 @@ export interface OauthSession {
   /** epoch ms；过期即视为无会话 */
   expiresAt: number
   scope: string
+  /** 登录用户显示名（解码 JWT payload 的 user_name；token 无此 claim 时为空串） */
+  displayName: string
 }
 
 interface PendingAuth {
@@ -54,6 +56,12 @@ export function getOauthSession(): OauthSession | null {
   return session && session.expiresAt > Date.now() ? session : null
 }
 
+/** 当前登录用户显示名；无会话或 token 未携带 user_name 时返回 null（调用方回退自报/匿名） */
+export function getOauthDisplayName(): string | null {
+  const s = getOauthSession()
+  return s && s.displayName ? s.displayName : null
+}
+
 export function oauthLogout(): void {
   session = null
   emit()
@@ -73,6 +81,24 @@ const randomString = (nbytes: number): string => b64url(crypto.getRandomValues(n
 async function sha256b64url(text: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
   return b64url(new Uint8Array(digest))
+}
+
+/**
+ * 解码 JWT payload（base64url → UTF-8 JSON）。仅作展示用途取 user_name，不验签——
+ * author 署名本就是客户端自报语义（docs/decisions.md），验签是 Auth/server 侧职责。
+ * 非三段式或解析失败返回 null。
+ */
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    const b64 = parts[1].replace(/-/g, '+').replace(/_/g, '/')
+    const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0))
+    const payload = JSON.parse(new TextDecoder().decode(bytes)) as unknown
+    return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -172,10 +198,16 @@ export async function exchangeCode(code: string, codeVerifier: string): Promise<
     throw new Error('登录服务响应异常，请重新登录')
   }
   const expiresIn = typeof j.expires_in === 'number' && j.expires_in > 0 ? j.expires_in : 3600
+  // user_name 为 Auth JWT 的可选 claim（docs/oauth-auth-integration.md §7.3）；缺失时留空串，
+  // 评论署名等消费方自行回退
+  const payload = decodeJwtPayload(j.access_token)
+  const displayName =
+    payload && typeof payload.user_name === 'string' ? payload.user_name.trim() : ''
   session = {
     accessToken: j.access_token,
     expiresAt: Date.now() + expiresIn * 1000,
     scope: typeof j.scope === 'string' ? j.scope : '',
+    displayName,
   }
   emit()
 }

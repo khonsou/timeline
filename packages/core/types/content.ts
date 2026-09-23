@@ -34,15 +34,15 @@ export const BG_COLOR_PRESETS: BgColorPreset[] = [
 ]
 
 /**
- * 匿名评论（v2-M4，可缺省）：无用户体系，author 为客户端自报署名
- * （沿用 ChangeSetActor 的自报身份语义——防君子不防小人，未来 OAuth 实装后替换来源）。
- * 空串 author = 未署名（UI 显示「匿名」）；created_at 为 ISO 字符串（与 publish_at 风格一致）。
+ * 评论（v2-M4，可缺省）：author 为署名显示名——OAuth 登录态下由前端取登录用户的
+ * user_name（web/src/lib/auth.ts），无会话时回退客户端自报署名（空串 = 未署名，
+ * UI 显示「匿名」）；服务端不验身份，仍是自报语义。created_at 为 ISO 字符串（与 publish_at 风格一致）。
  * 演进铁律同上：只追加字段，不改变已有字段语义（注意 comment 是「备注/复盘」，与本类型无关）。
  */
 export interface CardComment {
   /** 评论条目 id（卡片内唯一即可，客户端 crypto.randomUUID() 生成） */
   id: string
-  /** 自报署名；空串 = 未署名 */
+  /** 署名显示名（登录态 = OAuth user_name，否则自报）；空串 = 未署名 */
   author: string
   /** 评论正文（保留换行，不 trim） */
   body: string

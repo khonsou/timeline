@@ -18,6 +18,7 @@ import { type Orders } from '@timeline/core/board-view'
 import { STATUSES } from '@timeline/core/import-core'
 import { formatCompact, formatPublishAt, formatRoi } from '@timeline/core/format'
 import { matchCards } from '@/lib/card-search'
+import { getOauthDisplayName } from '@/lib/auth'
 
 type EditField =
   | 'publish_at'
@@ -42,7 +43,7 @@ interface DetailDialogProps {
   onSetPreIds: (id: string, preIds: string[]) => void
   /** chip 点击跳转定位（复用 F5/F6 定位机制；两视图通用，由 BoardPage 路由） */
   onLocateCard: (id: string) => void
-  /** v2-M4 匿名评论：新增（id / created_at 由 BoardPage 生成）与删除（匿名场景全员可删，与看板密码=全量写权限一致） */
+  /** v2-M4 评论：新增（id / created_at 由 BoardPage 生成，author 登录态取 OAuth 显示名）与删除（全员可删，与看板密码=全量写权限一致） */
   onAddComment: (cardId: string, draft: { author: string; body: string }) => void
   onDeleteComment: (cardId: string, commentId: string) => void
 }
@@ -75,8 +76,10 @@ function linkify(text: string): React.ReactNode[] {
 }
 
 // ---------------------------------------------------------------------------
-// v2-M4 匿名评论小工具：时间显示 + 署名前缀解析（单输入框方案——placeholder 引导
-// 「署名:内容」，解析出 author；无前缀 = 匿名，author 为空串）
+// v2-M4 评论小工具：时间显示 + 署名前缀解析（单输入框方案）。
+// 前缀解析仅用于无 OAuth 会话的回退场景（placeholder 引导「署名:内容」，解析出
+// author；无前缀 = 匿名，author 为空串）；登录态下 author 由 OAuth session 供给，
+// 输入全文作为正文，不再解析前缀。
 // ---------------------------------------------------------------------------
 
 /** 评论时间：24h 内相对时间，更早显示「M月D日 HH:mm」；非法时间原样显示 */
@@ -271,7 +274,7 @@ export default function DetailDialog({
   const [draftTitle, setDraftTitle] = useState('')
   const [editingComment, setEditingComment] = useState(false)
   const [draftComment, setDraftComment] = useState('')
-  // v2-M4 匿名评论：输入草稿 + 聚焦态（聚焦时 Esc 不关弹窗，纳入弹窗层拦截）
+  // v2-M4 评论：输入草稿 + 聚焦态（聚焦时 Esc 不关弹窗，纳入弹窗层拦截）
   const [commentDraft, setCommentDraft] = useState('')
   const [commentFocus, setCommentFocus] = useState(false)
   // 6 项字段的统一 inline 编辑状态
@@ -333,13 +336,16 @@ export default function DetailDialog({
   }
   const cancelComment = () => setEditingComment(false)
 
-  // ---------------- v2-M4 匿名评论 ----------------
+  // ---------------- v2-M4 评论 ----------------
   const comments = useMemo(() => card?.comments ?? [], [card?.comments])
+  // OAuth 登录态：有显示名则自动署名（输入全文作正文，不解析「署名:内容」前缀）；
+  // 无会话（页面刷新掉内存 session）时回退自报署名/匿名
+  const oauthName = getOauthDisplayName()
   const sendComment = () => {
     if (!card) return
     const raw = commentDraft.trim()
     if (!raw) return
-    onAddComment(card.id, parseCommentDraft(raw))
+    onAddComment(card.id, oauthName ? { author: oauthName, body: raw } : parseCommentDraft(raw))
     setCommentDraft('')
   }
 
@@ -871,8 +877,8 @@ export default function DetailDialog({
                 )}
               </div>
 
-              {/* 5.4 评论（v2-M4 匿名评论，doc 内嵌 comments[]）：列表 + 单输入框
-                  （placeholder 引导「署名:内容」）；与上方「备注/复盘」明确分区，命名不复用 comment */}
+              {/* 5.4 评论（v2-M4，doc 内嵌 comments[]）：列表 + 单输入框；登录态自动署名，
+                  无会话时输入框 placeholder 引导「署名:内容」；与上方「备注/复盘」明确分区，命名不复用 comment */}
               <div className="mt-4" data-comments>
                 <p className="text-[10px] text-slate-400">
                   评论
@@ -932,7 +938,11 @@ export default function DetailDialog({
                         e.currentTarget.blur()
                       }
                     }}
-                    placeholder="你是谁？想说什么？—— 例：小李：这个素材数据很好"
+                    placeholder={
+                      oauthName
+                        ? `以「${oauthName}」的身份发表评论…`
+                        : '你是谁？想说什么？—— 例：小李：这个素材数据很好'
+                    }
                     className="min-h-9 flex-1 resize-none rounded-lg border-slate-200 bg-slate-50 px-2.5 py-1.5 text-[13px] leading-relaxed text-slate-700 focus-visible:bg-white"
                   />
                   <Button

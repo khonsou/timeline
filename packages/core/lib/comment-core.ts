@@ -1,5 +1,7 @@
 /**
- * 匿名评论（v2-M4）：CardComment 的校验 / 归一化 / 并发合并，三端共用同一口径。
+ * 评论（v2-M4）：CardComment 的校验 / 归一化 / 并发合并，三端共用同一口径。
+ * author 为署名显示名（web 登录态取 OAuth user_name，其余场景自报，空串 = 未署名），
+ * 校验口径不验身份、只验形状。
  *
  * 三个入口对应三种场景：
  * - normalizeComments：写入口径（PATCH / change-set create·patch），严格校验，

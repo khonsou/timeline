@@ -80,6 +80,7 @@ import {
   setToken,
 } from '@/lib/api'
 import { buildBoardUrl, navigate, parseBoardHash } from '@/lib/router'
+import { getOauthDisplayName } from '@/lib/auth'
 
 // ---------------------------------------------------------------------------
 // 密码门
@@ -678,8 +679,9 @@ function SyncedBoard({
   }
 
   // ------------------------------------------------------------------
-  // v2-M4 匿名评论：走 updateCard 写 comments 数组（整组替换；id/created_at 在此生成，
-  // author 为客户端自报署名——防君子不防小人，未来 OAuth 实装后替换来源）。
+  // v2-M4 评论：走 updateCard 写 comments 数组（整组替换；id/created_at 在此生成）。
+  // author 来源：OAuth 登录态下自动取登录用户显示名（getOauthDisplayName），
+  // 无会话（刷新掉登录）时回退 UI 自报署名（空串 = 匿名）；服务端仍不验身份。
   // 删除置 undefined = 移除字段（updateCard 已有 undefined 删键逻辑，保持 doc 干净）。
   // ------------------------------------------------------------------
   const addComment = (id: string, draft: { author: string; body: string }) => {
@@ -687,7 +689,7 @@ function SyncedBoard({
     if (!c) return
     const comment: CardComment = {
       id: crypto.randomUUID(),
-      author: draft.author,
+      author: getOauthDisplayName() ?? draft.author,
       body: draft.body,
       created_at: new Date().toISOString(),
     }
