@@ -1,6 +1,7 @@
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
-import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import { DIALOG_ANIM_CLASSES, Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import type { SkippedRow } from '@timeline/core/import-core'
 
 /** UI 增量导入的结果报告（成功与失败两态；失败时不落任何数据） */
@@ -34,7 +35,7 @@ export default function ImportResultDialog({ report, onClose }: ImportResultDial
         <DialogOverlay className="bg-slate-900/40 backdrop-blur-sm" />
         <DialogPrimitive.Content
           data-import-report
-          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none"
+          className={`${DIALOG_ANIM_CLASSES} fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur outline-none`}
         >
           <DialogTitle className="sr-only">导入结果</DialogTitle>
           {report && (
@@ -56,7 +57,7 @@ export default function ImportResultDialog({ report, onClose }: ImportResultDial
               </div>
 
               {/* 内容区（独立滚动） */}
-              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4 [scrollbar-color:rgba(148,163,184,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300/50 [&::-webkit-scrollbar-track]:bg-transparent">
+              <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4 scrollbar-thin-fade">
                 {report.error ? (
                   <>
                     <p className="rounded-xl border border-rose-100 bg-rose-50/60 px-3 py-2.5 text-[13px] text-rose-600">
@@ -152,8 +153,8 @@ export default function ImportResultDialog({ report, onClose }: ImportResultDial
 
               {/* 底部（固定不滚） */}
               <div className="flex shrink-0 justify-end border-t border-slate-100 px-6 py-3">
-                <DialogPrimitive.Close className="rounded-lg bg-slate-900 px-3 py-1.5 text-sm text-white transition-colors hover:bg-slate-700">
-                  知道了
+                <DialogPrimitive.Close asChild>
+                  <Button>知道了</Button>
                 </DialogPrimitive.Close>
               </div>
             </>

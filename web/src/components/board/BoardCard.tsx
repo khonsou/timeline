@@ -274,7 +274,7 @@ function CardView(p: CardViewProps) {
             {/* 互动率细进度条：一眼看出内容质量 */}
             <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-slate-100">
               <div
-                className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-500"
+                className="h-full rounded-full bg-gradient-to-r from-indigo-300 to-indigo-500"
                 style={{ width: `${Math.round(rate * 100)}%` }}
               />
             </div>

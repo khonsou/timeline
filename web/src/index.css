@@ -35,7 +35,7 @@
   }
 
   .dark {
-    --background: 240 10% 3.9%;
+    --background: 0 0% 0%; /* A 期视觉升级：暗色页面底纯黑化（禁藏蓝） */
     --foreground: 0 0% 98%;
     --card: 240 10% 3.9%;
     --card-foreground: 0 0% 98%;
@@ -78,29 +78,43 @@
  * v20 暗色主题：业务组件硬编码色板的 CSS 变量双主题值
  * （tailwind.config.js 中 white/slate/indigo/rose/emerald/violet/sky/amber 的已用色阶
  *  均编译为 rgb(var(--c-*) / <alpha-value>)）。
- * :root = Tailwind 默认亮色原值（与改造前逐色一致，亮色零回归）；
- * .dark  = 同色相暗色映射：结构色（slate/white）亮度反转，强调色浅阶转深色洗底、
- *          深阶文字转浅阶提亮的可读性取向。
+ * A 期视觉升级（2026-09，visual-upgrade-plan.md §1）：
+ *  - indigo 变量值整体替换为信号橙 ramp（锚 #F64302）；类名不动，业务代码零改动，
+ *    indigo 类名从此读作「强调色」语义，视觉为橙；
+ *  - slate 变量值迁移为暖灰/灰紫倾向（保持各档明度角色）；
+ *  - rose/emerald/amber/violet/sky 功能语义色值不动。
+ * :root = 亮色表；.dark = 纯黑底重映射（结构色亮度反转、偏蓝色值全部中性化/暖化，
+ *          强调色 400/500 附近提亮保可读性）。
  * ------------------------------------------------------------------------- */
 @layer base {
   :root {
+    /* 页面画布底色（A 期 token 化，取代 bg-[#f4f5f7] 硬编码 ×7 与暗色补丁） */
+    --page-bg: #F0EDED;
+    /* 动效令牌：快速启动、缓慢落定；时长三档 150 press / 200 micro / 250 surface */
+    --ease-industrial: cubic-bezier(0.16, 1, 0.3, 1);
+    /* BoardGraph 边色 / 点亮光晕（rgb 三通道，供 stroke / rgba() 使用） */
+    --graph-edge: 207 203 210;        /* 普通边 = 新 slate-300 */
+    --graph-edge-front: 246 67 2;     /* 推进前线 = 信号橙 #F64302 */
+    --graph-edge-broken: 245 158 11;  /* 环降级断边 = amber #f59e0b（语义保留） */
+    --graph-lit-glow: 16 185 129;     /* 点亮光晕 = emerald（语义保留） */
     --c-white: 255 255 255;
-    --c-slate-50: 248 250 252;
-    --c-slate-100: 241 245 249;
-    --c-slate-200: 226 232 240;
-    --c-slate-300: 203 213 225;
-    --c-slate-400: 148 163 184;
-    --c-slate-500: 100 116 139;
-    --c-slate-600: 71 85 105;
-    --c-slate-700: 51 65 85;
-    --c-slate-800: 30 41 59;
-    --c-slate-900: 15 23 42;
-    --c-indigo-50: 238 242 255;
-    --c-indigo-200: 199 210 254;
-    --c-indigo-300: 165 180 252;
-    --c-indigo-400: 129 140 248;
-    --c-indigo-500: 99 102 241;
-    --c-indigo-600: 79 70 229;
+    --c-slate-50: 247 246 248;
+    --c-slate-100: 240 237 237;
+    --c-slate-200: 232 229 233;
+    --c-slate-300: 207 203 210;
+    --c-slate-400: 158 153 166;
+    --c-slate-500: 110 104 121;
+    --c-slate-600: 82 76 92;
+    --c-slate-700: 62 57 71;
+    --c-slate-800: 38 34 45;
+    --c-slate-900: 23 20 27;
+    /* indigo 类名 = 信号橙 ramp（锚 500 #F64302） */
+    --c-indigo-50: 254 243 238;
+    --c-indigo-200: 251 201 179;
+    --c-indigo-300: 248 163 130;
+    --c-indigo-400: 245 117 71;
+    --c-indigo-500: 246 67 2;
+    --c-indigo-600: 217 58 2;
     --c-rose-50: 255 241 242;
     --c-rose-100: 255 228 230;
     --c-rose-200: 254 205 211;
@@ -126,23 +140,29 @@
   }
 
   .dark {
-    --c-white: 20 26 36; /* bg-white → 暗色卡片面；text-white → 深字（配翻转后的浅底） */
-    --c-slate-50: 23 30 42;
-    --c-slate-100: 31 39 53;
-    --c-slate-200: 43 52 68;
-    --c-slate-300: 100 110 132; /* 文字/边框两用色阶的折中值：暗底上约 3.6:1 可读 */
-    --c-slate-400: 139 149 167;
-    --c-slate-500: 154 164 182;
-    --c-slate-600: 179 188 201;
-    --c-slate-700: 211 218 228;
-    --c-slate-800: 230 234 241;
-    --c-slate-900: 240 243 248;
-    --c-indigo-50: 32 41 74;
-    --c-indigo-200: 66 78 138;
-    --c-indigo-300: 96 108 190;
-    --c-indigo-400: 129 140 248;
-    --c-indigo-500: 99 102 241;
-    --c-indigo-600: 165 180 252;
+    --page-bg: #000000; /* 纯黑底（禁藏蓝） */
+    --graph-edge: 82 76 92;         /* 黑底上的普通边 = 新 slate-600 明度 */
+    --graph-edge-front: 255 106 51; /* 推进前线暗底提亮 #FF6A33 */
+    --graph-edge-broken: 245 158 11;
+    --graph-lit-glow: 52 211 153;   /* 黑底光晕提亮（emerald 语义不变） */
+    --c-white: 23 20 27; /* bg-white → 纯黑上的近黑暖灰卡片面；text-white → 深字（配翻转后的浅底） */
+    --c-slate-50: 30 27 35;
+    --c-slate-100: 38 34 45;
+    --c-slate-200: 62 57 71;
+    --c-slate-300: 106 101 117; /* 文字/边框两用色阶的折中值：暗底上约 3.6:1 可读 */
+    --c-slate-400: 150 144 158;
+    --c-slate-500: 165 159 173;
+    --c-slate-600: 190 184 196;
+    --c-slate-700: 216 212 221;
+    --c-slate-800: 233 230 236;
+    --c-slate-900: 244 242 246;
+    /* 强调橙暗色映射：浅阶转深色洗底、深阶文字提亮 */
+    --c-indigo-50: 52 20 6;
+    --c-indigo-200: 140 50 14;
+    --c-indigo-300: 190 64 16;
+    --c-indigo-400: 255 106 51;
+    --c-indigo-500: 246 67 2;
+    --c-indigo-600: 255 138 92;
     --c-rose-50: 56 28 35;
     --c-rose-100: 71 35 44;
     --c-rose-200: 99 50 62;
@@ -168,15 +188,57 @@
   }
 }
 
-/* 暗色冲突修正（非 @layer，确保压过 utilities）：
- * 1) 页面画布任意值 bg-[#f4f5f7] 不经色板，暗色下直接覆盖；
- * 2) 弹窗遮罩 bg-slate-900/40 与标题文字同用 slate-900——变量翻转后遮罩会发白，
- *    暗色下改回深色遮罩 */
-.dark .bg-\[\#f4f5f7\] {
-  background-color: #0d1117;
-}
+/* 暗色遮罩修正（非 @layer，确保压过 utilities）：
+ * 弹窗遮罩 bg-slate-900/40 与标题文字同用 slate-900——变量翻转后遮罩会发白，
+ * 暗色下改回纯黑遮罩（原偏蓝 #020617 已中性化）。
+ * （原 bg-[#f4f5f7] 暗色补丁已随 --page-bg token 化删除） */
 .dark .bg-slate-900\/40 {
-  background-color: rgb(2 6 23 / 0.55);
+  background-color: rgb(0 0 0 / 0.55);
+}
+
+/* A 期动效令牌：全站 transition 系列默认缓动统一为 ease-industrial
+ * （非 @layer，压过 utilities 里 transition-* 自带的默认缓动） */
+.transition,
+.transition-all,
+.transition-colors,
+.transition-opacity,
+.transition-shadow {
+  transition-timing-function: var(--ease-industrial);
+}
+
+@layer utilities {
+  /* 页面画布底色 token（亮 #F0EDED 暖灰白 / 暗纯黑） */
+  .bg-page {
+    background-color: var(--page-bg);
+  }
+
+  /* 细滚动条收敛（原 4 份任意值类串拷贝 → 全局 utility）：
+   * 半透明细 thumb + 透明 track；webkit thumb 走 --c-slate-300 变量随主题翻转 */
+  .scrollbar-thin-fade {
+    scrollbar-color: rgba(148, 163, 184, 0.45) transparent;
+    scrollbar-width: thin;
+  }
+  .scrollbar-thin-fade::-webkit-scrollbar {
+    width: 6px;
+  }
+  .scrollbar-thin-fade::-webkit-scrollbar-thumb {
+    border-radius: 9999px;
+    background-color: rgb(var(--c-slate-300) / 0.5);
+  }
+  .scrollbar-thin-fade::-webkit-scrollbar-track {
+    background-color: transparent;
+  }
+
+  /* BoardGraph 边色（SVG stroke 读 CSS 变量，亮暗双主题自适应，随主题切换即时生效） */
+  .graph-edge {
+    stroke: rgb(var(--graph-edge));
+  }
+  .graph-edge-front {
+    stroke: rgb(var(--graph-edge-front));
+  }
+  .graph-edge-broken {
+    stroke: rgb(var(--graph-edge-broken));
+  }
 }
 /* v6: 非法输入轻微抖动提示 */
 @keyframes shake-x {
@@ -206,9 +268,9 @@
  * 某卡全部前序进入「已发布」时节点播放一次光晕淡入淡出；
  * prefers-reduced-motion 下不播动画（直接无提示切换，符合决策记录 #5 降级口径） */
 @keyframes graph-lit-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-  25% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0.35), 0 0 24px rgba(16, 185, 129, 0.45); }
-  100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(var(--graph-lit-glow), 0); }
+  25% { box-shadow: 0 0 0 6px rgba(var(--graph-lit-glow), 0.35), 0 0 24px rgba(var(--graph-lit-glow), 0.45); }
+  100% { box-shadow: 0 0 0 0 rgba(var(--graph-lit-glow), 0); }
 }
 .graph-lit {
   animation: graph-lit-pulse 1.2s ease-out 1;

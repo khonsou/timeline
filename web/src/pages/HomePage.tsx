@@ -7,9 +7,9 @@
  */
 import { useEffect, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
-import { XIcon } from 'lucide-react'
-import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
-import { Button } from '@/components/ui/button'
+import { Plus, XIcon } from 'lucide-react'
+import { DIALOG_ANIM_CLASSES, Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import { Button, INDUSTRIAL_ICON_CLASSES } from '@/components/ui/button'
 import {
   ApiError,
   authBoard,
@@ -98,7 +98,7 @@ export default function HomePage() {
   }
 
   return (
-    <div className="min-h-screen bg-[#f4f5f7] text-slate-800" data-home>
+    <div className="min-h-screen bg-page text-slate-800" data-home>
       <div className="mx-auto max-w-3xl px-6 py-10">
         <header className="mb-8">
           <h1 className="text-xl font-bold tracking-tight">拾光轴 · Timeline Board</h1>
@@ -125,7 +125,15 @@ export default function HomePage() {
               placeholder="访问密码（进入/删除都需要）…"
               className="min-w-40 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-200"
             />
-            <Button data-create-btn onClick={doCreate} disabled={!name.trim() || !password || creating}>
+            <Button
+              variant="industrial"
+              data-create-btn
+              onClick={doCreate}
+              disabled={!name.trim() || !password || creating}
+            >
+              <span className={INDUSTRIAL_ICON_CLASSES}>
+                <Plus className="size-5" />
+              </span>
               {creating ? '创建中…' : '创建看板'}
             </Button>
           </div>
@@ -236,7 +244,7 @@ export default function HomePage() {
           <DialogOverlay className="bg-slate-900/40 backdrop-blur-sm" />
           <DialogPrimitive.Content
             data-delete-dialog
-            className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 w-[calc(100vw-2rem)] max-w-md translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none"
+            className={`${DIALOG_ANIM_CLASSES} fixed left-[50%] top-[50%] z-50 w-[calc(100vw-2rem)] max-w-md translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur outline-none`}
           >
             <DialogTitle className="sr-only">删除看板</DialogTitle>
             <DialogPrimitive.Close
@@ -276,15 +284,14 @@ export default function HomePage() {
                   <Button variant="ghost" onClick={() => setDeleting(null)}>
                     取消
                   </Button>
-                  <button
-                    type="button"
+                  <Button
+                    variant="destructive"
                     data-delete-confirm
                     onClick={doDelete}
                     disabled={!deletePassword || deleteBusy}
-                    className="rounded-lg bg-rose-600 px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-30"
                   >
                     {deleteBusy ? '删除中…' : '确认删除'}
-                  </button>
+                  </Button>
                 </div>
               </>
             )}

@@ -21,6 +21,7 @@
  * （对齐版本 version + 未推送 pending-patch），刷新后未推送编辑仍可重放。
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowRight } from 'lucide-react'
 import TopBar from '@/components/TopBar'
 import Board, { type BoardApi } from '@/components/board/Board'
 import BoardGraph, { type GraphApi } from '@/components/board/BoardGraph'
@@ -29,7 +30,7 @@ import ProductManagerDialog from '@/components/board/ProductManagerDialog'
 import MemberManagerDialog from '@/components/board/MemberManagerDialog'
 import ImportResultDialog, { type ImportReport } from '@/components/board/ImportResultDialog'
 import SearchPalette from '@/components/board/SearchPalette'
-import { Button } from '@/components/ui/button'
+import { Button, INDUSTRIAL_ICON_CLASSES } from '@/components/ui/button'
 import type { ContentItem, Group, Member } from '@timeline/core/types'
 import type { CardComment } from '@timeline/core/types'
 import { MAX_GROUPS } from '@timeline/core/types'
@@ -119,7 +120,7 @@ function PasswordGate({ boardId, onAuthed }: { boardId: string; onAuthed: () => 
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-[#f4f5f7] text-slate-800" data-gate>
+    <div className="flex min-h-screen items-center justify-center bg-page text-slate-800" data-gate>
       <div className="w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-slate-200/80 bg-white/90 p-6 shadow-sm">
         {notFound ? (
           <div className="text-center" data-gate-notfound>
@@ -153,11 +154,15 @@ function PasswordGate({ boardId, onAuthed }: { boardId: string; onAuthed: () => 
               </p>
             )}
             <Button
+              variant="industrial"
               data-gate-submit
               className="mt-4 w-full"
               disabled={!password || busy || boardName === null}
               onClick={submit}
             >
+              <span className={INDUSTRIAL_ICON_CLASSES}>
+                <ArrowRight className="size-5" />
+              </span>
               {busy ? '校验中…' : '进入看板'}
             </Button>
             <button
@@ -946,7 +951,7 @@ function SyncedBoard({
 
   if (notFound) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#f4f5f7]" data-board-notfound>
+      <div className="flex min-h-screen items-center justify-center bg-page" data-board-notfound>
         <div className="text-center">
           <p className="text-[15px] font-semibold">看板不存在或已删除</p>
           <p className="mt-2 text-[12px] text-slate-400">它可能已被其他成员物理删除（不可恢复）</p>
@@ -959,7 +964,7 @@ function SyncedBoard({
   }
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-[#f4f5f7] text-slate-800">
+    <div className="flex h-screen flex-col overflow-hidden bg-page text-slate-800">
       <TopBar
         total={items.length}
         coveredDays={coveredDays}

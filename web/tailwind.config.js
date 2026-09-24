@@ -7,7 +7,9 @@ module.exports = {
       colors: {
         // v20 暗色主题：业务组件硬编码的色板改为 CSS 变量驱动（亮/暗双主题值见 index.css
         // :root / .dark 的 --c-* 变量表）。仅覆盖实际用到的色阶，未列色阶保持默认。
-        // <alpha-value> 保留 bg-white/85 这类透明度修饰；:root 亮色值与 Tailwind 默认完全一致（零回归）。
+        // <alpha-value> 保留 bg-white/85 这类透明度修饰。
+        // A 期视觉升级：indigo 变量值已整体替换为信号橙 ramp（锚 #F64302）、slate 迁移为
+        // 暖灰/灰紫——类名不动，indigo 类名读作「强调色」语义。
         white: "rgb(var(--c-white) / <alpha-value>)",
         slate: {
           50: "rgb(var(--c-slate-50) / <alpha-value>)",
@@ -114,6 +116,16 @@ module.exports = {
       },
       boxShadow: {
         xs: "0 1px 2px 0 rgb(0 0 0 / 0.05)",
+      },
+      // A 期动效令牌：缓动统一 ease-industrial（快速启动、缓慢落定，见 index.css
+      // --ease-industrial 与全站 transition-* 默认缓动覆盖）；时长约定三档——
+      // 150ms press（按压）/ 200ms micro（hover、图标、底色）/ 250ms surface（弹窗、浮层）。
+      transitionTimingFunction: {
+        industrial: "cubic-bezier(0.16, 1, 0.3, 1)",
+      },
+      transitionDuration: {
+        // surface 档（150/200 为 Tailwind 默认档，250 为补充档）
+        250: "250ms",
       },
       keyframes: {
         "accordion-down": {

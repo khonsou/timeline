@@ -19,6 +19,13 @@ const buttonVariants = cva(
         ghost:
           "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
+        // A 期视觉升级（visual-upgrade-plan.md §3）：主行动点统一结构——
+        // 黑外壳 12px 圆角 + 左侧 44×44 信号橙方块图标底座 + 白色 16px/500 标签。
+        // 微交互：hover 图标右移 2px（INDUSTRIAL_ICON_CLASSES 的 group-hover）、
+        // 按压 scale-98、200ms 过渡（缓动由全站 ease-industrial 覆盖提供）。
+        // 图标底座不作为变体内嵌结构，调用方用 INDUSTRIAL_ICON_CLASSES 包一个 lucide 图标。
+        industrial:
+          "group rounded-[12px] bg-slate-900 font-medium text-white shadow-sm transition-all duration-200 hover:bg-slate-800 active:scale-[0.98] motion-reduce:active:scale-100",
       },
       size: {
         default: "h-9 px-4 py-2 has-[>svg]:px-3",
@@ -33,8 +40,21 @@ const buttonVariants = cva(
       variant: "default",
       size: "default",
     },
+    compoundVariants: [
+      {
+        // industrial 外壳自带几何（44px 底座 + 4px 壳内边距 + 20px 标签侧留白），
+        // 覆盖 default 尺寸的 h-9/px-4/py-2（compound 类排在 size 类后，twMerge 优先生效）
+        variant: "industrial",
+        size: "default",
+        class: "h-auto gap-3 p-1 pr-5 text-base",
+      },
+    ],
   }
 )
+
+/** industrial variant 的 44×44 信号橙图标底座（白色 20px 图标；hover 随外壳 group-hover 右移 2px） */
+export const INDUSTRIAL_ICON_CLASSES =
+  "flex size-11 shrink-0 items-center justify-center rounded-[8px] bg-indigo-500 text-[#ffffff] transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:transition-none motion-reduce:group-hover:translate-x-0"
 
 function Button({
   className,

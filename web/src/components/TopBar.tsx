@@ -1,6 +1,6 @@
 import { useRef } from 'react'
-import { Boxes, Moon, Search, Sun, Upload, Users } from 'lucide-react'
-import { Button } from '@/components/ui/button'
+import { Boxes, Moon, Plus, Search, Sun, Upload, Users } from 'lucide-react'
+import { Button, INDUSTRIAL_ICON_CLASSES } from '@/components/ui/button'
 import { useTheme } from '@/hooks/useTheme'
 import { CAPACITY_WARN_AT, MAX_CARDS } from '@/lib/content-data'
 
@@ -221,7 +221,10 @@ export default function TopBar({
           <Button size="sm" variant="ghost" onClick={onBackToToday} disabled={view === 'graph'}>
             ⌖ 回到今天
           </Button>
-          <Button size="sm" disabled={capacityFull} onClick={onAddToToday}>
+          <Button variant="industrial" disabled={capacityFull} onClick={onAddToToday}>
+            <span className={INDUSTRIAL_ICON_CLASSES}>
+              <Plus className="size-5" />
+            </span>
             + 空卡片
           </Button>
           {/* v20 暗色主题切换：顶栏最右，localStorage 持久化（useTheme） */}

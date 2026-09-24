@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
-import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import { DIALOG_ANIM_CLASSES, Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import { Button } from '@/components/ui/button'
 import type { ContentItem } from '@timeline/core/types'
 import type { Product } from '@/lib/content-data'
 
@@ -86,7 +87,7 @@ export default function ProductManagerDialog({
             // 名称编辑态时 Esc 只取消编辑、不关弹窗（同 DetailDialog 拦截层级）
             if (editingId) e.preventDefault()
           }}
-          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none"
+          className={`${DIALOG_ANIM_CLASSES} fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-lg translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur outline-none`}
         >
           <DialogTitle className="sr-only">产品管理</DialogTitle>
 
@@ -103,7 +104,7 @@ export default function ProductManagerDialog({
           </div>
 
           {/* 列表（独立滚动） */}
-          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2 [scrollbar-color:rgba(148,163,184,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300/50 [&::-webkit-scrollbar-track]:bg-transparent">
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-2 scrollbar-thin-fade">
             {products.length === 0 ? (
               <p className="py-8 text-center text-xs text-slate-300">
                 暂无产品，可手动添加或先用 CLI 导入产品列表
@@ -178,15 +179,14 @@ export default function ProductManagerDialog({
               placeholder="新产品名称…（id 自动生成）"
               className="min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-[13px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-200"
             />
-            <button
-              type="button"
+            <Button
               data-product-add
               onClick={addProduct}
               disabled={!newName.trim()}
-              className="shrink-0 rounded-lg bg-slate-900 px-3 py-1.5 text-[13px] text-white transition-colors hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-30"
+              className="shrink-0"
             >
               添加
-            </button>
+            </Button>
           </div>
         </DialogPrimitive.Content>
       </DialogPortal>

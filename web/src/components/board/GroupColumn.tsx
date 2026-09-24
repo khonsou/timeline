@@ -18,6 +18,7 @@ import { useDroppable } from '@dnd-kit/core'
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { GripVertical, X } from 'lucide-react'
+import { Button } from '@/components/ui/button'
 import type { ContentItem } from '@timeline/core/types'
 import { isDateGroupName } from '@timeline/core/group-core'
 import { todayStr } from '@/lib/content-data'
@@ -135,7 +136,7 @@ function GroupColumn({
       className="relative flex w-[236px] shrink-0 flex-col"
     >
       {/* 列表头：sticky 在横向滚动容器顶部 */}
-      <div className="sticky top-0 z-10 bg-[#f4f5f7] pb-2 pt-3">
+      <div className="sticky top-0 z-10 bg-page pb-2 pt-3">
         <div className="flex items-center justify-between gap-1">
           <div className="flex min-w-0 items-center gap-1">
             {/* grip 整列拖拽手柄（仅真实组列） */}
@@ -238,17 +239,18 @@ function GroupColumn({
               >
                 取消
               </button>
-              <button
-                type="button"
+              <Button
+                variant="destructive"
+                size="sm"
                 data-group-delete-ok
                 onClick={() => {
                   setConfirming(false)
                   onDeleteGroup?.(colKey)
                 }}
-                className="rounded-lg bg-rose-500 px-2.5 py-1 text-[11px] font-medium text-white transition-colors hover:bg-rose-600"
+                className="h-auto rounded-lg px-2.5 py-1 text-[11px]"
               >
                 删除
-              </button>
+              </Button>
             </div>
           </div>
         )}

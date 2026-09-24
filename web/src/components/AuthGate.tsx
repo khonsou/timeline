@@ -5,7 +5,8 @@
  * 登录页不写死产品名：授权页显示的应用名由 Auth Client 配置提供（文档 §3），此处文案保持中性。
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { Button } from '@/components/ui/button'
+import { ArrowRight } from 'lucide-react'
+import { Button, INDUSTRIAL_ICON_CLASSES } from '@/components/ui/button'
 import { getOauthSession, oauthLogout, startOauthLogin, subscribeAuth } from '@/lib/auth'
 import { useRoute } from '@/lib/router'
 
@@ -16,7 +17,7 @@ export default function AuthGate({ children }: { children: ReactNode }) {
 
   if (!authed) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#f4f5f7] text-slate-800" data-auth-gate>
+      <div className="flex min-h-screen items-center justify-center bg-page text-slate-800" data-auth-gate>
         <div className="w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-slate-200/80 bg-white/90 p-6 text-center shadow-sm">
           <h1 className="text-[15px] font-semibold">统一账号登录</h1>
           <p className="mt-2 text-[12px] leading-relaxed text-slate-400">
@@ -25,10 +26,14 @@ export default function AuthGate({ children }: { children: ReactNode }) {
             进入具体看板仍需输入该看板的访问密码。
           </p>
           <Button
+            variant="industrial"
             data-oauth-login
             className="mt-5 w-full"
             onClick={() => void startOauthLogin()}
           >
+            <span className={INDUSTRIAL_ICON_CLASSES}>
+              <ArrowRight className="size-5" />
+            </span>
             使用统一账号登录
           </Button>
         </div>

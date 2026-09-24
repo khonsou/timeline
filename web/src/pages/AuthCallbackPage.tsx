@@ -50,7 +50,7 @@ export default function AuthCallbackPage() {
 
   return (
     <div
-      className="flex min-h-screen items-center justify-center bg-[#f4f5f7] text-slate-800"
+      className="flex min-h-screen items-center justify-center bg-page text-slate-800"
       data-oauth-callback
     >
       <div className="w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-slate-200/80 bg-white/90 p-6 text-center shadow-sm">

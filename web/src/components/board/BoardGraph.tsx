@@ -302,7 +302,7 @@ export default function BoardGraph({
                 {...(e.frontier ? { 'data-edge-frontier': 'true' } : {})}
                 d={`M ${e.x1} ${e.y1} C ${e.x1 + dx} ${e.y1}, ${e.x2 - dx} ${e.y2}, ${e.x2} ${e.y2}`}
                 fill="none"
-                stroke={e.broken ? '#f59e0b' : e.frontier ? '#6366f1' : '#cbd5e1'}
+                className={e.broken ? 'graph-edge-broken' : e.frontier ? 'graph-edge-front' : 'graph-edge'}
                 strokeWidth={e.frontier ? 2.5 : 1.5}
                 strokeDasharray={e.broken ? '6 4' : undefined}
                 markerEnd="url(#graph-arrow)"
@@ -317,7 +317,7 @@ export default function BoardGraph({
               y1={connect.ay}
               x2={connect.x}
               y2={connect.y}
-              stroke="#6366f1"
+              className="graph-edge-front"
               strokeWidth={2}
               strokeDasharray="4 3"
             />

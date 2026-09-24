@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
-import { Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
+import { DIALOG_ANIM_CLASSES, Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import TypePicker from '@/components/board/TypePicker'
@@ -528,7 +528,7 @@ export default function DetailDialog({
             // （读到的是当前渲染的编辑态，先于取消生效）
             if (editingTitle || editingComment || editingField || typePickerOpen || commentFocus) e.preventDefault()
           }}
-          className="data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur duration-200 outline-none"
+          className={`${DIALOG_ANIM_CLASSES} fixed left-[50%] top-[50%] z-50 flex max-h-[85vh] w-[calc(100vw-2rem)] max-w-2xl translate-x-[-50%] translate-y-[-50%] flex-col overflow-hidden rounded-2xl border border-slate-200/80 bg-white/95 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur outline-none`}
         >
           {card && (
             <>
@@ -570,7 +570,7 @@ export default function DetailDialog({
               {/* 2~5. 内容区：独立纵向滚动（标题 / 信息网格 / 指标区 / 备注区），滚动条细且半透明 */}
               <div
                 data-detail-scroll
-                className="min-h-0 flex-1 overflow-y-auto px-6 pb-4 [scrollbar-color:rgba(148,163,184,0.45)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-slate-300/50 [&::-webkit-scrollbar-track]:bg-transparent"
+                className="min-h-0 flex-1 overflow-y-auto px-6 pb-4 scrollbar-thin-fade"
               >
               {/* 2. 大标题：点击 inline 编辑 */}
               {editingTitle ? (
@@ -800,7 +800,7 @@ export default function DetailDialog({
                     <span className="text-[10px] text-slate-400">互动率</span>
                     <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-indigo-400 to-violet-500 transition-all duration-150"
+                        className="h-full rounded-full bg-gradient-to-r from-indigo-300 to-indigo-500 transition-all duration-150"
                         style={{ width: `${Math.round(rate * 100)}%` }}
                       />
                     </div>
