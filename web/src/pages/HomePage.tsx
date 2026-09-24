@@ -4,12 +4,17 @@
  *  - 新建看板：名称 + 密码；勾选「从本机现有数据初始化」则打包 v14 本机数据
  *    （旧 localStorage 单板 / CLI board.json），否则用 2 张引导卡种子
  *  - 删除：确认框列出将失去的内容（名称/卡片数/最后更新）→ 输该板密码 → 物理删除
+ *
+ * D 期品牌面（visual-upgrade-plan.md §4.2）：首页为低频单屏品牌面，恒深色构图——
+ * BrandShell 纯黑骨架（不随主题翻转）+ 白容器浮层左右不对称分布（新建左 5 / 列表右 7）。
+ * 功能零回归：全部 data-* 与交互逻辑不变。
  */
 import { useEffect, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { Plus, XIcon } from 'lucide-react'
 import { DIALOG_ANIM_CLASSES, Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
 import { Button, INDUSTRIAL_ICON_CLASSES } from '@/components/ui/button'
+import BrandShell from '@/components/brand/BrandShell'
 import {
   ApiError,
   authBoard,
@@ -98,15 +103,32 @@ export default function HomePage() {
   }
 
   return (
-    <div className="min-h-screen bg-page text-slate-800" data-home>
-      <div className="mx-auto max-w-3xl px-6 py-10">
-        <header className="mb-8">
-          <h1 className="text-xl font-bold tracking-tight">拾光轴 · Timeline Board</h1>
-          <p className="mt-1 text-xs text-slate-400">多用户看板服务 —— 选择一块看板进入，或新建一块</p>
-        </header>
-
+    <BrandShell
+      data-home
+      eyebrow={
+        <>
+          TIMELINE BOARD
+          {boards && (
+            <>
+              {' · '}
+              {/* 真实库存编号：点阵只给拉丁短标记（§2 纪律） */}
+              <span className="font-dot tracking-[0.1em]">{String(boards.length).padStart(2, '0')}</span>
+              {' BOARDS'}
+            </>
+          )}
+        </>
+      }
+      title={
+        <>
+          拾光轴 <span className="text-white/40">· Timeline Board</span>
+        </>
+      }
+      note="多用户看板服务 —— 选择一块看板进入，或新建一块。看板密码由创建者设定，删除需重新验证。"
+    >
+      {/* 功能卡左右不对称分布（桌面 5/7 两栏，窄屏回落单列） */}
+      <div className="grid gap-4 lg:grid-cols-12">
         {/* 新建看板 */}
-        <section className="rounded-2xl border border-slate-200/80 bg-white/90 p-5 shadow-sm">
+        <section className="rounded-2xl border border-slate-200/80 bg-white p-5 text-slate-800 shadow-sm lg:col-span-5">
           <h2 className="text-[14px] font-semibold">新建看板</h2>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input
@@ -161,7 +183,7 @@ export default function HomePage() {
         </section>
 
         {/* 看板列表 */}
-        <section className="mt-6 rounded-2xl border border-slate-200/80 bg-white/90 shadow-sm">
+        <section className="rounded-2xl border border-slate-200/80 bg-white text-slate-800 shadow-sm lg:col-span-7">
           <div className="border-b border-slate-100 px-5 py-3">
             <h2 className="text-[14px] font-semibold">
               看板列表
@@ -238,13 +260,14 @@ export default function HomePage() {
         </section>
       </div>
 
-      {/* 删除确认框：列出将失去的内容 + 重新输密码（物理删除不可恢复） */}
+      {/* 删除确认框：列出将失去的内容 + 重新输密码（物理删除不可恢复）。
+          portal 到 body 后脱离 BrandShell，补 brand-scope 钉回亮色容器语义（黑底白卡一致） */}
       <Dialog open={!!deleting} onOpenChange={(o) => !o && setDeleting(null)}>
         <DialogPortal>
           <DialogOverlay className="bg-slate-900/40 backdrop-blur-sm" />
           <DialogPrimitive.Content
             data-delete-dialog
-            className={`${DIALOG_ANIM_CLASSES} fixed left-[50%] top-[50%] z-50 w-[calc(100vw-2rem)] max-w-md translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-slate-200/80 bg-white/95 p-6 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur outline-none`}
+            className={`brand-scope ${DIALOG_ANIM_CLASSES} fixed left-[50%] top-[50%] z-50 w-[calc(100vw-2rem)] max-w-md translate-x-[-50%] translate-y-[-50%] rounded-2xl border border-slate-200/80 bg-white/95 p-6 text-slate-800 shadow-[0_24px_64px_-16px_rgba(15,23,42,0.35)] backdrop-blur outline-none`}
           >
             <DialogTitle className="sr-only">删除看板</DialogTitle>
             <DialogPrimitive.Close
@@ -298,6 +321,6 @@ export default function HomePage() {
           </DialogPrimitive.Content>
         </DialogPortal>
       </Dialog>
-    </div>
+    </BrandShell>
   )
 }

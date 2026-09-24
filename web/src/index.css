@@ -308,3 +308,100 @@
 @media (prefers-reduced-motion: reduce) {
   .graph-lit { animation: none; }
 }
+
+/* ---------------------------------------------------------------------------
+ * D 期品牌面（visual-upgrade-plan.md §4.2）：首页 / AuthGate / PasswordGate 恒深色骨架，
+ * 不随用户主题翻转。做法 = .brand-scope 把 shadcn hsl 变量与 --c-* 色板钉回亮色 :root 值：
+ * 品牌面内的白容器 / 输入框 / industrial 按钮（黑壳橙块）在任何主题下保持浅色容器语义。
+ * 页面底用 Tailwind 静态 bg-black（#000 未 token 化、不受变量翻转影响）。
+ * 只用于三个低频单屏；看板工具面（BoardPage 主界面）不用。
+ * ------------------------------------------------------------------------- */
+.brand-scope {
+  /* shadcn hsl 变量（:root 亮色值原样钉回） */
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  /* --c-* 暖灰/灰紫/信号橙（:root 亮色值原样钉回） */
+  --c-white: 255 255 255;
+  --c-slate-50: 247 246 248;
+  --c-slate-100: 240 237 237;
+  --c-slate-200: 232 229 233;
+  --c-slate-300: 207 203 210;
+  --c-slate-400: 158 153 166;
+  --c-slate-500: 110 104 121;
+  --c-slate-600: 82 76 92;
+  --c-slate-700: 62 57 71;
+  --c-slate-800: 38 34 45;
+  --c-slate-900: 23 20 27;
+  --c-indigo-50: 254 243 238;
+  --c-indigo-200: 251 201 179;
+  --c-indigo-300: 248 163 130;
+  --c-indigo-400: 245 117 71;
+  --c-indigo-500: 246 67 2;
+  --c-indigo-600: 217 58 2;
+  --c-rose-50: 255 241 242;
+  --c-rose-100: 255 228 230;
+  --c-rose-200: 254 205 211;
+  --c-rose-400: 251 113 133;
+  --c-rose-500: 244 63 94;
+  --c-rose-600: 225 29 72;
+  --c-rose-700: 190 18 60;
+  --c-emerald-50: 236 253 245;
+  --c-emerald-500: 16 185 129;
+  --c-emerald-600: 5 150 105;
+  --c-emerald-700: 4 120 87;
+  --c-violet-50: 245 243 255;
+  --c-violet-500: 139 92 246;
+  --c-violet-700: 109 40 217;
+  --c-sky-50: 240 249 255;
+  --c-sky-500: 14 165 233;
+  --c-sky-700: 3 105 161;
+  --c-amber-50: 255 251 235;
+  --c-amber-400: 251 191 36;
+  --c-amber-500: 245 158 11;
+  --c-amber-600: 217 119 6;
+  --c-amber-700: 180 83 9;
+}
+
+/* D 期品牌面入场（设计方向 §6：三种入场之文字/容器两款，无影像）：
+ * 文字 = fade + 下移 30px 归位；容器 = 95%→100% scale + fade；统一 800ms ease-industrial，
+ * fill-mode both，错峰延迟由调用方 style.animationDelay 给（300/500/700/900ms）。
+ * 只播一次（mount 即播，单屏无滚动不重复触发）；motion-reduce 全部跳过。 */
+@keyframes brand-rise {
+  from { opacity: 0; transform: translateY(30px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes brand-scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+@layer utilities {
+  .brand-enter {
+    animation: brand-rise 800ms var(--ease-industrial) both;
+  }
+  .brand-enter-scale {
+    animation: brand-scale-in 800ms var(--ease-industrial) both;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .brand-enter,
+  .brand-enter-scale {
+    animation: none;
+  }
+}

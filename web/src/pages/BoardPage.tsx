@@ -83,6 +83,7 @@ import {
 import { buildBoardUrl, navigate, parseBoardHash } from '@/lib/router'
 import { getOauthDisplayName, getOauthUser } from '@/lib/auth'
 import { nextMemberId } from '@timeline/core/patch-core'
+import BrandShell from '@/components/brand/BrandShell'
 
 // ---------------------------------------------------------------------------
 // 密码门
@@ -120,62 +121,85 @@ function PasswordGate({ boardId, onAuthed }: { boardId: string; onAuthed: () => 
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-page text-slate-800" data-gate>
-      <div className="w-[calc(100vw-2rem)] max-w-sm rounded-2xl border border-slate-200/80 bg-white/90 p-6 shadow-sm">
-        {notFound ? (
-          <div className="text-center" data-gate-notfound>
-            <p className="text-[15px] font-semibold">看板不存在或已删除</p>
-            <p className="mt-2 text-[12px] text-slate-400">它可能已被其他成员物理删除（不可恢复）</p>
-            <Button className="mt-5" onClick={() => navigate('/')}>
-              返回看板列表
-            </Button>
-          </div>
+    // D 期品牌面：密码门与首页/登录门共用恒深色 BrandShell 骨架（不随主题翻转）；
+    // 密码卡为白容器浮层居左下。data-gate / data-gate-* 与交互逻辑不变。
+    <BrandShell
+      data-gate
+      eyebrow={
+        <>
+          BOARD ACCESS{' · '}
+          {/* 真实看板 id（16 位 hex）：点阵只给拉丁短编号（§2 纪律），保持原样大小写 */}
+          <span className="font-dot normal-case tracking-[0.1em]">{boardId}</span>
+        </>
+      }
+      title={
+        notFound ? (
+          <>
+            看板不存在<span className="text-white/40">或已删除</span>
+          </>
         ) : (
           <>
-            <h1 className="text-[15px] font-semibold">
-              进入看板{boardName ? `「${boardName}」` : ''}
-            </h1>
-            <p className="mt-1 text-[12px] text-slate-400" data-gate-name>
-              {boardName ?? '校验看板中…'}
-            </p>
-            <input
-              data-gate-password
-              type="password"
-              autoFocus
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && submit()}
-              placeholder="访问密码…"
-              className="mt-4 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-200"
-            />
-            {error && (
-              <p className="mt-2 text-[12px] text-rose-500" data-gate-error>
-                {error}
-              </p>
-            )}
-            <Button
-              variant="industrial"
-              data-gate-submit
-              className="mt-4 w-full"
-              disabled={!password || busy || boardName === null}
-              onClick={submit}
-            >
-              <span className={INDUSTRIAL_ICON_CLASSES}>
-                <ArrowRight className="size-5" />
-              </span>
-              {busy ? '校验中…' : '进入看板'}
-            </Button>
-            <button
-              type="button"
-              onClick={() => navigate('/')}
-              className="mt-3 w-full text-center text-[12px] text-slate-400 hover:text-slate-600"
-            >
-              ← 返回看板列表
-            </button>
+            进入看板{boardName ? <span className="text-white/40">「{boardName}」</span> : ''}
           </>
-        )}
+        )
+      }
+      note="看板密码由创建者设定，与统一账号登录相互独立。"
+    >
+      {/* 密码卡：白容器浮层，居左下区域 */}
+      <div className="flex justify-start">
+        <div className="w-full max-w-sm rounded-2xl border border-slate-200/80 bg-white p-6 text-slate-800 shadow-sm">
+          {notFound ? (
+            <div className="text-center" data-gate-notfound>
+              <p className="text-[15px] font-semibold">看板不存在或已删除</p>
+              <p className="mt-2 text-[12px] text-slate-400">它可能已被其他成员物理删除（不可恢复）</p>
+              <Button className="mt-5" onClick={() => navigate('/')}>
+                返回看板列表
+              </Button>
+            </div>
+          ) : (
+            <>
+              <p className="text-[12px] text-slate-400" data-gate-name>
+                {boardName ?? '校验看板中…'}
+              </p>
+              <input
+                data-gate-password
+                type="password"
+                autoFocus
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && submit()}
+                placeholder="访问密码…"
+                className="mt-4 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-[13px] focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              />
+              {error && (
+                <p className="mt-2 text-[12px] text-rose-500" data-gate-error>
+                  {error}
+                </p>
+              )}
+              <Button
+                variant="industrial"
+                data-gate-submit
+                className="mt-4 w-full"
+                disabled={!password || busy || boardName === null}
+                onClick={submit}
+              >
+                <span className={INDUSTRIAL_ICON_CLASSES}>
+                  <ArrowRight className="size-5" />
+                </span>
+                {busy ? '校验中…' : '进入看板'}
+              </Button>
+              <button
+                type="button"
+                onClick={() => navigate('/')}
+                className="mt-3 w-full text-center text-[12px] text-slate-400 hover:text-slate-600"
+              >
+                ← 返回看板列表
+              </button>
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </BrandShell>
   )
 }
 
