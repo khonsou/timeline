@@ -5,8 +5,14 @@
  * 两种用法：
  *   ① e2e 进程内：import { startMockOauth, getMockOauthStats } from './mock-oauth.mjs'
  *      起在同一个 node 进程里，省一次 spawn；stats 直接进程内读取。
- *   ② 独立跑：node verification/mock-oauth.mjs [port]  （默认 5196；手工冒烟用，
+ *   ② 独立跑：node verification/mock-oauth.mjs [port] [--jwt]  （默认 5196；手工冒烟用，
  *      配合 vite 的 VITE_AUTH_ORIGIN=http://127.0.0.1:5196 与真实 API server）
+ *
+ * --jwt 模式（默认关闭，e2e 依赖默认行为，勿改）：
+ *   token 端点返回未签名假 JWT（alg:none 三段 base64url），payload 携带
+ *   user_id=9001 / user_name="本地体验"（中文名，验证 UTF-8 解码）/ role="staff"。
+ *   供 `npm run dev` 本地体验评论署名与成员自登记；默认模式仍返回不透明串
+ *   'mock-access-token'（t74 断言评论回退自报署名靠它）。
  *
  * 端点（对齐 docs/oauth-auth-integration.md §4 的 Auth 侧契约）：
  *   GET  /oauth/authorize   校验 client_id/response_type/redirect_uri/state/PKCE 参数，
@@ -31,6 +37,25 @@ export function getMockOauthStats() {
   return { ...stats }
 }
 
+const b64url = (obj) => Buffer.from(JSON.stringify(obj), 'utf8').toString('base64url')
+
+/** 未签名假 JWT（alg:none）：payload 对齐 docs/oauth-auth-integration.md §7.3 的可选 claim */
+function mockJwt() {
+  const now = Math.floor(Date.now() / 1000)
+  return [
+    b64url({ alg: 'none', typ: 'JWT' }),
+    b64url({
+      iss: 'https://auth.angrymiao.com',
+      iat: now,
+      exp: now + 86400,
+      user_id: 9001,
+      user_name: '本地体验',
+      role: 'staff',
+    }),
+    'bW9jay1zaWduYXR1cmU', // base64url("mock-signature")，仅占位
+  ].join('.')
+}
+
 function json(res, status, body) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
@@ -39,8 +64,9 @@ function json(res, status, body) {
   res.end(JSON.stringify(body))
 }
 
-/** 启动 mock，resolve 为 http.Server（调用方负责 close） */
-export function startMockOauth(port = DEFAULT_PORT) {
+/** 启动 mock，resolve 为 http.Server（调用方负责 close）；opts.jwt=true 时 token 端点返回假 JWT */
+export function startMockOauth(port = DEFAULT_PORT, opts = {}) {
+  const jwtMode = opts.jwt === true
   const server = createServer((req, res) => {
     const url = new URL(req.url || '/', `http://127.0.0.1:${port}`)
 
@@ -96,7 +122,7 @@ export function startMockOauth(port = DEFAULT_PORT) {
         }
         stats.token += 1
         json(res, 200, {
-          access_token: 'mock-access-token',
+          access_token: jwtMode ? mockJwt() : 'mock-access-token',
           token_type: 'Bearer',
           expires_in: 86400,
           scope: 'profile phone',
@@ -123,7 +149,11 @@ export function startMockOauth(port = DEFAULT_PORT) {
 // standalone：node verification/mock-oauth.mjs [port]
 // ---------------------------------------------------------------------------
 if (process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1])) {
-  const port = Number(process.argv[2]) || DEFAULT_PORT
-  await startMockOauth(port)
-  console.log(`[mock-oauth] listening on http://127.0.0.1:${port}（/oauth/authorize /api/oauth/token /__stats）`)
+  const args = process.argv.slice(2)
+  const jwtFlag = args.includes('--jwt')
+  const port = Number(args.find((a) => /^\d+$/.test(a))) || DEFAULT_PORT
+  await startMockOauth(port, { jwt: jwtFlag })
+  console.log(
+    `[mock-oauth] listening on http://127.0.0.1:${port}（/oauth/authorize /api/oauth/token /__stats）${jwtFlag ? ' —— --jwt 模式：token 端点返回假 JWT' : ''}`,
+  )
 }
