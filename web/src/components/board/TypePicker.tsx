@@ -57,7 +57,7 @@ export default function TypePicker({ value, onChange, onOpenChange }: TypePicker
         title="点击更换类型"
         aria-expanded={open}
         onClick={() => setOpenSafe(!open)}
-        className={`inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 text-[11px] outline-none transition-shadow hover:ring-2 hover:ring-indigo-200 focus-visible:ring-2 focus-visible:ring-indigo-200 ${tag.pill}`}
+        className={`inline-flex cursor-pointer items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px] font-medium outline-none transition-shadow hover:ring-2 hover:ring-indigo-200 focus-visible:ring-2 focus-visible:ring-indigo-200 ${tag.pill}`}
       >
         <span className={`h-1.5 w-1.5 rounded-full ${tag.dot}`} />
         {value}
@@ -76,7 +76,7 @@ export default function TypePicker({ value, onChange, onOpenChange }: TypePicker
                   if (!active) onChange(t)
                   setOpenSafe(false)
                 }}
-                className={`inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] outline-none transition-shadow hover:ring-2 hover:ring-indigo-200 focus-visible:ring-2 focus-visible:ring-indigo-200 ${tt.pill} ${active ? 'ring-2 ring-indigo-400' : ''}`}
+                className={`inline-flex cursor-pointer items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 font-mono text-[11px] font-medium outline-none transition-shadow hover:ring-2 hover:ring-indigo-200 focus-visible:ring-2 focus-visible:ring-indigo-200 ${tt.pill} ${active ? 'ring-2 ring-indigo-400' : ''}`}
               >
                 <span className={`h-1.5 w-1.5 rounded-full ${tt.dot}`} />
                 {t}

@@ -120,7 +120,7 @@ export default function SearchPalette({
             placeholder="搜索标题、备注、产品或负责人…"
             className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-300"
           />
-          <kbd className="shrink-0 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] text-slate-400">
+          <kbd className="shrink-0 rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">
             Esc
           </kbd>
         </div>
@@ -153,7 +153,7 @@ export default function SearchPalette({
                     {c.title || '未命名卡片'}
                   </p>
                   <p className="mt-0.5 flex items-center gap-1.5 text-[11px] text-slate-400">
-                    <span data-search-subtitle className="tabular-nums">{subtitleOf(c)}</span>
+                    <span data-search-subtitle className="font-mono tabular-nums">{subtitleOf(c)}</span>
                     <span>·</span>
                     <span>{c.status}</span>
                     {c.dimmed === true && (

@@ -175,7 +175,7 @@ function GroupColumn({
                 className="flex min-w-0 items-center gap-1.5 text-left"
               >
                 <span
-                  className={`text-sm font-semibold tabular-nums ${
+                  className={`font-mono text-sm font-semibold tabular-nums ${
                     isToday ? 'text-indigo-600' : 'text-slate-700'
                   }`}
                 >
@@ -206,7 +206,7 @@ function GroupColumn({
             )}
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            <span className="text-[11px] tabular-nums text-slate-400">{cards.length} 张</span>
+            <span className="font-mono text-[11px] tabular-nums text-slate-400">{cards.length} 张</span>
             {!ungrouped && onDeleteGroup && (
               <button
                 type="button"

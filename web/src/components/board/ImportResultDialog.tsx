@@ -83,25 +83,25 @@ export default function ImportResultDialog({ report, onClose }: ImportResultDial
                   <>
                     <div className="grid grid-cols-4 gap-2">
                       <div className="rounded-xl bg-emerald-50/70 px-2 py-2 text-center">
-                        <p className="text-lg font-semibold tabular-nums text-emerald-600" data-report-imported>
+                        <p className="font-dot text-2xl leading-tight font-semibold tabular-nums text-emerald-600" data-report-imported>
                           {report.imported ?? 0}
                         </p>
                         <p className="text-[10px] text-slate-400">导入条数</p>
                       </div>
                       <div className="rounded-xl bg-slate-50 px-2 py-2 text-center">
-                        <p className="text-lg font-semibold tabular-nums text-slate-600" data-report-skipped>
+                        <p className="font-dot text-2xl leading-tight font-semibold tabular-nums text-slate-600" data-report-skipped>
                           {report.skipped?.length ?? 0}
                         </p>
                         <p className="text-[10px] text-slate-400">跳过条数</p>
                       </div>
                       <div className="rounded-xl bg-slate-50 px-2 py-2 text-center">
-                        <p className="text-lg font-semibold tabular-nums text-slate-600" data-report-unpublished>
+                        <p className="font-dot text-2xl leading-tight font-semibold tabular-nums text-slate-600" data-report-unpublished>
                           {report.unpublished ?? 0}
                         </p>
                         <p className="text-[10px] text-slate-400">未发布</p>
                       </div>
                       <div className="rounded-xl bg-slate-50 px-2 py-2 text-center">
-                        <p className="text-lg font-semibold tabular-nums text-slate-600" data-report-noproduct>
+                        <p className="font-dot text-2xl leading-tight font-semibold tabular-nums text-slate-600" data-report-noproduct>
                           {report.noProduct ?? 0}
                         </p>
                         <p className="text-[10px] text-slate-400">未填归属</p>

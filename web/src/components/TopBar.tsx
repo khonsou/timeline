@@ -94,7 +94,7 @@ export default function TopBar({
               {boardName}
             </span>
           )}
-          <p className="text-xs tabular-nums text-slate-400">{dateStr}</p>
+          <p className="font-mono text-xs tabular-nums text-slate-400">{dateStr}</p>
         </div>
 
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
@@ -122,12 +122,12 @@ export default function TopBar({
           ) : null}
           <div className="hidden items-center gap-3 text-xs text-slate-500 sm:flex">
             <span>
-              共 <span className="font-semibold tabular-nums text-slate-700">{total}</span> 张卡片
+              共 <span className="font-dot text-base font-semibold tabular-nums text-slate-700">{total}</span> 张卡片
             </span>
             <span className="h-3 w-px bg-slate-200" />
             <span>
               覆盖{' '}
-              <span className="font-semibold tabular-nums text-slate-700">{coveredDays}</span> 天
+              <span className="font-mono font-semibold tabular-nums text-slate-700">{coveredDays}</span> 天
             </span>
           </div>
           {capacityWarn && (
@@ -167,7 +167,7 @@ export default function TopBar({
           <Button size="sm" variant="ghost" onClick={onOpenSearch} data-search-btn>
             <Search className="size-3.5" />
             搜索
-            <kbd className="rounded border border-slate-200 bg-slate-50 px-1 py-px text-[10px] leading-none text-slate-400">
+            <kbd className="rounded border border-slate-200 bg-slate-50 px-1 py-px font-mono text-[10px] leading-none text-slate-400">
               ⌘K
             </kbd>
           </Button>

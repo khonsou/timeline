@@ -220,7 +220,7 @@ function CardView(p: CardViewProps) {
         <div className="flex items-center justify-between">
           <span
             data-card-type
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] ${tag.pill}`}
+            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px] font-medium ${tag.pill}`}
           >
             <span className={`h-1.5 w-1.5 rounded-full ${tag.dot}`} />
             {tag.label}
@@ -254,19 +254,19 @@ function CardView(p: CardViewProps) {
             <div className="mt-2 grid grid-cols-3 divide-x divide-slate-100 rounded-lg bg-slate-50/80 py-1.5">
               <div className="px-1 text-center">
                 <p className="text-[10px] leading-tight text-slate-400">ROI</p>
-                <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
+                <p className="mt-px font-mono text-[13px] font-semibold tabular-nums text-slate-700">
                   {p.card.roi === null ? '—' : formatRoi(p.card.roi)}
                 </p>
               </div>
               <div className="px-1 text-center">
                 <p className="text-[10px] leading-tight text-slate-400">曝光·4h</p>
-                <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
+                <p className="mt-px font-mono text-[13px] font-semibold tabular-nums text-slate-700">
                   {p.card.propagation_4h === null ? '—' : formatCompact(p.card.propagation_4h)}
                 </p>
               </div>
               <div className="px-1 text-center">
                 <p className="text-[10px] leading-tight text-slate-400">互动·4h</p>
-                <p className="mt-px text-[13px] font-semibold tabular-nums text-slate-700">
+                <p className="mt-px font-mono text-[13px] font-semibold tabular-nums text-slate-700">
                   {p.card.engagement_4h === null ? '—' : formatCompact(p.card.engagement_4h)}
                 </p>
               </div>
@@ -280,14 +280,14 @@ function CardView(p: CardViewProps) {
             </div>
           </>
         ) : (
-          <div className="mt-2 rounded-lg border border-dashed border-slate-200 py-2 text-center text-[11px] text-slate-300">
+          <div className="mt-2 rounded-lg border border-dashed border-slate-200 py-2 text-center font-mono text-[11px] font-medium text-slate-300">
             {p.card.status ?? '待发布'}
           </div>
         )}
 
         {/* 底行：publish_at 时分胶囊 + 产品名 */}
         <div className="mt-2 flex items-center justify-between gap-2">
-          <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium tabular-nums text-slate-500">
+          <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[11px] font-medium tabular-nums text-slate-500">
             {publishTimeOf(p.card)}
           </span>
           <span

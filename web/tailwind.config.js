@@ -107,6 +107,31 @@ module.exports = {
           ring: "hsl(var(--sidebar-ring))",
         },
       },
+      fontFamily: {
+        // B 期字体层：mono = JetBrains Mono 可变（自托管 woff2，@font-face 见 index.css），
+        // 覆盖 Tailwind 默认 mono 栈——既有 font-mono 挂载点（成员/产品 ID 等）自动生效。
+        // 栈内显式 CJK 回退：JetBrains Mono 无中文字形，中文自然落回系统黑体（不拉字距）。
+        mono: [
+          "'JetBrains Mono'",
+          'ui-monospace',
+          "'SF Mono'",
+          'Menlo',
+          "'PingFang SC'",
+          "'Microsoft YaHei'",
+          'system-ui',
+          'monospace',
+        ],
+        // dot = Handjet 点阵可变（颗粒定帧 font-variation-settings 见 index.css .font-dot）。
+        // 纪律：只给大数字与拉丁短编号（TopBar 统计、ImportResult 报告数）；中文绝不入点阵。
+        dot: [
+          'Handjet',
+          "'JetBrains Mono'",
+          "'PingFang SC'",
+          "'Microsoft YaHei'",
+          'system-ui',
+          'monospace',
+        ],
+      },
       borderRadius: {
         xl: "calc(var(--radius) + 4px)",
         lg: "var(--radius)",

@@ -2,6 +2,36 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+ * B 期字体层：自托管可变字体（assets/fonts/ 相对本 css 引用，vite 打包重写 URL，
+ * 天然适配生产 base path /aVoSaywtHjXCA/——不要挪去 public/ 用绝对路径）。
+ *   信息字体 JetBrains Mono（wght 100–800，主用 400/500）：数字/ID/日期/kbd/状态类型标签 → font-mono
+ *   展示字体 Handjet（OFL 点阵可变；BubbledotICG-FinePos 无合法免费渠道的替代）→ font-dot
+ * 许可：两份 OFL-*.txt 与字体同目录（OFL-JetBrainsMono.txt / OFL-Handjet.txt）。
+ */
+@font-face {
+  font-family: 'JetBrains Mono';
+  src: url('./assets/fonts/JetBrainsMono-Variable.woff2') format('woff2');
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Handjet';
+  src: url('./assets/fonts/Handjet-Variable.woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@layer utilities {
+  /* Handjet 细颗粒定帧：ELGR=2（双倍细网格，对位 BubbledotICG-FinePos 的 Fine）、ELSH=2（方点）。
+   * 与 tailwind fontFamily.dot 生成的 font-family 规则同名叠加（同属 utilities 层，属性不冲突）。 */
+  .font-dot {
+    font-variation-settings: 'ELGR' 2, 'ELSH' 2;
+  }
+}
+
 @layer base {
   :root {
     --background: 0 0% 100%;

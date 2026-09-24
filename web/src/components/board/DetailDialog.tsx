@@ -51,7 +51,7 @@ interface DetailDialogProps {
 }
 
 const INPUT_BASE =
-  'w-full rounded-md border bg-white px-1.5 py-1 text-sm tabular-nums text-slate-700 focus:outline-none focus:ring-2'
+  'w-full rounded-md border bg-white px-1.5 py-1 font-mono text-sm tabular-nums text-slate-700 focus:outline-none focus:ring-2'
 const INPUT_OK = 'border-indigo-300 focus:ring-indigo-200'
 const INPUT_BAD = 'border-rose-400 focus:ring-rose-200 animate-shake'
 
@@ -544,17 +544,17 @@ export default function DetailDialog({
                 />
                 {/* 状态徽章（三态）：已发布 = emerald 实心；待发布 = 虚线灰；待执行 = 虚线浅灰空心点 */}
                 {card.status === '已发布' ? (
-                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 font-mono text-[11px] font-medium text-emerald-700">
                     <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
                     已发布
                   </span>
                 ) : card.status === '待发布' ? (
-                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] text-slate-400">
+                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-400">
                     <span className="h-1.5 w-1.5 rounded-full bg-slate-300" />
                     待发布
                   </span>
                 ) : (
-                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[11px] text-slate-400">
+                  <span data-status-badge className="inline-flex items-center gap-1 rounded-full border border-dashed border-slate-300 px-2 py-0.5 font-mono text-[11px] font-medium text-slate-400">
                     <span className="h-1.5 w-1.5 rounded-full border border-slate-300" />
                     待执行
                   </span>
@@ -628,7 +628,7 @@ export default function DetailDialog({
                       data-edit-field="publish_at"
                       onClick={() => startField('publish_at', card.publish_at)}
                       title="点击编辑"
-                      className="mt-0.5 cursor-pointer rounded px-1 -mx-1 text-[13px] font-medium tabular-nums text-slate-700 transition-colors hover:bg-white"
+                      className="mt-0.5 cursor-pointer rounded px-1 -mx-1 font-mono text-[13px] font-medium tabular-nums text-slate-700 transition-colors hover:bg-white"
                     >
                       {formatPublishAt(card.publish_at)}
                     </p>
@@ -745,7 +745,7 @@ export default function DetailDialog({
                           className={`mt-0.5 ${inputCls}`}
                         />
                       ) : (
-                        <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
+                        <p className="mt-0.5 font-mono text-lg font-semibold tabular-nums text-slate-800">
                           {card.roi === null ? '—' : formatRoi(card.roi)}
                         </p>
                       )}
@@ -767,7 +767,7 @@ export default function DetailDialog({
                           className={`mt-0.5 ${inputCls}`}
                         />
                       ) : (
-                        <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
+                        <p className="mt-0.5 font-mono text-lg font-semibold tabular-nums text-slate-800">
                           {card.propagation_4h === null ? '—' : formatCompact(card.propagation_4h)}
                         </p>
                       )}
@@ -789,7 +789,7 @@ export default function DetailDialog({
                           className={`mt-0.5 ${inputCls}`}
                         />
                       ) : (
-                        <p className="mt-0.5 text-lg font-semibold tabular-nums text-slate-800">
+                        <p className="mt-0.5 font-mono text-lg font-semibold tabular-nums text-slate-800">
                           {card.engagement_4h === null ? '—' : formatCompact(card.engagement_4h)}
                         </p>
                       )}
@@ -823,12 +823,12 @@ export default function DetailDialog({
                         data-edit-field="rate"
                         title="点击编辑（反推互动量）"
                         onClick={() => startField('rate', (rate * 100).toFixed(1))}
-                        className="cursor-pointer rounded px-1 text-[11px] font-medium tabular-nums text-indigo-600 transition-colors hover:bg-indigo-50"
+                        className="cursor-pointer rounded px-1 font-mono text-[11px] font-medium tabular-nums text-indigo-600 transition-colors hover:bg-indigo-50"
                       >
                         {(rate * 100).toFixed(1)}%
                       </button>
                     ) : (
-                      <span className="text-[11px] tabular-nums text-slate-300" title="需先有曝光量">
+                      <span className="font-mono text-[11px] tabular-nums text-slate-300" title="需先有曝光量">
                         {card.propagation_4h ? `${(rate * 100).toFixed(1)}%` : '—'}
                         <span className="ml-1 text-[10px]">需先有曝光量</span>
                       </span>
@@ -899,7 +899,7 @@ export default function DetailDialog({
               <div className="mt-4" data-comments>
                 <p className="text-[10px] text-slate-400">
                   评论
-                  {comments.length > 0 && <span className="ml-1 tabular-nums">· {comments.length} 条</span>}
+                  {comments.length > 0 && <span className="ml-1 font-mono tabular-nums">· {comments.length} 条</span>}
                 </p>
                 {comments.length === 0 ? (
                   <p className="mt-1.5 text-[12px] text-slate-300">还没有评论，来发第一条</p>
@@ -914,7 +914,7 @@ export default function DetailDialog({
                           >
                             {c.author || '匿名'}
                           </span>
-                          <span data-comments-time className="text-[10px] tabular-nums text-slate-300">
+                          <span data-comments-time className="font-mono text-[10px] tabular-nums text-slate-300">
                             {formatCommentTime(c.created_at)}
                           </span>
                           <button
