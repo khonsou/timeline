@@ -46,6 +46,8 @@ interface DetailDialogProps {
   /** v2-M4 评论：新增（id / created_at 由 BoardPage 生成，author 登录态取 OAuth 显示名）与删除（全员可删，与看板密码=全量写权限一致） */
   onAddComment: (cardId: string, draft: { author: string; body: string }) => void
   onDeleteComment: (cardId: string, commentId: string) => void
+  /** 成员体系 P0：当前登录用户 DAO user_id（无会话/匿名 = undefined）；负责人下拉「选本人」置顶与认证标记用 */
+  currentUserId?: number
 }
 
 const INPUT_BASE =
@@ -269,6 +271,7 @@ export default function DetailDialog({
   onLocateCard,
   onAddComment,
   onDeleteComment,
+  currentUserId,
 }: DetailDialogProps) {
   const [editingTitle, setEditingTitle] = useState(false)
   const [draftTitle, setDraftTitle] = useState('')
@@ -431,6 +434,11 @@ export default function DetailDialog({
     if (!card) return null
     const owner = resolveMember(card[field])
     const members = listMembers()
+    // 成员体系 P0：本人条目（user_id 匹配当前登录用户）排最前，其余保持目录顺序
+    const selfFirst = [
+      ...members.filter((m) => currentUserId !== undefined && m.user_id === currentUserId),
+      ...members.filter((m) => !(currentUserId !== undefined && m.user_id === currentUserId)),
+    ]
     return (
       <div className="rounded-xl bg-slate-50 px-3 py-2.5">
         <p className="text-[10px] text-slate-400">{label}</p>
@@ -463,9 +471,12 @@ export default function DetailDialog({
             className={`mt-0.5 ${INPUT_BASE} ${INPUT_OK}`}
           >
             <option value="">未分配</option>
-            {members.map((m) => (
+            {selfFirst.map((m) => (
               <option key={m.id} value={m.id}>
+                {/* user_id 非空 = OAuth 实名成员，带 ✓ 认证标记；本人条目追加「（本人）」 */}
+                {m.user_id != null ? '✓ ' : ''}
                 {m.name}（{m.id}）
+                {currentUserId !== undefined && m.user_id === currentUserId ? '（本人）' : ''}
               </option>
             ))}
           </select>
@@ -488,7 +499,13 @@ export default function DetailDialog({
               </span>
             ) : (
               <>
-                {owner.name}{' '}
+                {owner.name}
+                {/* 实名成员（user_id 非空）名字后带小号 ✓ 认证标记 */}
+                {owner.user_id != null && (
+                  <span className="ml-0.5 text-[10px] font-normal text-slate-400" title="OAuth 实名成员">
+                    ✓
+                  </span>
+                )}{' '}
                 <span className="text-[11px] font-normal text-slate-400">{card[field]}</span>
               </>
             )}

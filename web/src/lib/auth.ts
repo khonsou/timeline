@@ -35,6 +35,8 @@ export interface OauthSession {
   scope: string
   /** 登录用户显示名（解码 JWT payload 的 user_name；token 无此 claim 时为空串） */
   displayName: string
+  /** 登录用户 DAO 用户 id（解码 JWT payload 的 user_id，int；token 无此 claim 时为 null） */
+  userId: number | null
 }
 
 interface PendingAuth {
@@ -60,6 +62,15 @@ export function getOauthSession(): OauthSession | null {
 export function getOauthDisplayName(): string | null {
   const s = getOauthSession()
   return s && s.displayName ? s.displayName : null
+}
+
+/**
+ * 当前登录用户（成员体系 P0）：有有效 session 即返回 { userId, displayName }
+ * （userId / displayName 各自可能为 null / 空串，取决于 JWT 是否携带对应 claim）；无会话返回 null。
+ */
+export function getOauthUser(): { userId: number | null; displayName: string } | null {
+  const s = getOauthSession()
+  return s ? { userId: s.userId, displayName: s.displayName } : null
 }
 
 export function oauthLogout(): void {
@@ -198,16 +209,21 @@ export async function exchangeCode(code: string, codeVerifier: string): Promise<
     throw new Error('登录服务响应异常，请重新登录')
   }
   const expiresIn = typeof j.expires_in === 'number' && j.expires_in > 0 ? j.expires_in : 3600
-  // user_name 为 Auth JWT 的可选 claim（docs/oauth-auth-integration.md §7.3）；缺失时留空串，
-  // 评论署名等消费方自行回退
+  // user_name / user_id 均为 Auth JWT 的可选 claim（docs/oauth-auth-integration.md §7.3）；
+  // 缺失时留空串 / null，评论署名、成员自登记等消费方自行回退（DAO 契约 user_id 为 int）
   const payload = decodeJwtPayload(j.access_token)
   const displayName =
     payload && typeof payload.user_name === 'string' ? payload.user_name.trim() : ''
+  const userId =
+    payload && typeof payload.user_id === 'number' && Number.isFinite(payload.user_id)
+      ? payload.user_id
+      : null
   session = {
     accessToken: j.access_token,
     expiresAt: Date.now() + expiresIn * 1000,
     scope: typeof j.scope === 'string' ? j.scope : '',
     displayName,
+    userId,
   }
   emit()
 }

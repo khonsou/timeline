@@ -144,6 +144,12 @@ export default function MemberManagerDialog({
                       className="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 text-[13px] text-slate-700 transition-colors hover:bg-white"
                     >
                       {m.name}
+                      {/* 成员体系 P0：user_id 非空 = OAuth 实名成员，名字后带 ✓ 认证标记（样式从轻） */}
+                      {m.user_id != null && (
+                        <span className="ml-0.5 text-[10px] text-slate-400" title="OAuth 实名成员">
+                          ✓
+                        </span>
+                      )}
                     </span>
                   )}
                   <span

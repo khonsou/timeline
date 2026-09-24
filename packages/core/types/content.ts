@@ -48,6 +48,8 @@ export interface CardComment {
   body: string
   /** 创建时刻（ISO 字符串，如 new Date().toISOString()） */
   created_at: string
+  /** 作者 DAO 用户 id（成员体系 P0，可缺省）：登录态发评论时由 JWT user_id 写入；匿名/自报时缺省 */
+  author_id?: number
 }
 
 /** 旧色板 token → hex（向后兼容：v2-M1b 前数据/调用可能还带 token） */
@@ -88,6 +90,8 @@ export type ContentStatus = '待执行' | '待发布' | '已发布'
 export interface Member {
   id: string
   name: string
+  /** DAO 用户 id（成员体系 P0，可缺省）：登录用户自登记的实名成员携带；缺省 = 手工标签成员 */
+  user_id?: number
 }
 
 /**

@@ -80,7 +80,8 @@ import {
   setToken,
 } from '@/lib/api'
 import { buildBoardUrl, navigate, parseBoardHash } from '@/lib/router'
-import { getOauthDisplayName } from '@/lib/auth'
+import { getOauthDisplayName, getOauthUser } from '@/lib/auth'
+import { nextMemberId } from '@timeline/core/patch-core'
 
 // ---------------------------------------------------------------------------
 // 密码门
@@ -687,11 +688,14 @@ function SyncedBoard({
   const addComment = (id: string, draft: { author: string; body: string }) => {
     const c = items.find((x) => x.id === id)
     if (!c) return
+    const oauthUser = getOauthUser()
     const comment: CardComment = {
       id: crypto.randomUUID(),
       author: getOauthDisplayName() ?? draft.author,
       body: draft.body,
       created_at: new Date().toISOString(),
+      // author_id（成员体系 P0）仅登录态携带；条件展开避免 undefined 落键造成序列化差异
+      ...(oauthUser?.userId != null ? { author_id: oauthUser.userId } : {}),
     }
     updateCard(id, { comments: [...(c.comments ?? []), comment] })
   }
@@ -738,6 +742,40 @@ function SyncedBoard({
     )
     setGroups((prev) => prev.filter((g) => g.id !== id))
   }
+
+  // ------------------------------------------------------------------
+  // 成员体系 P0：登录用户自登记——首次全量 GET 落定后执行一次。
+  // 目录无 user_id 匹配项时追加实名成员 { id: nextMemberId, name: 显示名快照, user_id }；
+  // 同 user_id 已存在则复用不重复登记；撞名不合并（并存是设计，后续由 agent 维护）。
+  // 守卫：ref 防同 tab 重复触发；localStorage 标记防多 tab 同时打开各自登记一份
+  // （best-effort 竞态规避，user_id 查重才是真正的幂等依据）。
+  // 登记走既有 applyMembers → 镜像 effect 重算 pending → 同步层防抖推送，不新写通道。
+  // ------------------------------------------------------------------
+  const selfRegisterRef = useRef(false)
+  useEffect(() => {
+    if (!loaded || selfRegisterRef.current) return
+    const user = getOauthUser()
+    if (!user || user.userId === null) return // 匿名/无会话：一切照旧
+    selfRegisterRef.current = true
+    const currentMembers = docRef.current.members // 读 ref 最新目录，避免闭包旧值
+    if (currentMembers.some((m) => m.user_id === user.userId)) return
+    const flagKey = `timeline:member-registered:${boardId}:${user.userId}`
+    try {
+      if (localStorage.getItem(flagKey)) return
+      localStorage.setItem(flagKey, '1')
+    } catch {
+      // 存储不可用：退化为单 tab 内一次性登记（仍有 user_id 查重兜底）
+    }
+    applyMembers([
+      ...currentMembers,
+      {
+        id: nextMemberId(currentMembers),
+        name: user.displayName || `用户 ${user.userId}`, // 显示名快照，不追 DAO 改名
+        user_id: user.userId,
+      },
+    ])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded])
 
   // v2-M1 F6：消费分享链接 #card= 定位——首次全量 GET 落定后执行一次；
   // 卡片已删除 → 正常开板 + toast 提示（不报错不白屏）
@@ -989,6 +1027,7 @@ function SyncedBoard({
         }}
         onAddComment={addComment}
         onDeleteComment={deleteComment}
+        currentUserId={getOauthUser()?.userId ?? undefined}
       />
       <ProductManagerDialog
         open={productsOpen}
