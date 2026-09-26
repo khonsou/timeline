@@ -48,6 +48,13 @@ const buttonVariants = cva(
         size: "default",
         class: "h-auto gap-3 p-1 pr-5 text-base",
       },
+      {
+        // 紧凑档（规范 §5 辅助 CTA：图标底座约 36px→此处 28px、图标 14px）：
+        // 用于 TopBar 等密集工具行，与 h-8 的 ghost 按钮同一排不跳脱
+        variant: "industrial",
+        size: "sm",
+        class: "h-8 gap-2 rounded-[10px] p-0.5 pr-3 text-sm",
+      },
     ],
   }
 )
@@ -55,6 +62,10 @@ const buttonVariants = cva(
 /** industrial variant 的 44×44 信号橙图标底座（白色 20px 图标；hover 随外壳 group-hover 右移 2px） */
 export const INDUSTRIAL_ICON_CLASSES =
   "flex size-11 shrink-0 items-center justify-center rounded-[8px] bg-indigo-500 text-[#ffffff] transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:transition-none motion-reduce:group-hover:translate-x-0"
+
+/** industrial size="sm" 的 28×28 紧凑图标底座（白色 14px 图标；TopBar 工具行用） */
+export const INDUSTRIAL_ICON_SM_CLASSES =
+  "flex size-7 shrink-0 items-center justify-center rounded-[6px] bg-indigo-500 text-[#ffffff] transition-transform duration-200 group-hover:translate-x-0.5 motion-reduce:transition-none motion-reduce:group-hover:translate-x-0"
 
 function Button({
   className,
