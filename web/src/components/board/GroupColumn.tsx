@@ -257,6 +257,7 @@ function GroupColumn({
       </div>
 
       {/* 列容器：未分组列虚线边框（系统列降级视觉）；日期组复刻 DayColumn 今天/周末底色；
+          E 期：普通列底 = bg-col（亮 #E8E5E9 灰紫），周末列 bg-col-weekend 再压一档；
           拖拽悬停整体高亮 */}
       <div
         ref={setDropRef}
@@ -267,8 +268,8 @@ function GroupColumn({
             : isToday
               ? 'border-indigo-200 bg-indigo-50/70'
               : isWeekend
-                ? 'border-slate-200/70 bg-slate-100/60'
-                : 'border-slate-200/70 bg-white/60',
+                ? 'border-slate-200/70 bg-col-weekend'
+                : 'border-slate-200/70 bg-col',
           isOver ? 'border-indigo-300 bg-indigo-50/80 ring-2 ring-indigo-400/70' : '',
         ].join(' ')}
       >

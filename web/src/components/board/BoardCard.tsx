@@ -85,7 +85,8 @@ function CardView(p: CardViewProps) {
       {...(p.listeners ?? {})}
       onClick={interactive ? p.onOpenDetail : undefined}
       className={[
-        'group relative rounded-xl border px-3 py-2.5 outline-none select-none',
+        // E 期网格纪律（规范 §3）：外层卡片 rounded-2xl(16px) + 内留白 p-5(20px)
+        'group relative rounded-2xl border p-5 outline-none select-none',
         // v2-M1：transition 覆盖置灰/点亮的 opacity+filter 与高亮的 box-shadow；
         // prefers-reduced-motion 下直接切换（F2 降级方案，PRD 已定）
         'transition-[transform,box-shadow,background-color,border-color,opacity,filter] duration-150 ease-out motion-reduce:transition-none',

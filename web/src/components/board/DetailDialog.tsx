@@ -440,7 +440,7 @@ export default function DetailDialog({
       ...members.filter((m) => !(currentUserId !== undefined && m.user_id === currentUserId)),
     ]
     return (
-      <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+      <div className="rounded-xl bg-inset px-3 py-2.5">
         <p className="text-[10px] text-slate-400">{label}</p>
         {editingField === field ? (
           <select
@@ -607,7 +607,7 @@ export default function DetailDialog({
 
               {/* 3. 信息网格：计划发布时间 / 归属产品（均可点击编辑） */}
               <div className="mt-4 grid grid-cols-2 gap-3">
-                <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+                <div className="rounded-xl bg-inset px-3 py-2.5">
                   <p className="text-[10px] text-slate-400">计划发布时间</p>
                   {editingField === 'publish_at' ? (
                     <input
@@ -634,7 +634,7 @@ export default function DetailDialog({
                     </p>
                   )}
                 </div>
-                <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+                <div className="rounded-xl bg-inset px-3 py-2.5">
                   <p className="text-[10px] text-slate-400">归属产品</p>
                   {editingField === 'product_id' ? (
                     <select
@@ -700,7 +700,7 @@ export default function DetailDialog({
               </div>
 
               {/* 3.5 状态分段：点击即切换；切到非「已发布」时 App 层强制三指标置 null（锁定） */}
-              <div data-status-seg className="mt-3 flex items-center gap-1 rounded-xl bg-slate-50 p-1">
+              <div data-status-seg className="mt-3 flex items-center gap-1 rounded-xl bg-inset p-1">
                 <span className="shrink-0 px-2 text-[10px] text-slate-400">状态</span>
                 {STATUSES.map((s) => {
                   const active = card.status === s
@@ -906,7 +906,7 @@ export default function DetailDialog({
                 ) : (
                   <ul className="mt-1.5 space-y-2">
                     {comments.map((c) => (
-                      <li key={c.id} data-comments-item className="group/cmt rounded-lg bg-slate-50 px-2.5 py-1.5">
+                      <li key={c.id} data-comments-item className="group/cmt rounded-lg bg-inset px-2.5 py-1.5">
                         <div className="flex items-baseline gap-2">
                           <span
                             data-comments-author

@@ -120,6 +120,9 @@
   :root {
     /* 页面画布底色（A 期 token 化，取代 bg-[#f4f5f7] 硬编码 ×7 与暗色补丁） */
     --page-bg: #F0EDED;
+    /* E 期内嵌信息卡片底（规范 §1 #EBE8EB）：接近页面底但不相同，
+       详情弹窗的信息格/评论项/状态分段用它与卡白形成可感知但不喧宾的层次 */
+    --inset-bg: #EBE8EB;
     /* 动效令牌：快速启动、缓慢落定；时长三档 150 press / 200 micro / 250 surface */
     --ease-industrial: cubic-bezier(0.16, 1, 0.3, 1);
     /* BoardGraph 边色 / 点亮光晕（rgb 三通道，供 stroke / rgba() 使用） */
@@ -171,6 +174,8 @@
 
   .dark {
     --page-bg: #000000; /* 纯黑底（禁藏蓝） */
+    /* 近黑暖灰一档（= 暗色 slate-50 值）：黑底上比卡片面 #17141B 亮半档的内嵌格 */
+    --inset-bg: #1E1B23;
     --graph-edge: 82 76 92;         /* 黑底上的普通边 = 新 slate-600 明度 */
     --graph-edge-front: 255 106 51; /* 推进前线暗底提亮 #FF6A33 */
     --graph-edge-broken: 245 158 11;
@@ -225,6 +230,11 @@
 .dark .bg-slate-900\/40 {
   background-color: rgb(0 0 0 / 0.55);
 }
+/* E 期暗色死角：SearchPalette 遮罩 bg-slate-900/30 同理——暗色下 slate-900 翻白，
+ * 30% 白纱罩会把整块看板洗成奶灰，改回纯黑遮罩（透明度对齐 40 档观感） */
+.dark .bg-slate-900\/30 {
+  background-color: rgb(0 0 0 / 0.45);
+}
 
 /* A 期动效令牌：全站 transition 系列默认缓动统一为 ease-industrial
  * （非 @layer，压过 utilities 里 transition-* 自带的默认缓动） */
@@ -240,6 +250,29 @@
   /* 页面画布底色 token（亮 #F0EDED 暖灰白 / 暗纯黑） */
   .bg-page {
     background-color: var(--page-bg);
+  }
+
+  /* E 期看板列容器底（规范 §1 模块网格背景 #E8E5E9 = 新 slate-200）：
+   * 亮色 = 灰紫列底与页面底 #F0EDED 拉开、卡白突出（页面底 < 列底 < 卡白）；
+   * 暗色 = 近黑暖灰半透（沿用原 bg-white/60 黑底合成观感：页面黑 < 列底 < 卡片面） */
+  .bg-col {
+    background-color: rgb(var(--c-slate-200));
+  }
+  .bg-col-weekend {
+    /* 周末列：列底再压一档灰紫（slate-300 混 30%），与普通列保持细微可辨 */
+    background-color: color-mix(in srgb, rgb(var(--c-slate-300)) 30%, rgb(var(--c-slate-200)));
+  }
+  /* 内嵌信息卡片底（详情弹窗信息格/评论项/状态分段；亮 #EBE8EB / 暗近黑暖灰一档） */
+  .bg-inset {
+    background-color: var(--inset-bg);
+  }
+  /* 暗色列底：--c-white 暗色值 = 近黑暖灰 #17141B，半透叠在黑页底上形成层级；
+   * 周末列再抬一档（0.7 > 0.5），对应亮色「周末更深」反转到暗色「周末更亮」 */
+  .dark .bg-col {
+    background-color: rgb(var(--c-white) / 0.5);
+  }
+  .dark .bg-col-weekend {
+    background-color: rgb(var(--c-white) / 0.7);
   }
 
   /* 细滚动条收敛（原 4 份任意值类串拷贝 → 全局 utility）：
