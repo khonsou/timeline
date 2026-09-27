@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react'
 import * as DialogPrimitive from '@radix-ui/react-dialog'
 import { Plus, XIcon } from 'lucide-react'
 import { DIALOG_ANIM_CLASSES, Dialog, DialogOverlay, DialogPortal, DialogTitle } from '@/components/ui/dialog'
-import { Button, INDUSTRIAL_ICON_CLASSES } from '@/components/ui/button'
+import { Button, INDUSTRIAL_ICON_SM_CLASSES } from '@/components/ui/button'
 import BrandShell from '@/components/brand/BrandShell'
 import {
   ApiError,
@@ -151,12 +151,13 @@ export default function HomePage() {
             />
             <Button
               variant="industrial"
+              size="sm"
               data-create-btn
               onClick={doCreate}
               disabled={!name.trim() || !password || creating}
             >
-              <span className={INDUSTRIAL_ICON_CLASSES}>
-                <Plus className="size-5" />
+              <span className={INDUSTRIAL_ICON_SM_CLASSES}>
+                <Plus className="size-3.5" />
               </span>
               {creating ? '创建中…' : '创建看板'}
             </Button>
