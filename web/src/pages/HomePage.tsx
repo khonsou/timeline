@@ -6,7 +6,8 @@
  *  - 删除：确认框列出将失去的内容（名称/卡片数/最后更新）→ 输该板密码 → 物理删除
  *
  * D 期品牌面（visual-upgrade-plan.md §4.2）：首页为低频单屏品牌面，恒深色构图——
- * BrandShell 纯黑骨架（不随主题翻转）+ 白容器浮层左右不对称分布（新建左 5 / 列表右 7）。
+ * BrandShell 纯黑骨架（不随主题翻转）+ 暖灰白（slate-100 / #F0EDED）功能卡单列堆叠
+ * （新建在上、列表在下，max-w-3xl 居中），与纯黑底降对比、内嵌输入框保持纯白层次。
  * 功能零回归：全部 data-* 与交互逻辑不变。
  */
 import { useEffect, useState } from 'react'
@@ -125,10 +126,11 @@ export default function HomePage() {
       }
       note="多用户看板服务 —— 选择一块看板进入，或新建一块。看板密码由创建者设定，删除需重新验证。"
     >
-      {/* 功能卡左右不对称分布（桌面 5/7 两栏，窄屏回落单列） */}
-      <div className="grid gap-4 lg:grid-cols-12">
+      {/* 功能卡单列堆叠（新建在上、列表在下）；卡面用 slate-100 暖灰白（brand-scope 钉回
+          亮色值 = #F0EDED），与纯黑底降对比，内嵌输入框保持纯白形成层次 */}
+      <div className="mx-auto grid w-full max-w-3xl gap-4">
         {/* 新建看板 */}
-        <section className="rounded-2xl border border-slate-200/80 bg-white p-5 text-slate-800 shadow-sm lg:col-span-5">
+        <section className="rounded-2xl border border-slate-200/80 bg-slate-100 p-5 text-slate-800 shadow-sm">
           <h2 className="text-[14px] font-semibold">新建看板</h2>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <input
@@ -183,8 +185,8 @@ export default function HomePage() {
         </section>
 
         {/* 看板列表 */}
-        <section className="rounded-2xl border border-slate-200/80 bg-white text-slate-800 shadow-sm lg:col-span-7">
-          <div className="border-b border-slate-100 px-5 py-3">
+        <section className="rounded-2xl border border-slate-200/80 bg-slate-100 text-slate-800 shadow-sm">
+          <div className="border-b border-slate-200/70 px-5 py-3">
             <h2 className="text-[14px] font-semibold">
               看板列表
               <span className="ml-2 text-[11px] font-normal tabular-nums text-slate-400">
@@ -219,7 +221,7 @@ export default function HomePage() {
                     key={b.board_id}
                     data-board-row
                     data-board-id={b.board_id}
-                    className="border-t border-slate-50 transition-colors hover:bg-slate-50/60"
+                    className="border-t border-slate-200/60 transition-colors hover:bg-white/70"
                   >
                     <td className="px-5 py-2.5">
                       <button
