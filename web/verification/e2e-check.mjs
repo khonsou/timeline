@@ -59,6 +59,13 @@
  *   t77 错误 state 拒绝且不交换 code、t78 error/无 pending 分支不调 token endpoint、
  *   t79 登录后看板密码门照旧 + 退出登录门复现。
  *
+ * 登录态（JWT）专项（t80–t82，共 82 项）：评论署名 OAuth 化 + 成员体系 P0 的登录态路径
+ *   （此前仅 t74 覆盖无 claim 回退路径）。mock 实例全程保持默认模式（不透明 token），
+ *   JWT 会话走 authorize 的 mock_jwt=1 逐请求开关（mock-oauth.mjs），完整真实链路
+ *   authorize → /oauth/callback → exchange（replaceLocation 为 SPA 跳转，会话不丢）：
+ *   t80 JWT 登录态评论署名（author=本地体验 + author_id=9001，UI 与服务端落盘双断言）、
+ *   t81 惰性自登记 + 负责人下拉置顶「（本人）」并指定落盘、t82 同 user_id 再进板复用不追加。
+ *
  * 运行：node verification/e2e-check.mjs [用例名前缀…]
  *   - 过滤参数：node verification/e2e-check.mjs t03 t07 t08 → 只跑前缀匹配的用例（其余记 SKIP）；不带参数 = 全量
  *   - 自带 fixture：进程内 mock Auth（:5196）+ spawn API server（:5198，独立 tmp sqlite）
@@ -69,7 +76,7 @@
  * 端口纪律：5196/5198/5199 本脚本独占（启动前检查，被占则报错退出）；7100/7101/7102 永远不碰。
  */
 import { execSync, spawn } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { createWriteStream, existsSync, mkdirSync, readFileSync, rmSync, rmdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -466,6 +473,78 @@ async function ensureOauthLogin(pg) {
 }
 const gotoApp = (pg, url, opts) => pg.goto(url, opts ?? { waitUntil: 'domcontentloaded' }).then(() => ensureOauthLogin(pg))
 const reloadApp = (pg) => pg.reload({ waitUntil: 'domcontentloaded' }).then(() => ensureOauthLogin(pg))
+
+// ---------------------------------------------------------------------------
+// JWT 登录态注入（t80–t82：评论署名 OAuth 化 / 成员体系 P0）：
+// mock :5196 全程默认模式（不透明 token，无 user_name/user_id claim）；authorize 带
+// mock_jwt=1 可让该次 code 的 exchange 返回假 JWT（mock-oauth.mjs 逐请求开关，一次性消费）。
+// 走完整真实链路：手写 pending → 整页跳 authorize → 302 回 /oauth/callback → exchange →
+// replaceLocation(return_to)（SPA 跳转，JWT 会话随之带进看板页）。
+// 调用前 pg 须已在应用源上（sessionStorage 可写）；returnTo 为站内路径。
+// ---------------------------------------------------------------------------
+const b64urlRandom = (n) => randomBytes(n).toString('base64url')
+async function jwtLoginOn(pg, returnTo) {
+  const state = b64urlRandom(16)
+  const verifier = b64urlRandom(48)
+  const challenge = createHash('sha256').update(verifier).digest('base64url')
+  await pg.evaluate(
+    (p) => sessionStorage.setItem('timeline:oauth:pending', JSON.stringify(p)),
+    { state, code_verifier: verifier, return_to: returnTo },
+  )
+  const q = new URLSearchParams({
+    client_id: 'timeline',
+    response_type: 'code',
+    redirect_uri: `${WEB}/oauth/callback`,
+    scope: 'profile phone',
+    state,
+    code_challenge: challenge,
+    code_challenge_method: 'S256',
+    mock_jwt: '1',
+  })
+  await pg.goto(`${MOCK_ORIGIN}/oauth/authorize?${q.toString()}`, { waitUntil: 'domcontentloaded' })
+  // 回调页异步 exchange 后 SPA 跳 return_to；失败则停在 [data-oauth-error]
+  await pg.waitForFunction(
+    () =>
+      !!document.querySelector('[data-oauth-error]') ||
+      (!document.querySelector('[data-oauth-callback]') &&
+        !document.querySelector('[data-auth-gate]') &&
+        (document.getElementById('root')?.childElementCount ?? 0) > 0),
+    { timeout: 20000 },
+  )
+  const err = await pg.evaluate(() => document.querySelector('[data-oauth-error]')?.textContent ?? null)
+  if (err) throw new Error(`JWT 登录回调失败：${err}`)
+}
+
+/** 指定页面轮询（独立浏览器上下文用例版 waitFor；主 page 版用全局 ev 不适用） */
+async function waitForOn(pg, fn, timeout = 9000, label = '') {
+  const t0 = Date.now()
+  for (;;) {
+    let v
+    try {
+      v = await fn()
+    } catch {
+      v = null
+    }
+    if (v) return v
+    if (Date.now() - t0 > timeout) throw new Error(`waitForOn 超时${label ? `：${label}` : ''}`)
+    await sleep(120)
+  }
+}
+
+/** 指定页面开卡 / 关弹窗（openCard/closeDialog 绑定主 page，独立上下文用例需要 pg 版） */
+async function openCardOn(pg, title) {
+  await pg.evaluate((t0) => {
+    const el = [...document.querySelectorAll('.h-full.overflow-auto [data-card-title]')].find(
+      (p) => p.textContent === t0,
+    )
+    el?.closest('.group')?.click()
+  }, title)
+  await pg.waitForFunction(() => !!document.querySelector('[data-slot="dialog-content"]'), { timeout: 6000 })
+}
+async function closeDialogOn(pg) {
+  await pg.keyboard.press('Escape')
+  await pg.waitForFunction(() => !document.querySelector('[data-slot="dialog-content"]'), { timeout: 6000 })
+}
 
 async function waitFor(fn, timeout = 9000, label = '') {
   const t0 = Date.now()
@@ -3960,6 +4039,216 @@ async function main() {
       await pg.waitForFunction(() => !!document.querySelector('[data-auth-gate]'), { timeout: 5000 })
       ok(await pg.evaluate(() => !!document.querySelector('[data-oauth-login]')), '退出后登录门复现')
       ok(await pg.evaluate(() => !document.querySelector('[data-home]')), '退出后不渲染首页内容')
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  // ---------------------------------------------------------------------------
+  // 登录态（JWT）专项（t80–t82）：评论署名 OAuth 化 + 成员体系 P0。
+  // 此前 e2e 只覆盖无 claim 回退路径（t74）；这里经 mock_jwt=1 逐请求开关拿 JWT 会话
+  // （user_id=9001 / user_name=本地体验），全程真实 authorize→callback→exchange 链路。
+  // 落盘断言一律查服务端 doc（api GET），不依赖某上下文的 localStorage 缓存。
+  // ---------------------------------------------------------------------------
+  const JWT_NAME = '本地体验'
+  const JWT_UID = 9001
+  let jwtBoardId = null
+  let jwtBoardToken = null
+  let jwtMemberId = null
+
+  await t('t80 JWT 登录态评论署名：author 取 OAuth user_name + author_id=9001（UI 与服务端落盘双断言）', async () => {
+    const doc = {
+      items: [
+        {
+          id: 'e2e-j01',
+          title: 'JWT 署名卡',
+          type: '图文',
+          publish_at: `${TODAY}T10:00`,
+          roi: null,
+          comment: '',
+          product_id: '',
+          status: '待发布',
+          content_owner_id: '',
+          delivery_owner_id: '',
+          propagation_4h: null,
+          engagement_4h: null,
+        },
+      ],
+      orders: { 'e2e-j01': 0 },
+      products: [],
+      members: [],
+      meta: { name: 'E2E JWT 署名板', created_at: new Date().toISOString() },
+    }
+    const mk = await api('POST', '/boards', { name: 'E2E JWT 署名板', password: GATE_PASS, doc })
+    eq(mk.status, 201, '创建 JWT 署名板')
+    const bid = mk.body.board_id
+    const auth = await api('POST', `/boards/${bid}/auth`, { password: GATE_PASS })
+    eq(auth.status, 200, 'JWT 署名板 auth')
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      // 先上应用源写板级 token（免密码门），再走 JWT 登录直达看板
+      await pg.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+      await pg.evaluate((k, tk) => sessionStorage.setItem(k, tk), `timeline-board-v4:token:${bid}`, auth.body.token)
+      await jwtLoginOn(pg, `/b/${bid}?poll=1000&push=200`)
+      await pg.waitForFunction(
+        () => document.querySelectorAll('.h-full.overflow-auto [data-date]').length === 61,
+        { timeout: 30000 },
+      )
+      await openCardOn(pg, 'JWT 署名卡')
+      await pg.waitForFunction(() => !!document.querySelector('[data-comments-input]'), { timeout: 6000 })
+      // 登录态下输入全文作正文（不解析「署名:内容」前缀），author 由 OAuth 会话供给
+      await pg.evaluate(() => {
+        const el = document.querySelector('[data-comments-input]')
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+        setter.call(el, '登录态评论正文')
+        el.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await sleep(150)
+      await pg.evaluate(() => document.querySelector('[data-comments-send]')?.click())
+      await waitForOn(
+        pg,
+        () =>
+          pg.evaluate(() => {
+            const items = [...document.querySelectorAll('[data-comments-item]')]
+            return items.length === 1 && (items[0].textContent ?? '').includes('登录态评论正文')
+          }),
+        6000,
+        '评论出现在列表',
+      )
+      const uiAuthor = await pg.evaluate(
+        () => document.querySelector('[data-comments-author]')?.textContent ?? null,
+      )
+      eq(uiAuthor, JWT_NAME, 'UI 评论署名 = OAuth user_name')
+      // 服务端落盘：author=本地体验 + author_id=9001（同步层 push=200ms 防抖，轮询等待）
+      await waitForOn(
+        pg,
+        async () => {
+          const d = (await api('GET', `/boards/${bid}`, undefined, auth.body.token)).body?.doc
+          const c = d?.items?.find((i) => i.id === 'e2e-j01')?.comments?.[0]
+          return c && c.author === JWT_NAME && c.author_id === JWT_UID && c.body === '登录态评论正文'
+        },
+        8000,
+        '评论带 author_id=9001 落盘',
+      )
+      await closeDialogOn(pg)
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  await t('t81 惰性自登记 + 负责人选本人：JWT 首开板自动登记 user_id=9001 成员 → 下拉置顶「（本人）」→ 指定落盘', async () => {
+    const doc = {
+      items: [
+        {
+          id: 'e2e-j02',
+          title: 'JWT 负责人卡',
+          type: '图文',
+          publish_at: `${TODAY}T11:00`,
+          roi: null,
+          comment: '',
+          product_id: '',
+          status: '待发布',
+          content_owner_id: '',
+          delivery_owner_id: '',
+          propagation_4h: null,
+          engagement_4h: null,
+        },
+      ],
+      orders: { 'e2e-j02': 0 },
+      products: [],
+      members: [],
+      meta: { name: 'E2E JWT 成员板', created_at: new Date().toISOString() },
+    }
+    const mk = await api('POST', '/boards', { name: 'E2E JWT 成员板', password: GATE_PASS, doc })
+    eq(mk.status, 201, '创建 JWT 成员板')
+    jwtBoardId = mk.body.board_id
+    const auth = await api('POST', `/boards/${jwtBoardId}/auth`, { password: GATE_PASS })
+    eq(auth.status, 200, 'JWT 成员板 auth')
+    jwtBoardToken = auth.body.token
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      await pg.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+      await pg.evaluate(
+        (k, tk) => sessionStorage.setItem(k, tk),
+        `timeline-board-v4:token:${jwtBoardId}`,
+        jwtBoardToken,
+      )
+      await jwtLoginOn(pg, `/b/${jwtBoardId}?poll=1000&push=200`)
+      await pg.waitForFunction(
+        () => document.querySelectorAll('.h-full.overflow-auto [data-date]').length === 61,
+        { timeout: 30000 },
+      )
+      // 惰性自登记：首开板后目录自动追加绑定 user_id=9001 的成员（防抖推送后轮询服务端）
+      const member = await waitForOn(
+        pg,
+        async () => {
+          const d = (await api('GET', `/boards/${jwtBoardId}`, undefined, jwtBoardToken)).body?.doc
+          return d?.members?.find((m) => m.user_id === JWT_UID) ?? null
+        },
+        8000,
+        'members 自动登记 user_id=9001 成员',
+      )
+      eq(member.name, JWT_NAME, '自登记成员名 = 显示名快照')
+      ok(/^M-\d{4}$/.test(member.id), `自登记成员 id 格式（${member.id}）`)
+      jwtMemberId = member.id
+      // 负责人下拉：本人条目紧随「未分配」置顶，带 ✓ 认证标记与「（本人）」后缀
+      await openCardOn(pg, 'JWT 负责人卡')
+      await pg.evaluate(() => document.querySelector('[data-edit-field="content_owner_id"]')?.click())
+      await pg.waitForFunction(() => !!document.querySelector('[data-edit-input="content_owner_id"]'), {
+        timeout: 6000,
+      })
+      const opt = await pg.evaluate(() => {
+        const opts = [...document.querySelectorAll('[data-edit-input="content_owner_id"] option')]
+        return { first: opts[0]?.value ?? null, self: opts[1] ? { value: opts[1].value, text: opts[1].textContent ?? '' } : null }
+      })
+      eq(opt.first, '', '首项为「未分配」')
+      ok(opt.self && opt.self.value === jwtMemberId, '本人条目置顶（紧随未分配）')
+      ok(opt.self.text.includes('✓') && opt.self.text.includes(JWT_NAME) && opt.self.text.includes('（本人）'), `本人条目文案（${opt.self.text}）`)
+      await pg.select('[data-edit-input="content_owner_id"]', jwtMemberId)
+      await waitForOn(
+        pg,
+        async () => {
+          const d = (await api('GET', `/boards/${jwtBoardId}`, undefined, jwtBoardToken)).body?.doc
+          return d?.items?.find((i) => i.id === 'e2e-j02')?.content_owner_id === jwtMemberId
+        },
+        8000,
+        '本人指定为内容负责人落盘',
+      )
+      await closeDialogOn(pg)
+    } finally {
+      await ctx.close()
+    }
+  })
+
+  await t('t82 同 user_id 再进板复用已有成员：不重复追加（成员总数与 id 不变）', async () => {
+    ok(jwtBoardId && jwtBoardToken && jwtMemberId, '前置 t81 就绪')
+    // 全新浏览器上下文（localStorage 登记标记也为空）→ 幂等只靠 user_id 查重，正是要验的路径
+    const ctx = await browser.createBrowserContext()
+    const pg = await ctx.newPage()
+    await pg.setViewport(VIEW)
+    try {
+      await pg.goto(`${WEB}/`, { waitUntil: 'domcontentloaded' })
+      await pg.evaluate(
+        (k, tk) => sessionStorage.setItem(k, tk),
+        `timeline-board-v4:token:${jwtBoardId}`,
+        jwtBoardToken,
+      )
+      await jwtLoginOn(pg, `/b/${jwtBoardId}?poll=1000&push=200`)
+      await pg.waitForFunction(
+        () => document.querySelectorAll('.h-full.overflow-auto [data-date]').length === 61,
+        { timeout: 30000 },
+      )
+      // 反向断言需要等满一个「自登记 + 防抖推送」窗口：若重复登记，服务端会多出一条
+      await sleep(1500)
+      const d = (await api('GET', `/boards/${jwtBoardId}`, undefined, jwtBoardToken)).body?.doc
+      const bound = (d?.members ?? []).filter((m) => m.user_id === JWT_UID)
+      eq(bound.length, 1, 'user_id=9001 成员仍只有 1 条')
+      eq(bound[0].id, jwtMemberId, '复用原成员 id（未新登记）')
+      eq(d?.members?.length, 1, '成员总数不变（未追加任何新条目）')
     } finally {
       await ctx.close()
     }

@@ -14,6 +14,12 @@
  *   供 `npm run dev` 本地体验评论署名与成员自登记；默认模式仍返回不透明串
  *   'mock-access-token'（t74 断言评论回退自报署名靠它）。
  *
+ * 逐请求 JWT 开关（e2e 登录态用例 t80–t82 专用，默认行为不变）：
+ *   authorize 带可选参数 mock_jwt=1 时，该次签发的 code 被标记；对应 code 的
+ *   token exchange 无论实例模式都返回假 JWT（一次性消费）。不带该参数的请求
+ *   与原来一字不差——e2e 里 vite 的 VITE_AUTH_ORIGIN 全程指向默认模式实例，
+ *   登录态用例靠此开关在单一实例上拿到 JWT 会话。
+ *
  * 端点（对齐 docs/oauth-auth-integration.md §4 的 Auth 侧契约）：
  *   GET  /oauth/authorize   校验 client_id/response_type/redirect_uri/state/PKCE 参数，
  *                           通过则 302 回 redirect_uri?code=mock-code-N&state=<回显>
@@ -31,6 +37,8 @@ const DEFAULT_PORT = 5196
 
 const stats = { authorize: 0, token: 0 }
 let codeSeq = 0
+/** authorize?mock_jwt=1 标记的 code 集合（一次性消费；见文件头「逐请求 JWT 开关」） */
+const jwtCodes = new Set()
 
 /** 读取当前计数快照（进程内 e2e 用；等价于 GET /__stats） */
 export function getMockOauthStats() {
@@ -95,8 +103,10 @@ export function startMockOauth(port = DEFAULT_PORT, opts = {}) {
       }
       stats.authorize += 1
       codeSeq += 1
+      const code = `mock-code-${codeSeq}`
+      if (url.searchParams.get('mock_jwt') === '1') jwtCodes.add(code)
       const target = new URL(url.searchParams.get('redirect_uri'))
-      target.searchParams.set('code', `mock-code-${codeSeq}`)
+      target.searchParams.set('code', code)
       target.searchParams.set('state', url.searchParams.get('state'))
       res.writeHead(302, { location: target.toString() })
       res.end()
@@ -121,8 +131,10 @@ export function startMockOauth(port = DEFAULT_PORT, opts = {}) {
           return
         }
         stats.token += 1
+        // 逐请求开关：该 code 由 mock_jwt=1 的 authorize 签发（delete 一次性消费），或实例级 --jwt
+        const wantJwt = jwtMode || jwtCodes.delete(p.get('code'))
         json(res, 200, {
-          access_token: jwtMode ? mockJwt() : 'mock-access-token',
+          access_token: wantJwt ? mockJwt() : 'mock-access-token',
           token_type: 'Bearer',
           expires_in: 86400,
           scope: 'profile phone',
