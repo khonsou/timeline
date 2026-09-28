@@ -51,6 +51,7 @@ oauth:
       type: h5
       redirect_uris:
         - https://timeline.angrymiao.com/aVoSaywtHjXCA/oauth/callback
+        - https://timeline.angrymiao.com/test/oauth/callback
       allowed_scopes:
         - profile
         - phone
@@ -65,6 +66,10 @@ CLIENT_ID    = timeline
 REDIRECT_URI = https://timeline.angrymiao.com/aVoSaywtHjXCA/oauth/callback
 SCOPE        = profile phone
 ```
+
+`test` 环境复用同一个 `timeline` Client，Auth 白名单还需登记
+`https://timeline.angrymiao.com/test/oauth/callback`。前端根据实际访问路径生成
+`redirect_uri`，无需另建 OAuth Client。
 
 Auth 授权页显示的应用名称来自 Client 配置中的 `name`，最终由授权上下文的 `client_name` 提供；Timeline 前端不要把 `Timeline` 写死到登录页。
 
