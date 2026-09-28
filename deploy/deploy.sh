@@ -220,9 +220,9 @@ build_push_backend() {
 
 build_push_frontend() {
   echo "[timeline] 步骤 1/3：构建客户端镜像"
-  MSYS2_ARG_CONV_EXCL='--build-arg' "$DOCKER_BIN" build \
+  "$DOCKER_BIN" build \
     -f "$(docker_path "$DEPLOY_DIR/docker/frontend.Dockerfile")" \
-    --build-arg "BASE_PATH=$APP_BASE_PATH" \
+    --build-arg "BASE_PATH_NAME=${APP_BASE_PATH#/}" \
     -t "$WEB_IMAGE" \
     "$(docker_path "$ROOT_DIR")"
 

@@ -1,6 +1,6 @@
 FROM node:22.19.0-bookworm-slim AS builder
 
-ARG BASE_PATH=/aVoSaywtHjXCA
+ARG BASE_PATH_NAME=aVoSaywtHjXCA
 
 WORKDIR /app
 
@@ -14,13 +14,13 @@ RUN npm ci --workspace @timeline/web --include-workspace-root=false
 
 COPY packages/core packages/core
 COPY web web
-ENV VITE_BASE_PATH=${BASE_PATH}/
+ENV VITE_BASE_PATH=/${BASE_PATH_NAME}/
 RUN npm run build -w @timeline/web
 
 FROM nginx:1.27-alpine
 
-ARG BASE_PATH=/aVoSaywtHjXCA
+ARG BASE_PATH_NAME=aVoSaywtHjXCA
 
 COPY deploy/docker/frontend.nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/web/dist /usr/share/nginx/html
-RUN sed -i "s|__BASE_PATH__|${BASE_PATH}|g" /etc/nginx/conf.d/default.conf
+RUN sed -i "s|__BASE_PATH__|/${BASE_PATH_NAME}|g" /etc/nginx/conf.d/default.conf
