@@ -118,32 +118,49 @@ pm2 restart timeline-board-api    # packages/server 或 packages/core 有变化�
 - token 存于浏览器 sessionStorage（按板一键），关标签页即失效；12h 后服务端过期。
 - 建议上 HTTPS（certbot）：看板密码与 token 均走网络明文传输，裸 HTTP 仅限内网/试用。
 
-## 8. Kubernetes test 集群部署
+## 8. Kubernetes test / prod 部署
 
-`deploy/deploy.sh` 是唯一发布入口，交互选择发布哪一侧：
+共用域名和 OAuth Client，按 URL 路径与 Kubernetes namespace 隔离：
 
-```bash
-bash deploy/deploy.sh
-# 1) 更新服务端
-# 2) 更新客户端
-```
+| 环境 | namespace | 地址 | NAS 路径 |
+| --- | --- | --- | --- |
+| prod | `angrymiao-prod` | `https://timeline.angrymiao.com/aVoSaywtHjXCA` | `/timeline-board`（原 test 数据） |
+| test | `angrymiao-test` | `https://timeline.angrymiao.com/test` | `/timeline-board-test`（新库） |
 
-脚本默认使用：
-
-- namespace：`angrymiao-test`
-- Kubernetes context：`kubernetes-admin-c72d7454d43804ccc87327b729e670ba4`
-- 镜像仓库：`registry.cn-shenzhen.aliyuncs.com/angrymiao/timeline`
-- 访问地址：`https://timeline.angrymiao.com/aVoSaywtHjXCA`
-
-首次部署先选择 `1` 发布服务端，再选择 `2` 发布客户端。首次发布服务端时需要提供固定的 Token 签名密钥；如果集群里还没有 `timeline-board-secret`，执行：
+发布命令为 `bash deploy/deploy.sh <test|prod> <1|2>`；`1` 更新后端，`2` 更新前端。例如：
 
 ```bash
-export BOARD_SECRET='生成并妥善保存的固定随机字符串'
-bash deploy/deploy.sh
+bash deploy/deploy.sh prod 1
+bash deploy/deploy.sh prod 2
+bash deploy/deploy.sh test 1
+bash deploy/deploy.sh test 2
 ```
 
-已有 `timeline-board-secret` 时脚本会复用它，不会用新的环境变量覆盖线上密钥。镜像使用 Git 提交号作为 Tag；工作区有未提交改动时会追加时间戳，避免 K8s 因 Pod template 未变化而继续运行旧镜像。
+首次 test 部署如果没有 `timeline-board-secret`，须通过 `BOARD_SECRET` 环境变量提供固定密钥。prod 首次部署会复用 test 当前的密钥，并复制 test namespace 的 `aliyun-reg-secret` 与 `am-tls`。prod 与 test 部署后应使用不同的 `timeline-board-secret`。
 
-服务端是单副本 `Recreate` Deployment，SQLite PVC 挂载到 `/data`，运行时路径为 `/data/boards.sqlite`。PVC 使用集群已有的 NAS CSI `nasplugin.csi.alibabacloud.com`，挂载 NAS 子目录 `/timeline-board`，并使用 `Retain` 回收策略。不要扩展后端副本数，也不要让多个 Pod 共享 SQLite 文件。NAS 文件系统故障或数据删除仍可能导致数据不可恢复，应按集群运维规范定期使用 SQLite `.backup` 或 NAS 快照/备份；发布脚本不会自动执行备份/恢复。
+Auth 保持同一个 `timeline` Client；必须把 `https://timeline.angrymiao.com/test/oauth/callback` 加入 redirect URI 白名单，prod 回调地址维持原值。前端按访问路径生成回调地址。
 
-K8s 清单只通过发布脚本渲染镜像 Tag、域名和应用前缀后提交，验证和更新均使用 `kubectl apply`，不会采用 `finance-table` 旧脚本中的先删除再创建方式。脚本会执行镜像构建、镜像推送和所选资源的集群更新；实际发布前应确认 Docker 登录状态、镜像仓库权限和目标 context。
+一次性迁移必须按此顺序执行，禁止两个后端同时挂载原卷：
+
+1. 先确认 test 新 PVC `timeline-board-test-data` 已 Bound 且 `/data/boards.sqlite` 不存在。
+2. 将 test 后端缩到 0，确认 Pod 已退出；此后旧库不再有写入。立即做一份新的 SQLite 一致性备份，下载到集群外并验证 `integrity_check`、看板数、审计数和变更集数。此前的备份只作额外保险，不能代替切换前快照。
+3. 删除的只能是旧 PVC `angrymiao-test/timeline-board-data`；不要删除 PV `timeline-board-nas`，它的回收策略是 `Retain`。
+4. 清除旧 PV 的 claimRef：`kubectl patch pv timeline-board-nas --type=merge -p '{"spec":{"claimRef":null}}'`。确认该 PV 为 Available 后，运行 `bash deploy/deploy.sh prod 1`，使 prod PVC 接管原 NAS `/timeline-board`。
+5. 验证 prod PVC 为 Bound、prod SQLite `integrity_check` 为 `ok`，并核对看板/审计/变更集数与切换前快照一致后，才算数据切换完成。
+6. prod 首次部署已复制旧 test 的签名密钥后，再为 test 生成独立密钥并运行 `bash deploy/deploy.sh test 1`。test 后端只挂载新 `/timeline-board-test`：
+
+   ```bash
+   BOARD_SECRET="$(openssl rand -hex 32)"
+   kubectl create secret generic timeline-board-secret -n angrymiao-test \
+     --from-literal="BOARD_SECRET=$BOARD_SECRET" --dry-run=client -o yaml \
+     | kubectl apply -f -
+   unset BOARD_SECRET
+   ```
+
+7. test OAuth 回调白名单登记完成后，再运行 `bash deploy/deploy.sh test 2` 切换 test 前端路由。prod 保持 `/aVoSaywtHjXCA`。
+
+如果第 3 步后 prod 未能绑定，先停止 prod 后端，保留 PV 和外部备份，再处理 claimRef/PVC；不要格式化、删除 NAS 子目录或让 test 后端重新挂载正在被 prod 使用的原卷。test 新卷使用独立 `timeline-board-test-nas` PV，回收策略同样为 `Retain`。
+
+镜像使用 Git 提交号作为 Tag；工作区有未提交改动时会追加时间戳。脚本在应用资源前执行 server-side dry-run，并使用 `kubectl apply` 更新。后端是单副本 `Recreate` Deployment，SQLite 路径为 `/data/boards.sqlite`。NAS 故障或误删仍需依靠独立备份或 NAS 快照恢复。
+
+发布脚本会拒绝在原 NAS 卷仍绑定 test 时开始 prod 发布；prod 前端还要求生产 PVC 已 Bound 到原卷。

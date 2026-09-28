@@ -1,9 +1,9 @@
 apiVersion: v1
 kind: PersistentVolume
 metadata:
-  name: timeline-board-test-nas
+  name: timeline-board-nas
   labels:
-    alicloud-pvname: timeline-board-test-nas
+    alicloud-pvname: timeline-board-nas
 spec:
   capacity:
     storage: 20Gi
@@ -13,10 +13,10 @@ spec:
   storageClassName: ""
   csi:
     driver: nasplugin.csi.alibabacloud.com
-    volumeHandle: timeline-board-test-nas
+    volumeHandle: timeline-board-nas
     volumeAttributes:
       server: 2666949dcf-yyf68.cn-shenzhen.nas.aliyuncs.com
-      path: /timeline-board-test
+      path: /timeline-board
   mountOptions:
     - nolock,tcp,noresvport
     - vers=3
@@ -24,7 +24,7 @@ spec:
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: timeline-board-test-data
+  name: timeline-board-data
   namespace: __NAMESPACE__
 spec:
   accessModes:
@@ -35,4 +35,4 @@ spec:
   storageClassName: ""
   selector:
     matchLabels:
-      alicloud-pvname: timeline-board-test-nas
+      alicloud-pvname: timeline-board-nas

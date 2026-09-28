@@ -89,4 +89,4 @@ spec:
       volumes:
         - name: board-data
           persistentVolumeClaim:
-            claimName: timeline-board-test-data
+            claimName: timeline-board-data
