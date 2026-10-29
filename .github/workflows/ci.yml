@@ -1,0 +1,178 @@
+name: ci
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - prod
+      image_tag:
+        description: "Existing tag suffix to release (for example f57e1d2); leave empty to build current commit"
+        required: false
+        type: string
+      runner:
+        description: "Build runner"
+        required: true
+        default: github-hosted
+        type: choice
+        options:
+          - github-hosted
+          - self-hosted
+      push_image:
+        description: "Push the built images to ACR (disable for a build-only dry run)"
+        required: true
+        default: true
+        type: boolean
+      release:
+        description: "Update the selected overlay after build/push"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: timeline-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Tests and build
+        run: |
+          npm run test:core
+          npm run test:server
+          npm run build
+      - uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+      - name: Validate both overlays
+        run: |
+          kustomize build deploy/gitops/overlays/test > /dev/null
+          kustomize build deploy/gitops/overlays/prod > /dev/null
+          bash -n deploy/deploy.sh
+
+  build:
+    if: |
+      github.event_name == 'workflow_dispatch' &&
+      github.event.inputs.image_tag == ''
+    runs-on: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.runner == 'self-hosted') && 'self-hosted' || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    concurrency:
+      group: timeline-${{ github.event.inputs.environment }}-build
+      cancel-in-progress: false
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute image tag
+        id: meta
+        shell: bash
+        run: echo "image_tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@v3
+        if: github.event.inputs.push_image != 'false'
+        with:
+          registry: registry.cn-shenzhen.aliyuncs.com
+          username: ${{ secrets.ACR_USERNAME }}
+          password: ${{ secrets.ACR_PASSWORD }}
+      - name: Build backend and frontend
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if [ "$ENVIRONMENT" = "prod" ]; then
+            BASE_PATH=/aVoSaywtHjXCA
+          else
+            BASE_PATH=/test
+          fi
+          REGISTRY="registry.cn-shenzhen.aliyuncs.com/angrymiao/timeline"
+          BACKEND_IMAGE="$REGISTRY:backend-${ENVIRONMENT}-${TAG}"
+          FRONTEND_IMAGE="$REGISTRY:frontend-${ENVIRONMENT}-${TAG}"
+
+          docker build --progress=plain --platform linux/amd64 \
+            -f deploy/docker/backend.Dockerfile -t "$BACKEND_IMAGE" .
+
+          docker build --progress=plain --platform linux/amd64 \
+            -f deploy/docker/frontend.Dockerfile \
+            --build-arg "BASE_PATH=${BASE_PATH}" \
+            -t "$FRONTEND_IMAGE" .
+      - name: Push images
+        if: github.event.inputs.push_image != 'false'
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          TAG: ${{ steps.meta.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          REGISTRY="registry.cn-shenzhen.aliyuncs.com/angrymiao/timeline"
+          docker push "$REGISTRY:backend-${ENVIRONMENT}-${TAG}"
+          docker push "$REGISTRY:frontend-${ENVIRONMENT}-${TAG}"
+
+  release:
+    needs: [build]
+    if: |
+      always() &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.push_image != 'false') &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.release != 'false') && (
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag != '' && needs.build.result == 'skipped') ||
+        (github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag == '' && needs.build.result == 'success')
+      )
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.event.inputs.environment == 'prod' && 'production' || 'test' }}
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: imranismail/setup-kustomize@v2
+        with:
+          kustomize-version: "5.4.3"
+      - name: Update selected overlay
+        shell: bash
+        env:
+          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          if [ "$ENVIRONMENT" != "test" ] && [ "$ENVIRONMENT" != "prod" ]; then
+            echo "invalid environment: $ENVIRONMENT" >&2
+            exit 1
+          fi
+          TAG="${INPUT_IMAGE_TAG:-sha-${GITHUB_SHA::12}}"
+          REGISTRY="registry-vpc.cn-shenzhen.aliyuncs.com/angrymiao/timeline"
+          cd "deploy/gitops/overlays/${ENVIRONMENT}"
+          kustomize edit set image \
+            timeline-backend="${REGISTRY}:backend-${ENVIRONMENT}-${TAG}"
+          kustomize edit set image \
+            timeline-frontend="${REGISTRY}:frontend-${ENVIRONMENT}-${TAG}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add kustomization.yaml
+          git commit -m "release(timeline-${ENVIRONMENT}): ${TAG}" || echo "No manifest change"
+          git push origin HEAD:main
+      - name: Next step
+        run: |
+          echo "Argo CD is manual-sync. Review and run:"
+          echo "  argocd app diff timeline-${{ github.event.inputs.environment }}"
+          echo "  argocd app sync timeline-${{ github.event.inputs.environment }}"

@@ -1,0 +1,59 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: angrymiao-test
+resources:
+  - ../../base
+images:
+  # Initial values match the live Deployments so the first Argo CD sync is a
+  # no-op. The release workflow replaces them with VPC addresses and SHA tags.
+  - name: timeline-backend
+    newName: registry.cn-shenzhen.aliyuncs.com/angrymiao/timeline
+    newTag: backend-test-65a8d53
+  - name: timeline-frontend
+    newName: registry.cn-shenzhen.aliyuncs.com/angrymiao/timeline
+    newTag: frontend-test-f57e1d2
+patches:
+  # Replace BASE_PATH at its fixed env index so the env order (and therefore
+  # the PodTemplate) stays identical to the live Deployment.
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: timeline-backend-deployment
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/1/value
+        value: /test
+      - op: replace
+        path: /spec/template/spec/containers/0/readinessProbe/httpGet/path
+        value: /test/api/health
+      - op: replace
+        path: /spec/template/spec/containers/0/livenessProbe/httpGet/path
+        value: /test/api/health
+      - op: replace
+        path: /spec/template/spec/volumes/0/persistentVolumeClaim/claimName
+        value: timeline-board-test-data
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: timeline-frontend-deployment
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/readinessProbe/httpGet/path
+        value: /test/
+      - op: replace
+        path: /spec/template/spec/containers/0/livenessProbe/httpGet/path
+        value: /test/
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: Ingress
+      name: timeline-board-ingress
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/http/paths/0/path
+        value: /test/api
+      - op: replace
+        path: /spec/rules/0/http/paths/1/path
+        value: /test
