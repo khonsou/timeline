@@ -2,6 +2,8 @@ name: ci
 
 on:
   pull_request:
+  push:
+    tags: ["test-v*", "prod-v*"]
   workflow_dispatch:
     inputs:
       environment:
@@ -70,17 +72,30 @@ jobs:
 
   build:
     if: |
-      github.event_name == 'workflow_dispatch' &&
-      github.event.inputs.image_tag == ''
+      (github.event_name == 'push' && (startsWith(github.ref_name, 'test-v') || startsWith(github.ref_name, 'prod-v'))) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag == '')
     runs-on: ${{ (github.event_name == 'workflow_dispatch' && github.event.inputs.runner == 'self-hosted') && 'self-hosted' || 'ubuntu-latest' }}
     timeout-minutes: 60
     concurrency:
-      group: timeline-${{ github.event.inputs.environment }}-build
+      group: timeline-${{ github.event_name == 'push' && github.ref_name || github.event.inputs.environment }}-build
       cancel-in-progress: false
     outputs:
       image_tag: ${{ steps.meta.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
+      - name: Resolve environment
+        id: env
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            case "${{ github.ref_name }}" in
+              test-v*) echo "environment=test" >> "$GITHUB_OUTPUT" ;;
+              prod-v*) echo "environment=prod" >> "$GITHUB_OUTPUT" ;;
+              *) echo "unsupported tag: ${{ github.ref_name }}" >&2; exit 1 ;;
+            esac
+          else
+            echo "environment=${{ github.event.inputs.environment }}" >> "$GITHUB_OUTPUT"
+          fi
       - name: Compute image tag
         id: meta
         shell: bash
@@ -94,7 +109,7 @@ jobs:
       - name: Build backend and frontend
         shell: bash
         env:
-          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          ENVIRONMENT: ${{ steps.env.outputs.environment }}
           TAG: ${{ steps.meta.outputs.image_tag }}
         run: |
           set -euo pipefail
@@ -118,7 +133,7 @@ jobs:
         if: github.event.inputs.push_image != 'false'
         shell: bash
         env:
-          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          ENVIRONMENT: ${{ steps.env.outputs.environment }}
           TAG: ${{ steps.meta.outputs.image_tag }}
         run: |
           set -euo pipefail
@@ -132,12 +147,13 @@ jobs:
       always() &&
       (github.event_name != 'workflow_dispatch' || github.event.inputs.push_image != 'false') &&
       (github.event_name != 'workflow_dispatch' || github.event.inputs.release != 'false') && (
+        (github.event_name == 'push' && (startsWith(github.ref_name, 'test-v') || startsWith(github.ref_name, 'prod-v')) && needs.build.result == 'success') ||
         (github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag != '' && needs.build.result == 'skipped') ||
         (github.event_name == 'workflow_dispatch' && github.event.inputs.image_tag == '' && needs.build.result == 'success')
       )
     runs-on: ubuntu-latest
     environment:
-      name: ${{ github.event.inputs.environment == 'prod' && 'production' || 'test' }}
+      name: ${{ github.event_name == 'push' && (startsWith(github.ref_name, 'prod-v') && 'production' || 'test') || (github.event.inputs.environment == 'prod' && 'production' || 'test') }}
     permissions:
       contents: write
     steps:
@@ -145,13 +161,26 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+      - name: Resolve environment
+        id: env
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            case "${{ github.ref_name }}" in
+              test-v*) echo "environment=test" >> "$GITHUB_OUTPUT" ;;
+              prod-v*) echo "environment=prod" >> "$GITHUB_OUTPUT" ;;
+              *) echo "unsupported tag: ${{ github.ref_name }}" >&2; exit 1 ;;
+            esac
+          else
+            echo "environment=${{ github.event.inputs.environment }}" >> "$GITHUB_OUTPUT"
+          fi
       - uses: imranismail/setup-kustomize@v2
         with:
           kustomize-version: "5.4.3"
       - name: Update selected overlay
         shell: bash
         env:
-          ENVIRONMENT: ${{ github.event.inputs.environment }}
+          ENVIRONMENT: ${{ steps.env.outputs.environment }}
           INPUT_IMAGE_TAG: ${{ github.event.inputs.image_tag }}
         run: |
           set -euo pipefail
@@ -174,5 +203,5 @@ jobs:
       - name: Next step
         run: |
           echo "Argo CD is manual-sync. Review and run:"
-          echo "  argocd app diff timeline-${{ github.event.inputs.environment }}"
-          echo "  argocd app sync timeline-${{ github.event.inputs.environment }}"
+          echo "  argocd app diff timeline-${{ steps.env.outputs.environment }}"
+          echo "  argocd app sync timeline-${{ steps.env.outputs.environment }}"
