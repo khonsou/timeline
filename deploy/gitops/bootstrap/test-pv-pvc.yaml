@@ -1,0 +1,38 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: timeline-board-test-nas
+  labels:
+    alicloud-pvname: timeline-board-test-nas
+spec:
+  capacity:
+    storage: 20Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  csi:
+    driver: nasplugin.csi.alibabacloud.com
+    volumeHandle: timeline-board-test-nas
+    volumeAttributes:
+      server: 2666949dcf-yyf68.cn-shenzhen.nas.aliyuncs.com
+      path: /timeline-board-test
+  mountOptions:
+    - nolock,tcp,noresvport
+    - vers=3
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: timeline-board-test-data
+  namespace: angrymiao-test
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: ""
+  selector:
+    matchLabels:
+      alicloud-pvname: timeline-board-test-nas
