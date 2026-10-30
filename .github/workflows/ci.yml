@@ -159,7 +159,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
           fetch-depth: 0
       - name: Resolve environment
         id: env
@@ -195,11 +194,16 @@ jobs:
             timeline-backend="${REGISTRY}:backend-${ENVIRONMENT}-${TAG}"
           kustomize edit set image \
             timeline-frontend="${REGISTRY}:frontend-${ENVIRONMENT}-${TAG}"
+          if git diff --quiet -- kustomization.yaml; then
+            echo "No manifest change"
+            exit 0
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add kustomization.yaml
-          git commit -m "release(timeline-${ENVIRONMENT}): ${TAG}" || echo "No manifest change"
-          git push origin HEAD:main
+          git commit -m "release(timeline-${ENVIRONMENT}): ${TAG}"
+          BRANCH="deploy-timeline-${ENVIRONMENT}"
+          git push --force origin "HEAD:${BRANCH}"
       - name: Next step
         run: |
           echo "Argo CD is manual-sync. Review and run:"
